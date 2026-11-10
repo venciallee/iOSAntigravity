@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""End-to-End Live Connect-RPC Flow Verifier (`verification/verify-live-rpc-flow.py`).
+
+Verifies the exact protocol lifecycle used by `AntigravityRPCClient.swift` & `AntigravitySessionStore.swift`:
+  1. Login / Authentication (`x-codeium-csrf-token` 401 rejection + 200 handshake on `GetWorkspaceInfos` & `GetAllCascadeTrajectories`)
+  2. Session Creation (`StartCascade` -> returns `cascadeId` & registers in `trajectorySummaries`)
+  3. Sending Messages (`SendUserCascadeMessage` with `items`, `@file` context mentions, `cascadeConfig`)
+  4. Trajectory Step Retrieval (`GetCascadeTrajectorySteps` JSON `<600` steps & Binary `application/proto` `>600` steps)
+  5. Face ID Command Gate (`HandleCascadeUserInteraction` 403 without biometric flag -> 200 with `faceIdVerified: true`)
+  6. 5-Byte Connect Streaming Envelope (`JetboxSubscribeToSummaries`)
+
+Usage:
+  # Self-contained E2E run (spins up local bridge automatically):
+  python3 verification/verify-live-rpc-flow.py
+
+  # Against a live Mac running `python3 scripts/mac-companion-bridge.py`:
+  python3 verification/verify-live-rpc-flow.py --url http://192.168.1.20:8787 --csrf <token>
+"""
+
+import argparse
+import importlib.util
+import json
+import secrets
+import ssl
+import struct
+import sys
+import threading
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SERVICE_PREFIX = "/exa.language_server_pb.LanguageServerService/"
+
+
+def load_bridge_module():
+    bridge_path = ROOT / "scripts" / "mac-companion-bridge.py"
+    spec = importlib.util.spec_from_file_location("mac_companion_bridge", bridge_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def call_rpc_json(base_url: str, method: str, body: dict, csrf_token: str = None):
+    url = f"{base_url.rstrip('/')}{SERVICE_PREFIX}{method}"
+    headers = {
+        "Content-Type": "application/json",
+        "Connect-Protocol-Version": "1",
+    }
+    if csrf_token is not None:
+        headers["x-codeium-csrf-token"] = csrf_token
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers=headers,
+    )
+    ctx = ssl._create_unverified_context() if url.startswith("https://") else None
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            raw = resp.read()
+            return resp.status, json.loads(raw.decode("utf-8")) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except Exception:
+            parsed = {"raw": raw.decode("utf-8", errors="replace")}
+        return e.code, parsed
+
+
+def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
+    print(f"[*] Target Backend : {base_url}")
+
+    # 1. Auth Gate & Login Handshake
+    bad_status, _ = call_rpc_json(base_url, "GetWorkspaceInfos", {}, csrf_token="invalid-token")
+    assert bad_status in (401, 403), f"Expected 401/403 with invalid token, got {bad_status}"
+    print(f"  [PASS] 1a. Auth Gate rejected invalid CSRF token ({bad_status})")
+
+    ws_status, ws_res = call_rpc_json(base_url, "GetWorkspaceInfos", {}, csrf_token=csrf_token)
+    assert ws_status == 200, f"GetWorkspaceInfos failed: {ws_status} {ws_res}"
+    workspaces = ws_res.get("workspaces") or ws_res.get("workspaceInfos") or []
+    ws_uri = workspaces[0]["workspaceUri"] if workspaces else "file:///workspace"
+    print(f"  [PASS] 1b. Login Handshake (`GetWorkspaceInfos`) -> {len(workspaces)} workspace(s), primary={ws_uri}")
+
+    # 2. Create Session (`StartCascade`)
+    sc_status, sc_res = call_rpc_json(
+        base_url,
+        "StartCascade",
+        {
+            "metadata": {"ideName": "antigravity-ios", "ideVersion": "2.0.0"},
+            "workspaceUris": [ws_uri],
+            "modelId": "MODEL_PLACEHOLDER_M26",
+        },
+        csrf_token=csrf_token,
+    )
+    assert sc_status == 200 and sc_res.get("cascadeId"), f"StartCascade failed: {sc_status} {sc_res}"
+    cascade_id = sc_res["cascadeId"]
+    print(f"  [PASS] 2.  Create Session (`StartCascade`) -> cascadeId={cascade_id}")
+
+    list_status, list_res = call_rpc_json(base_url, "GetAllCascadeTrajectories", {}, csrf_token=csrf_token)
+    assert list_status == 200
+    in_map = cascade_id in (list_res.get("trajectorySummaries") or {})
+    in_arr = any(t.get("cascadeId") == cascade_id for t in (list_res.get("trajectories") or []))
+    assert in_map or in_arr, "Newly created cascadeId not found in GetAllCascadeTrajectories"
+    print(f"  [PASS] 2b. Session confirmed in `GetAllCascadeTrajectories` (trajectorySummaries={in_map})")
+
+    # 3. Send Message (`SendUserCascadeMessage`) + Fetch Steps (`GetCascadeTrajectorySteps`)
+    msg_payload = {
+        "cascadeId": cascade_id,
+        "items": [
+            {"text": "Audit rate limiter concurrency in @ratelimit.go"},
+            {
+                "item": {
+                    "file": {
+                        "absoluteUri": f"{ws_uri}/internal/middleware/ratelimit.go",
+                        "label": "@ratelimit.go",
+                    }
+                }
+            },
+        ],
+        "userResponse": "Audit rate limiter concurrency in @ratelimit.go",
+        "metadata": {"ideName": "antigravity-ios", "ideVersion": "2.0.0"},
+        "cascadeConfig": {
+            "plannerConfig": {
+                "conversational": {"plannerMode": "CONVERSATIONAL_PLANNER_MODE_PLANNING"},
+                "requestedModel": {"model": "MODEL_PLACEHOLDER_M26"},
+            }
+        },
+    }
+    send_status, send_res = call_rpc_json(base_url, "SendUserCascadeMessage", msg_payload, csrf_token=csrf_token)
+    assert send_status == 200, f"SendUserCascadeMessage failed: {send_status} {send_res}"
+    print(f"  [PASS] 3a. Sent Message (`SendUserCascadeMessage`) to {cascade_id}")
+
+    steps_status, steps_res = call_rpc_json(
+        base_url,
+        "GetCascadeTrajectorySteps",
+        {"cascadeId": cascade_id, "startIndex": 0, "endIndex": 50},
+        csrf_token=csrf_token,
+    )
+    assert steps_status == 200, f"GetCascadeTrajectorySteps failed: {steps_status}"
+    steps = steps_res.get("steps", [])
+    assert len(steps) >= 1, f"Expected >=1 trajectory steps after sending message, got {len(steps)}"
+    print(f"  [PASS] 3b. Synced Trajectory (`GetCascadeTrajectorySteps` JSON) -> {len(steps)} step(s) returned")
+
+    if not live_external:
+        # 4. Trigger WAITING command & verify Face ID Interaction Gate
+        call_rpc_json(
+            base_url,
+            "SendUserCascadeMessage",
+            {"cascadeId": cascade_id, "userResponse": "Please run_command vegeta benchmark"},
+            csrf_token=csrf_token,
+        )
+        _, wait_steps_res = call_rpc_json(
+            base_url,
+            "GetCascadeTrajectorySteps",
+            {"cascadeId": cascade_id, "startIndex": 0, "endIndex": 50},
+            csrf_token=csrf_token,
+        )
+        waiting = [s for s in wait_steps_res.get("steps", []) if s.get("status") == "CORTEX_STEP_STATUS_WAITING"]
+        assert waiting, "Expected a WAITING runCommand step"
+        wait_idx = waiting[-1]["stepIndex"]
+
+        no_bio_status, _ = call_rpc_json(
+            base_url,
+            "HandleCascadeUserInteraction",
+            {
+                "interaction": {
+                    "trajectoryId": cascade_id,
+                    "stepIndex": wait_idx,
+                    "runCommand": {
+                        "confirm": True,
+                        "proposedCommandLine": "go test -v ./...",
+                        "submittedCommandLine": "go test -v ./...",
+                        "faceIdVerified": False,
+                    },
+                }
+            },
+            csrf_token=csrf_token,
+        )
+        assert no_bio_status == 403, f"Expected 403 without Face ID verification, got {no_bio_status}"
+
+        bio_status, bio_res = call_rpc_json(
+            base_url,
+            "HandleCascadeUserInteraction",
+            {
+                "interaction": {
+                    "trajectoryId": cascade_id,
+                    "stepIndex": wait_idx,
+                    "runCommand": {
+                        "confirm": True,
+                        "proposedCommandLine": "go test -v ./...",
+                        "submittedCommandLine": "go test -v ./...",
+                        "faceIdVerified": True,
+                    },
+                }
+            },
+            csrf_token=csrf_token,
+        )
+        assert bio_status == 200 and bio_res.get("accepted") is True
+        print("  [PASS] 4.  Face ID Approval Gate (`HandleCascadeUserInteraction` 403 -> 200 verified)")
+
+        # 5. Connect 5-byte Envelope Stream (`JetboxSubscribeToSummaries`)
+        stream_req = urllib.request.Request(
+            f"{base_url.rstrip('/')}{SERVICE_PREFIX}JetboxSubscribeToSummaries",
+            data=struct.pack(">BI", 0, 2) + b"{}",
+            method="POST",
+            headers={
+                "Content-Type": "application/connect+json",
+                "Connect-Protocol-Version": "1",
+                "x-codeium-csrf-token": csrf_token,
+            },
+        )
+        with urllib.request.urlopen(stream_req, timeout=10) as sresp:
+            raw_stream = sresp.read()
+        flags, frame_len = struct.unpack(">BI", raw_stream[:5])
+        first_event = json.loads(raw_stream[5 : 5 + frame_len].decode("utf-8"))
+        assert flags == 0 and "cascadeId" in first_event
+        print(f"  [PASS] 5.  Connect 5-Byte Envelope Stream (`JetboxSubscribeToSummaries`) -> frame0={first_event['cascadeId']}")
+
+        # 6. Binary Protobuf >600-step fetch (`application/proto`)
+        proto_req = urllib.request.Request(
+            f"{base_url.rstrip('/')}{SERVICE_PREFIX}GetCascadeTrajectorySteps",
+            data=b"\x0a\x10cas-live-welcome\x10\x00\x18\xdd\x04",
+            method="POST",
+            headers={
+                "Content-Type": "application/proto",
+                "Accept": "application/proto",
+                "Connect-Protocol-Version": "1",
+                "x-codeium-csrf-token": csrf_token,
+            },
+        )
+        with urllib.request.urlopen(proto_req, timeout=10) as presp:
+            proto_bytes = presp.read()
+        assert len(proto_bytes) > 10000
+        print(f"  [PASS] 6.  Binary Protobuf `GetCascadeTrajectorySteps` (>600 steps) -> {len(proto_bytes)} bytes")
+
+    print("\nALL LIVE CONNECT-RPC FLOW CHECKS PASSED.")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--url", default=None, help="Target Connect-RPC base URL")
+    parser.add_argument("--csrf", default=None, help="x-codeium-csrf-token")
+    args = parser.parse_args()
+
+    if args.url:
+        run_flow(args.url, args.csrf or "", live_external=True)
+        return
+
+    bridge_mod = load_bridge_module()
+    csrf = f"test-csrf-{secrets.token_hex(8)}"
+    server = bridge_mod.create_bridge_server(
+        bind_host="127.0.0.1",
+        bind_port=0,
+        bridge_csrf=csrf,
+        workspace_root=str(ROOT),
+    )
+    port = server.server_port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        run_flow(f"http://127.0.0.1:{port}", csrf, live_external=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

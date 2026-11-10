@@ -748,14 +748,80 @@ public struct AgentsHomeViewController: View {
         }
     }
 
-    // MARK: - Filtering & Mutations
+    // MARK: - Filtering & Live Store Binding
+
+    private var usesLiveStoreData: Bool {
+        store.isLiveBackendConnected || store.summaries.contains(where: { summary in
+            ![
+                "cas-rate-limiter",
+                "cas-release-checklist",
+                "cas-flaky-settlement",
+                "cas-upgrade-go",
+                "cas-idempotency-payouts",
+                "cas-pgx-v5-migration",
+                "cas-audit-csp-headers",
+                "cas-audit-log-admin"
+            ].contains(summary.cascadeId)
+        })
+    }
+
+    private func mapStoreSummary(_ s: CascadeSummary) -> AgentConversationItem {
+        let tone: AgentConversationItem.StatusTone
+        let indicator: IndicatorStyle
+        switch s.status {
+        case .inProgress, .pending:
+            tone = .running
+            indicator = .runningArc
+        case .waiting:
+            tone = .waiting
+            indicator = .needsReviewHalo
+        default:
+            tone = .neutral
+            indicator = s.isUnread ? .unreadDot : .none
+        }
+        return AgentConversationItem(
+            id: s.cascadeId,
+            title: s.title,
+            statusLine: s.statusSubtitle.isEmpty ? (s.lastMessagePreview ?? s.status.displayBadgeText) : s.statusSubtitle,
+            statusHighlight: tone,
+            projectSlug: s.projectSlug,
+            timestampLabel: s.relativeTimeLabel,
+            additions: s.totalAdditions > 0 ? s.totalAdditions : nil,
+            deletions: s.totalDeletions > 0 ? s.totalDeletions : nil,
+            indicator: indicator,
+            isPinned: s.isPinned,
+            isUnread: s.isUnread,
+            isArchived: s.isArchived
+        )
+    }
 
     private var filteredPinnedItems: [AgentConversationItem] {
-        pinnedItems.filter { matchesFilters($0) }
+        let source = usesLiveStoreData
+            ? store.summaries.filter(\.isPinned).map(mapStoreSummary)
+            : pinnedItems
+        return source.filter { matchesFilters($0) }
     }
 
     private var filteredProjectSections: [AgentProjectSection] {
-        projectSections.compactMap { section in
+        let sourceSections: [AgentProjectSection]
+        if usesLiveStoreData {
+            sourceSections = store.projects.map { proj in
+                let convs = store.summaries
+                    .filter { !$0.isPinned && $0.projectSlug == proj.id }
+                    .map(mapStoreSummary)
+                return AgentProjectSection(
+                    id: proj.id,
+                    slug: proj.name,
+                    subtitle: proj.homeSubtitle,
+                    isCloud: proj.runtime == .cloud,
+                    conversations: convs
+                )
+            }
+        } else {
+            sourceSections = projectSections
+        }
+
+        return sourceSections.compactMap { section in
             let filteredConvs = section.conversations.filter { matchesFilters($0) }
             if filteredConvs.isEmpty && !searchText.isEmpty {
                 return nil
@@ -792,6 +858,7 @@ public struct AgentsHomeViewController: View {
     }
 
     private func togglePinConversation(id: String) {
+        store.togglePinCascade(id)
         if let idx = pinnedItems.firstIndex(where: { $0.id == id }) {
             var removed = pinnedItems.remove(at: idx)
             removed.isPinned = false
@@ -811,6 +878,7 @@ public struct AgentsHomeViewController: View {
     }
 
     private func toggleUnreadConversation(id: String) {
+        store.toggleUnreadCascade(id)
         for pIdx in projectSections.indices {
             if let cIdx = projectSections[pIdx].conversations.firstIndex(where: { $0.id == id }) {
                 projectSections[pIdx].conversations[cIdx].isUnread.toggle()
@@ -823,6 +891,7 @@ public struct AgentsHomeViewController: View {
     }
 
     private func archiveConversation(id: String) {
+        store.archiveCascade(id)
         if let idx = pinnedItems.firstIndex(where: { $0.id == id }) {
             pinnedItems[idx].isArchived = true
             return
@@ -836,6 +905,7 @@ public struct AgentsHomeViewController: View {
     }
 
     private func deleteConversation(id: String) {
+        store.deleteCascade(id)
         pinnedItems.removeAll { $0.id == id }
         for pIdx in projectSections.indices {
             projectSections[pIdx].conversations.removeAll { $0.id == id }

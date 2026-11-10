@@ -216,19 +216,32 @@ public struct AntigravityRootContainerView: View {
     @ViewBuilder
     private var interactiveNavigationView: some View {
         ZStack {
-            if let pushed = activePushedScreen {
+            if store.activeRoute == .planReview {
+                ImplementationPlanReviewViewController(store: store)
+            } else if store.activeRoute == .turnDiffReview {
+                TurnDiffReviewViewController(store: store)
+            } else if let pushed = activePushedScreen {
                 switch pushed {
                 case .projectDetail(let projectSlug):
                     ProjectDetailViewController(
                         store: store,
                         projectSlug: projectSlug,
-                        onBack: { activePushedScreen = nil },
+                        onBack: {
+                            store.activeRoute = .tabRoot
+                            activePushedScreen = nil
+                        },
                         onOpenConversation: { convId in
-                            activePushedScreen = .chat(convId)
+                            openOrCreateConversation(convId, defaultProjectSlug: projectSlug)
                         }
                     )
                 case .chat:
-                    CascadeChatViewController(store: store)
+                    CascadeChatViewController(
+                        store: store,
+                        onBack: {
+                            store.activeRoute = .tabRoot
+                            activePushedScreen = nil
+                        }
+                    )
                 }
             } else {
                 switch selectedTab {
@@ -238,9 +251,14 @@ public struct AntigravityRootContainerView: View {
                         onSelectTab: { tab in selectedTab = tab },
                         onOpenDisplayOptions: { activeModalSheet = .displayOptions },
                         onOpenNewProject: { activeModalSheet = .createProject },
-                        onOpenProjectDetail: { slug in activePushedScreen = .projectDetail(slug) },
+                        onOpenProjectDetail: { slug in
+                            store.selectProject(slug)
+                            activePushedScreen = .projectDetail(slug)
+                        },
                         onOpenContextMenuPreview: { activeModalSheet = .contextMenuPreview },
-                        onOpenConversation: { convId in activePushedScreen = .chat(convId) }
+                        onOpenConversation: { convId in
+                            openOrCreateConversation(convId, defaultProjectSlug: store.selectedProjectId)
+                        }
                     )
                 case .automations:
                     AutomationsViewController(
@@ -284,6 +302,28 @@ public struct AntigravityRootContainerView: View {
                 )
             }
         }
+    }
+
+    private func openOrCreateConversation(_ rawId: String, defaultProjectSlug: String) {
+        if rawId == "new-conversation" || rawId.hasPrefix("new-") {
+            let slug = rawId.hasPrefix("new-") && rawId != "new-conversation"
+                ? String(rawId.dropFirst(4))
+                : defaultProjectSlug
+            let createdId = store.createConversationInProject(slug)
+            activePushedScreen = .chat(createdId)
+            return
+        }
+        let mappedId: String = {
+            switch rawId {
+            case "conv-rate-limiter", "proj-conv-rate-limiter": return "cas-rate-limiter"
+            case "conv-flaky-settlement", "proj-conv-flaky-batch": return "cas-flaky-settlement"
+            case "conv-upgrade-go", "proj-conv-upgrade-go": return "cas-upgrade-go"
+            case "conv-release-checklist": return "cas-release-checklist"
+            default: return rawId
+            }
+        }()
+        store.selectCascade(mappedId)
+        activePushedScreen = .chat(mappedId)
     }
 
     // MARK: - Isolated Deterministic ESDD Scenes (UE01 .. UE13)

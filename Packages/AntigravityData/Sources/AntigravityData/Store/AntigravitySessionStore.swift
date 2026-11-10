@@ -132,9 +132,18 @@ public final class AntigravitySessionStore {
     public var diffComments: [DiffLineComment] = []
     public var lastDispatchedInteraction: CascadeUserInteractionPayload? = nil
 
+    // MARK: - Live Backend Connectivity & Auth State
+    public var isLiveBackendConnected: Bool = false
+    public var isConnectingToBackend: Bool = false
+    public var connectionStatusText: String = "Demo Sandbox · Offline ESDD Fixtures"
+    public var connectionErrorText: String? = nil
+    public var lastPingLatencyMs: Int? = nil
+
     // MARK: - Dependencies
     private let projectionStore: LocalProjectionStore
     private var rpcClient: AntigravityRPCClient?
+    private var summaryStreamTask: Task<Void, Never>? = nil
+    private var stepPollingTask: Task<Void, Never>? = nil
 
     public init(
         hosts: [RemoteHostInstance] = [],
@@ -446,6 +455,318 @@ public final class AntigravitySessionStore {
         !composerDraftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composerAttachments.isEmpty
     }
 
+    // MARK: - Live Backend Login, Pairing & Streaming Actions
+
+    /// Restores saved Keychain credentials on launch and connects to the live backend if available.
+    @discardableResult
+    public func restoreSavedBackendSession() async -> Bool {
+        guard let saved = await KeychainStore.shared.loadCredentials() else {
+            return false
+        }
+        switch saved.channel {
+        case .directHost:
+            return await connectDirectLAN(
+                endpointURLString: saved.endpointURLString,
+                csrfToken: saved.csrfToken ?? "",
+                certSHA256: saved.certFingerprintSHA256,
+                hostName: saved.hostname
+            )
+        case .cloudRelay:
+            return await connectCloudRelay(
+                relayURLString: saved.endpointURLString,
+                sessionCookie: saved.sessionCookie ?? "",
+                hostName: saved.hostname
+            )
+        }
+    }
+
+    /// Parses and connects via QR / Deep Link URI:
+    /// - `antigravity://pair?url=https://192.168.1.20:8787&csrf=<token>&sha256=<fp>&name=MacBook%20Pro`
+    /// - `https://antigravity.google.com/r/<instance-id>`
+    @discardableResult
+    public func connectWithPairingURI(_ rawURI: String, fallbackCookie: String = "") async -> Bool {
+        let trimmed = rawURI.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let relay = RemoteHostInstance.parseRemoteControlQR(urlString: trimmed) {
+            return await connectCloudRelay(
+                relayURLString: "https://antigravity.google.com/r/\(relay.instanceId)",
+                sessionCookie: fallbackCookie,
+                hostName: "Remote · \(relay.instanceId)"
+            )
+        }
+
+        if let comps = URLComponents(string: trimmed),
+           comps.scheme?.lowercased() == "antigravity",
+           let targetURL = comps.queryItems?.first(where: { $0.name == "url" })?.value {
+            let csrf = comps.queryItems?.first(where: { $0.name == "csrf" })?.value ?? ""
+            let sha256 = comps.queryItems?.first(where: { $0.name == "sha256" })?.value
+            let name = comps.queryItems?.first(where: { $0.name == "name" })?.value ?? "MacBook Pro"
+            return await connectDirectLAN(
+                endpointURLString: targetURL,
+                csrfToken: csrf,
+                certSHA256: sha256,
+                hostName: name
+            )
+        }
+
+        return await connectDirectLAN(endpointURLString: trimmed, csrfToken: fallbackCookie)
+    }
+
+    /// Connects directly to Mac `language_server` or `mac-companion-bridge.py` over LAN / Tailscale
+    /// using `x-codeium-csrf-token` + SHA-256 certificate pinning / TOFU.
+    @discardableResult
+    public func connectDirectLAN(
+        endpointURLString: String,
+        csrfToken: String,
+        certSHA256: String? = nil,
+        hostName: String = "MacBook Pro"
+    ) async -> Bool {
+        guard let url = URL(string: endpointURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme != nil else {
+            connectionErrorText = "Invalid endpoint URL: \(endpointURLString)"
+            return false
+        }
+
+        isConnectingToBackend = true
+        connectionErrorText = nil
+        connectionStatusText = "Handshaking with \(url.host ?? endpointURLString)..."
+        defer { isConnectingToBackend = false }
+
+        let hostInstance = RemoteHostInstance(
+            instanceId: "direct-\(url.host ?? "mac")",
+            hostname: hostName,
+            channel: .directHost,
+            endpointURL: url,
+            isOnline: true,
+            certificateFingerprintSHA256: certSHA256 ?? "TOFU-LOCAL-TLS"
+        )
+        let candidateClient = AntigravityRPCClient(
+            host: hostInstance,
+            csrfToken: csrfToken,
+            pinnedFingerprintSHA256: certSHA256
+        )
+
+        do {
+            let handshake = try await candidateClient.verifyConnection()
+            applyVerifiedLiveConnection(
+                host: hostInstance,
+                client: candidateClient,
+                handshake: handshake
+            )
+            await KeychainStore.shared.saveCredentials(
+                SavedBackendCredentials(
+                    endpointURLString: url.absoluteString,
+                    channel: .directHost,
+                    hostname: hostName,
+                    csrfToken: csrfToken,
+                    certFingerprintSHA256: certSHA256
+                )
+            )
+            return true
+        } catch let AntigravityRPCError.unauthorized(reason) {
+            isLiveBackendConnected = false
+            connectionErrorText = "Authentication rejected (401/403): check x-codeium-csrf-token. \(reason)"
+            connectionStatusText = "Auth Failed · Invalid CSRF Token"
+            return false
+        } catch {
+            isLiveBackendConnected = false
+            connectionErrorText = "Connection failed: \(error.localizedDescription)"
+            connectionStatusText = "Unreachable · \(url.host ?? endpointURLString)"
+            return false
+        }
+    }
+
+    /// Connects to official Google Cloud Remote Control Relay (`https://antigravity.google.com/r/<instance-id>`)
+    /// after completing Google OAuth login via `ASWebAuthenticationSession`.
+    @discardableResult
+    public func connectCloudRelay(
+        relayURLString: String,
+        sessionCookie: String,
+        hostName: String = "MacBook Pro · Cloud Relay"
+    ) async -> Bool {
+        guard let url = URL(string: relayURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme != nil else {
+            connectionErrorText = "Invalid Cloud Relay URL: \(relayURLString)"
+            return false
+        }
+
+        isConnectingToBackend = true
+        connectionErrorText = nil
+        connectionStatusText = "Authenticating Google Cloud Relay..."
+        defer { isConnectingToBackend = false }
+
+        let hostInstance = RemoteHostInstance(
+            instanceId: url.lastPathComponent,
+            hostname: hostName,
+            channel: .cloudRelay,
+            endpointURL: url,
+            isOnline: true
+        )
+        let candidateClient = AntigravityRPCClient(
+            host: hostInstance,
+            sessionCookie: sessionCookie
+        )
+
+        do {
+            let handshake = try await candidateClient.verifyConnection()
+            applyVerifiedLiveConnection(
+                host: hostInstance,
+                client: candidateClient,
+                handshake: handshake
+            )
+            await KeychainStore.shared.saveCredentials(
+                SavedBackendCredentials(
+                    endpointURLString: url.absoluteString,
+                    channel: .cloudRelay,
+                    hostname: hostName,
+                    sessionCookie: sessionCookie
+                )
+            )
+            return true
+        } catch {
+            isLiveBackendConnected = false
+            connectionErrorText = "Relay handshake failed: \(error.localizedDescription)"
+            connectionStatusText = "Cloud Relay Disconnected"
+            return false
+        }
+    }
+
+    public func disconnectBackendAndClearKeychain() async {
+        summaryStreamTask?.cancel()
+        stepPollingTask?.cancel()
+        isLiveBackendConnected = false
+        lastPingLatencyMs = nil
+        connectionErrorText = nil
+        connectionStatusText = "Disconnected · Demo Sandbox Mode"
+        await KeychainStore.shared.clearCredentials()
+    }
+
+    private func applyVerifiedLiveConnection(
+        host: RemoteHostInstance,
+        client: AntigravityRPCClient,
+        handshake: BackendHandshakeResult
+    ) {
+        var updatedHost = host
+        updatedHost.latencyMs = handshake.latencyMs
+        updatedHost.isOnline = true
+        activeHost = updatedHost
+        if let existingIdx = hosts.firstIndex(where: { $0.instanceId == updatedHost.instanceId }) {
+            hosts[existingIdx] = updatedHost
+        } else {
+            hosts.insert(updatedHost, at: 0)
+        }
+        rpcClient = client
+        isLiveBackendConnected = true
+        lastPingLatencyMs = handshake.latencyMs
+        connectionErrorText = nil
+        connectionStatusText = "Connected · \(updatedHost.hostname) · \(handshake.latencyMs)ms"
+
+        if !handshake.workspaces.isEmpty {
+            workspaces = handshake.workspaces
+            selectedWorkspaceUri = handshake.workspaces[0].workspaceUri
+            projects = handshake.workspaces.map { ws in
+                let slug = ws.displayName
+                return ProjectWorkspace(
+                    id: slug,
+                    name: slug,
+                    pathDisplay: ws.workspaceUri.replacingOccurrences(of: "file://", with: ""),
+                    workspaceUri: ws.workspaceUri,
+                    runtime: .macBookPro,
+                    hostName: updatedHost.hostname,
+                    activeBranch: ws.activeBranch,
+                    worktrees: ws.worktrees.isEmpty ? [ws.activeBranch] : ws.worktrees,
+                    isExpandedInHome: true
+                )
+            }
+            selectedProjectId = projects[0].id
+        }
+
+        if !handshake.summaries.isEmpty {
+            summaries = handshake.summaries
+            if let first = handshake.summaries.first {
+                activeCascadeId = first.cascadeId
+            }
+        }
+
+        startSummarySubscriptionStream()
+        if !activeCascadeId.isEmpty {
+            syncStepsForCascade(activeCascadeId, pollUntilIdle: false)
+        }
+    }
+
+    /// Subscribes to Connect-RPC 5-byte framed `JetboxSubscribeToSummaries` stream for real-time session status updates.
+    public func startSummarySubscriptionStream() {
+        summaryStreamTask?.cancel()
+        guard let client = rpcClient else { return }
+        summaryStreamTask = Task { [weak self] in
+            guard let stream = try? await client.subscribeEnvelopeStream(method: "JetboxSubscribeToSummaries") else {
+                return
+            }
+            do {
+                for try await event in stream {
+                    guard let self, !Task.isCancelled else { break }
+                    if let cid = event["cascadeId"]?.stringValue {
+                        let statusRaw = event["status"]?.stringValue ?? "CORTEX_STEP_STATUS_IN_PROGRESS"
+                        let newStatus = CortexStepStatus.from(jsonName: statusRaw)
+                        let stepCount = event["stepCount"]?.intValue
+                        let title = event["title"]?.stringValue
+                        if let idx = self.summaries.firstIndex(where: { $0.cascadeId == cid }) {
+                            self.summaries[idx].status = newStatus
+                            if let stepCount { self.summaries[idx].stepCount = stepCount }
+                            if let title, !title.isEmpty { self.summaries[idx].title = title }
+                            self.summaries[idx].updatedAt = Date()
+                            self.summaries[idx].relativeTimeLabel = "now"
+                            self.summaries[idx].statusSubtitle = event["summary"]?.stringValue ?? newStatus.displayBadgeText
+                        }
+                        if cid == self.activeCascadeId {
+                            self.syncStepsForCascade(cid, pollUntilIdle: false)
+                        }
+                    }
+                }
+            } catch {
+                // Stream ended or disconnected; unilateral calls continue to work via Outbox
+            }
+        }
+    }
+
+    /// Synchronizes `GetCascadeTrajectorySteps` (JSON `<600`, Binary Protobuf `>=600`) for `cascadeId`,
+    /// polling every 450ms while the agent turn is actively streaming (`inProgress` or `pending`).
+    public func syncStepsForCascade(_ cascadeId: String, pollUntilIdle: Bool = true) {
+        stepPollingTask?.cancel()
+        guard isLiveBackendConnected, let client = rpcClient, !cascadeId.isEmpty else { return }
+
+        stepPollingTask = Task { [weak self] in
+            var attempts = 0
+            let maxAttempts = pollUntilIdle ? 90 : 1
+            while !Task.isCancelled && attempts < maxAttempts {
+                attempts += 1
+                let knownCount = max(200, (self?.summaries.first(where: { $0.cascadeId == cascadeId })?.stepCount ?? 50) + 20)
+                if let remoteSteps = try? await client.fetchTrajectorySteps(
+                    cascadeId: cascadeId,
+                    startIndex: 0,
+                    endIndex: knownCount
+                ), !remoteSteps.isEmpty {
+                    guard let self else { return }
+                    self.stepsByCascadeId[cascadeId] = remoteSteps
+                    if let sumIdx = self.summaries.firstIndex(where: { $0.cascadeId == cascadeId }) {
+                        self.summaries[sumIdx].stepCount = remoteSteps.count
+                        if let lastStatus = remoteSteps.last?.status {
+                            self.summaries[sumIdx].status = lastStatus
+                            self.summaries[sumIdx].statusSubtitle = lastStatus == .inProgress
+                                ? "Running · Step \(remoteSteps.count)"
+                                : lastStatus.displayBadgeText
+                        }
+                    }
+                    let stillActive = remoteSteps.contains { $0.status == .inProgress || $0.status == .pending }
+                    if !pollUntilIdle || !stillActive {
+                        break
+                    }
+                }
+                if !pollUntilIdle { break }
+                try? await Task.sleep(nanoseconds: 450_000_000)
+            }
+        }
+    }
+
     // MARK: - Navigation & Display Options Actions (`UE01`, `UE02`)
 
     public func selectHost(_ host: RemoteHostInstance) {
@@ -485,6 +806,9 @@ public final class AntigravitySessionStore {
         activeRoute = .cascadeChat(cascadeId)
         unreadStreamingStepCount = 0
         isAutoScrollPinnedToBottom = true
+        if isLiveBackendConnected {
+            syncStepsForCascade(cascadeId, pollUntilIdle: true)
+        }
     }
 
     public func resetDisplayOptions() {
@@ -653,13 +977,13 @@ public final class AntigravitySessionStore {
         title: String = "New Conversation",
         initialPrompt: String? = nil
     ) -> String {
-        let newId = "cas-\(UUID().uuidString.prefix(8).lowercased())"
+        let optimisticId = "cas-\(UUID().uuidString.prefix(8).lowercased())"
         let project = projects.first(where: { $0.id == projectSlug })
         let workspaceUri = project?.workspaceUri ?? "file:///Users/wl/code/\(projectSlug)"
         let branch = project?.activeBranch ?? "main"
 
         let newSummary = CascadeSummary(
-            cascadeId: newId,
+            cascadeId: optimisticId,
             title: title,
             projectSlug: projectSlug,
             workspaceUri: workspaceUri,
@@ -678,17 +1002,54 @@ public final class AntigravitySessionStore {
             lastMessagePreview: initialPrompt ?? "Ready for instructions..."
         )
         summaries.insert(newSummary, at: 0)
-        stepsByCascadeId[newId] = []
-        activeCascadeId = newId
+        stepsByCascadeId[optimisticId] = []
+        activeCascadeId = optimisticId
         selectedProjectId = projectSlug
         selectedWorkspaceUri = workspaceUri
-        activeRoute = .cascadeChat(newId)
+        activeRoute = .cascadeChat(optimisticId)
 
-        if let prompt = initialPrompt, !prompt.isEmpty {
-            composerDraftText = prompt
-            sendCurrentDraft()
+        let clientRef = rpcClient
+        let modelId = selectedModelConfig.modelId
+        let liveConnected = isLiveBackendConnected
+
+        Task { [weak self] in
+            if liveConnected,
+               let clientRef,
+               let realCascadeId = try? await clientRef.startCascade(
+                   workspaceUri: workspaceUri,
+                   initialPrompt: initialPrompt ?? "",
+                   modelId: modelId
+               ),
+               !realCascadeId.isEmpty {
+                guard let self else { return }
+                let existingSteps = self.stepsByCascadeId.removeValue(forKey: optimisticId) ?? []
+                self.stepsByCascadeId[realCascadeId] = existingSteps.map { step in
+                    var copy = step
+                    copy.cascadeId = realCascadeId
+                    return copy
+                }
+                if let idx = self.summaries.firstIndex(where: { $0.cascadeId == optimisticId }) {
+                    self.summaries[idx].cascadeId = realCascadeId
+                }
+                if self.activeCascadeId == optimisticId {
+                    self.activeCascadeId = realCascadeId
+                    self.activeRoute = .cascadeChat(realCascadeId)
+                }
+                if let prompt = initialPrompt, !prompt.isEmpty {
+                    self.composerDraftText = prompt
+                    self.sendCurrentDraft()
+                } else {
+                    self.syncStepsForCascade(realCascadeId, pollUntilIdle: false)
+                }
+                return
+            }
+
+            if let prompt = initialPrompt, !prompt.isEmpty {
+                self?.composerDraftText = prompt
+                self?.sendCurrentDraft()
+            }
         }
-        return newId
+        return optimisticId
     }
 
     public func createNewCascade(
@@ -902,6 +1263,7 @@ public final class AntigravitySessionStore {
             }
         }
 
+        let attachmentsSnapshot = composerAttachments
         composerDraftText = ""
         composerAttachments.removeAll()
         isSlashPopupDismissedManually = false
@@ -911,20 +1273,40 @@ public final class AntigravitySessionStore {
         let cfg = selectedModelConfig
         let storeRef = projectionStore
         let clientRef = rpcClient
-        Task {
+        let liveConnected = isLiveBackendConnected
+        let workspaceUri = selectedWorkspaceUri.isEmpty ? "file:///Users/wl/code/ledger-svc" : selectedWorkspaceUri
+
+        Task { [weak self] in
             await storeRef.enqueueOutbox(
                 OutboxEntry(cascadeId: cid, kind: .userMessage, messageText: messageBody)
             )
             await storeRef.saveProjectedSteps(currentSteps, for: cid)
+
+            var targetCascadeId = cid
+            if liveConnected, targetCascadeId.isEmpty, let clientRef,
+               let createdId = try? await clientRef.startCascade(
+                   workspaceUri: workspaceUri,
+                   initialPrompt: "",
+                   modelId: cfg.modelId
+               ) {
+                targetCascadeId = createdId
+                self?.activeCascadeId = createdId
+            }
+
             try? await clientRef?.sendUserCascadeMessage(
-                cascadeId: cid,
+                cascadeId: targetCascadeId,
                 message: messageBody,
+                attachments: attachmentsSnapshot,
                 modelId: cfg.modelId,
                 effort: cfg.effort,
                 mode: cfg.mode,
                 agentPersona: cfg.agentPersona
             )
             _ = await storeRef.drainOutbox()
+
+            if liveConnected && !targetCascadeId.isEmpty {
+                self?.syncStepsForCascade(targetCascadeId, pollUntilIdle: true)
+            }
         }
     }
 

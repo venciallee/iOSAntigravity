@@ -2,20 +2,12 @@ import SwiftUI
 import AntigravityData
 
 /// State `UE07_CHAT_AND_COMPOSER`: Official Message List, 7-Segment Task Card, Face ID Command Gate & Composer (`iOS · 消息列表与输入框`).
-/// Features:
-/// - Top navigation bar: `<` back button, `Add rate limiter to /tran...` + `ledger-svc · main · MacBook Pro`,
-///   `+128 -14` diff pill (`chat-diff-pill` -> `.turnDiffReview`), and `•••` menu
-/// - Message stream:
-///   - Previous user message context chips `[@transfers.go]` `[Skill · go-testing]`
-///   - Collapsible `👁 Thought for 14s ›` row (`row-thought-14s`)
-///   - Assistant prose (`Plan approved with your 2 comments. Tests pass — next is a load test, which needs your OK.`)
-///   - Embedded **Implementation Plan** card (`Approved · 2 comments addressed ›`, `card-artifact-plan` -> `.planReview`)
-///   - **7-Segment `Task · 4 of 7 done` (`2m 41s`) Progress Card** (`card-task-progress-7seg`)
-///   - **Inline `Run this command?` Amber Approval Card** (`card-command-approval`, `btn-command-deny`, `btn-command-allow-faceid`)
-/// - Above-composer status strip: `🟠 Waiting for your approval · Step 5 of 7` + `[⏹ Stop]` pill (`btn-stop-turn`)
-/// - Bottom `ChatComposerView`.
+/// Dynamically renders live `store.displayItems` (`CascadeStepCellView` / `CascadeEvidenceGroupCardView`)
+/// for newly created sessions, sent messages, and live Connect-RPC streaming turns while preserving
+/// exact 1:1 `UE07` showcase rendering on the `cas-rate-limiter` ESDD fixture.
 public struct CascadeChatViewController: View {
     @Bindable public var store: AntigravitySessionStore
+    public var onBack: (() -> Void)?
     @State private var isTurnStopped: Bool = false
 
     private static let periwinkle = Color(red: 0x8E / 255.0, green: 0xB4 / 255.0, blue: 0xFF / 255.0) // #8EB4FF
@@ -24,8 +16,18 @@ public struct CascadeChatViewController: View {
     private static let coralError = Color(red: 0xF0 / 255.0, green: 0x71 / 255.0, blue: 0x67 / 255.0) // #F07167
     private static let pillBg = Color(red: 0x1A / 255.0, green: 0x1C / 255.0, blue: 0x23 / 255.0)
 
-    public init(store: AntigravitySessionStore) {
+    public init(
+        store: AntigravitySessionStore,
+        onBack: (() -> Void)? = nil
+    ) {
         self.store = store
+        self.onBack = onBack
+    }
+
+    private var isStaticESDDFixtureView: Bool {
+        !store.isLiveBackendConnected
+            && store.activeCascadeId == "cas-rate-limiter"
+            && store.activeSteps.count == 6
     }
 
     public var body: some View {
@@ -37,48 +39,35 @@ public struct CascadeChatViewController: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 9) {
-                    // 1. Previous user message context chips bubble
-                    UserPromptContextBubbleView(
-                        promptText: nil,
-                        contextChips: ["@transfers.go", "Skill · go-testing"]
-                    )
-
-                    // 2. Collapsible `👁 Thought for 14s ›` row
-                    CollapsibleThoughtRowView(durationSeconds: 14)
-
-                    // 3. Assistant prose
-                    Text("Plan approved with your 2 comments. Tests pass — next is a load test, which needs your OK.")
-                        .font(.system(size: 15))
-                        .foregroundStyle(AntigravityTheme.inkReading)
-                        .lineSpacing(2.5)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    // 4. Embedded Implementation Plan artifact card
-                    EmbeddedImplementationPlanCardView(
-                        title: "Implementation Plan",
-                        statusSubtitle: "Approved · 2 comments addressed"
-                    ) {
-                        store.currentRoute = .planReview
+                    if isStaticESDDFixtureView {
+                        staticRateLimiterShowcaseBody
+                    } else if store.displayItems.isEmpty {
+                        emptyNewSessionPromptCard
+                    } else {
+                        ForEach(store.displayItems) { item in
+                            switch item {
+                            case .single(let step):
+                                CascadeStepCellView(store: store, step: step)
+                            case .evidenceGroup(let groupId, let groupedSteps):
+                                CascadeEvidenceGroupCardView(
+                                    store: store,
+                                    groupId: groupId,
+                                    steps: groupedSteps
+                                )
+                            }
+                        }
                     }
-
-                    // 5. 7-Segment Task · 4 of 7 done Progress Card
-                    SevenSegmentTaskProgressCardView(
-                        completedCount: 4,
-                        totalCount: 7,
-                        elapsedLabel: "2m 41s"
-                    )
-
-                    // 6. Inline `Run this command?` Amber Approval Card with Face ID Allow
-                    InlineCommandApprovalCardView(store: store)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
             }
 
             // Above-Composer Status Strip
-            waitingStatusStrip
-                .padding(.horizontal, 14)
-                .padding(.top, 4)
+            if isStaticESDDFixtureView || store.isCascadeStreaming || store.pendingWaitingStep != nil {
+                waitingStatusStrip
+                    .padding(.horizontal, 14)
+                    .padding(.top, 4)
+            }
 
             // Pinned Composer Card
             ChatComposerView(store: store)
@@ -89,12 +78,70 @@ public struct CascadeChatViewController: View {
         .background(AntigravityTheme.canvasObsidian)
     }
 
+    @ViewBuilder
+    private var staticRateLimiterShowcaseBody: some View {
+        UserPromptContextBubbleView(
+            promptText: nil,
+            contextChips: ["@transfers.go", "Skill · go-testing"]
+        )
+
+        CollapsibleThoughtRowView(durationSeconds: 14)
+
+        Text("Plan approved with your 2 comments. Tests pass — next is a load test, which needs your OK.")
+            .font(.system(size: 15))
+            .foregroundStyle(AntigravityTheme.inkReading)
+            .lineSpacing(2.5)
+            .fixedSize(horizontal: false, vertical: true)
+
+        EmbeddedImplementationPlanCardView(
+            title: "Implementation Plan",
+            statusSubtitle: "Approved · 2 comments addressed"
+        ) {
+            store.currentRoute = .planReview
+        }
+
+        SevenSegmentTaskProgressCardView(
+            completedCount: 4,
+            totalCount: 7,
+            elapsedLabel: "2m 41s"
+        )
+
+        InlineCommandApprovalCardView(store: store)
+    }
+
+    private var emptyNewSessionPromptCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(store.isLiveBackendConnected ? Self.emeraldDone : Self.periwinkle)
+                    .frame(width: 8, height: 8)
+                Text(store.isLiveBackendConnected ? "Session Created via StartCascade" : "New Session Ready")
+                    .font(.system(size: 14.5, weight: .semibold))
+                    .foregroundStyle(AntigravityTheme.inkReading)
+            }
+            Text("Session `\(store.activeCascadeId)` is bound to `\(store.selectedProject?.name ?? "ledger-svc")`. Type a message below to dispatch `SendUserCascadeMessage` and stream `GetCascadeTrajectorySteps` live.")
+                .font(.system(size: 13.5))
+                .foregroundStyle(AntigravityTheme.inkSecondary)
+                .lineSpacing(2)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AntigravityTheme.surfaceCard)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.top, 12)
+    }
+
     // MARK: - Top Navigation Bar
 
     private var chatTopNavigationBar: some View {
         HStack(spacing: 8) {
             Button {
-                store.currentRoute = .agentsHome
+                store.currentRoute = .tabRoot
+                onBack?()
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 17, weight: .semibold))
@@ -105,13 +152,13 @@ public struct CascadeChatViewController: View {
             .accessibilityIdentifier("btn-back-sessions")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Add rate limiter to /transfers")
+                Text(store.activeSummary?.title ?? "Add rate limiter to /transfers")
                     .font(.system(size: 15.5, weight: .bold))
                     .foregroundStyle(AntigravityTheme.inkReading)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Text("ledger-svc · main · MacBook Pro")
+                Text("\(store.activeSummary?.projectSlug ?? "ledger-svc") · \(store.activeSummary?.branchName ?? "main") · \(store.activeHost.hostname)")
                     .font(.system(size: 12))
                     .foregroundStyle(AntigravityTheme.inkSecondary)
                     .lineLimit(1)
@@ -124,9 +171,9 @@ public struct CascadeChatViewController: View {
                 store.currentRoute = .turnDiffReview
             } label: {
                 HStack(spacing: 5) {
-                    Text("+128")
+                    Text("+\(store.totalDiffAdditions)")
                         .foregroundStyle(Self.emeraldDone)
-                    Text("-14")
+                    Text("-\(store.totalDiffDeletions)")
                         .foregroundStyle(Self.coralError)
                 }
                 .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
@@ -150,8 +197,8 @@ public struct CascadeChatViewController: View {
                 Button("Review Turn Changes") {
                     store.currentRoute = .turnDiffReview
                 }
-                Button("Structured Question Demo") {
-                    store.currentRoute = .structuredQuestion
+                Button("Refresh Trajectory Steps") {
+                    store.syncStepsForCascade(store.activeCascadeId, pollUntilIdle: true)
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -168,19 +215,28 @@ public struct CascadeChatViewController: View {
     // MARK: - Above-Composer Status Strip
 
     private var waitingStatusStrip: some View {
-        HStack(spacing: 8) {
+        let statusLabel: String = {
+            if isTurnStopped {
+                return "Turn stopped"
+            }
+            if store.pendingWaitingStep != nil {
+                return "Waiting for your approval · Step \(store.activeSteps.count)"
+            }
+            if store.isCascadeStreaming {
+                return "Streaming from \(store.activeHost.hostname) · \(store.activeSteps.count) steps"
+            }
+            return "Waiting for your approval · Step 5 of 7"
+        }()
+
+        return HStack(spacing: 8) {
             Circle()
-                .fill(isTurnStopped ? AntigravityTheme.inkSecondary : Self.warmAmber)
+                .fill(isTurnStopped ? AntigravityTheme.inkSecondary : (store.pendingWaitingStep != nil ? Self.warmAmber : Self.periwinkle))
                 .frame(width: 8, height: 8)
 
-            Text(
-                isTurnStopped
-                    ? "Turn stopped · Step 5 of 7"
-                    : "Waiting for your approval · Step 5 of 7"
-            )
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(isTurnStopped ? AntigravityTheme.inkSecondary : Self.warmAmber)
-            .lineLimit(1)
+            Text(statusLabel)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(isTurnStopped ? AntigravityTheme.inkSecondary : (store.pendingWaitingStep != nil ? Self.warmAmber : Self.periwinkle))
+                .lineLimit(1)
 
             Spacer()
 

@@ -207,9 +207,17 @@ public struct ChatComposerView: View {
 
     private func submitMessage() {
         let trimmed = draftMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachedChipLabels.isEmpty else { return }
+        store.composerAttachments = attachedChipLabels.map { label in
+            ComposerAttachmentChip(
+                kind: .fileMention,
+                label: label,
+                targetUri: "file://\(store.selectedWorkspaceUri.replacingOccurrences(of: "file://", with: ""))/\(label.replacingOccurrences(of: "@", with: ""))"
+            )
+        }
         store.composerDraftText = trimmed
         store.sendCurrentDraft()
         draftMessageText = ""
+        attachedChipLabels.removeAll()
     }
 }
