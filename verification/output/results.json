@@ -1,0 +1,117 @@
+{
+  "timestamp": "2026-11-10T15:02:21.361542+00:00",
+  "methodology": "ESDD (Executable Spec Driven Development)",
+  "overallPassed": true,
+  "specInspection": {
+    "passed": true,
+    "swiftFileCount": 29,
+    "stateCount": 8,
+    "eventCount": 9,
+    "claimCount": 8,
+    "checks": [
+      "5-tier typography hierarchy (Reading, Evidence, Process, Metadata, Chrome) verified",
+      "State\u00d7Event DAG complete: 8 states and 9 transitions reachable",
+      "All 15 core Swift 6 types & controllers grounded in source tree",
+      "All 8 states covered by executable acceptance claims (CLAIM-01..CLAIM-08)"
+    ],
+    "errors": []
+  },
+  "connectRpcE2E": {
+    "passed": true,
+    "tests": [
+      "JetboxSubscribeToSummaries: parsed 3 Connect 5-byte frames (snapshot + delta + 0x02 EndStream)",
+      "GetCascadeTrajectorySteps (application/proto): decoded 605 steps (bypassed 600-step JSON ceiling)",
+      "HandleCascadeUserInteraction: verified authoritative oneof 'permission' with turnGrants"
+    ]
+  },
+  "claims": [
+    {
+      "claimId": "CLAIM-01",
+      "state": "S01_PAIRING_QR",
+      "category": "Remote Control Pairing",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S01_PAIRING_QR.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S01_PAIRING_QR.json",
+      "verifiedSelectors": 4,
+      "verifiedTouchTargets": 2
+    },
+    {
+      "claimId": "CLAIM-02",
+      "state": "S02_WORKSPACE_HOME",
+      "category": "Workspace & Jetbox Sync",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S02_WORKSPACE_HOME.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S02_WORKSPACE_HOME.json",
+      "verifiedSelectors": 5,
+      "verifiedTouchTargets": 4
+    },
+    {
+      "claimId": "CLAIM-03",
+      "state": "S03_CASCADE_STREAMING",
+      "category": "Cascade Streaming & Native Step Cards",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S03_CASCADE_STREAMING.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S03_CASCADE_STREAMING.json",
+      "verifiedSelectors": 6,
+      "verifiedTouchTargets": 4
+    },
+    {
+      "claimId": "CLAIM-04",
+      "state": "S04_PERMISSION_GATE",
+      "category": "Permission Gate & TurnGrants",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S04_PERMISSION_GATE.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S04_PERMISSION_GATE.json",
+      "verifiedSelectors": 6,
+      "verifiedTouchTargets": 4
+    },
+    {
+      "claimId": "CLAIM-05",
+      "state": "S05_ASK_QUESTION_MODAL",
+      "category": "AskQuestion Interactive Elicitation",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S05_ASK_QUESTION_MODAL.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S05_ASK_QUESTION_MODAL.json",
+      "verifiedSelectors": 5,
+      "verifiedTouchTargets": 4
+    },
+    {
+      "claimId": "CLAIM-06",
+      "state": "S06_ARTIFACT_PLAN_REVIEW",
+      "category": "Artifact Implementation Plan Review",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S06_ARTIFACT_PLAN_REVIEW.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S06_ARTIFACT_PLAN_REVIEW.json",
+      "verifiedSelectors": 5,
+      "verifiedTouchTargets": 2
+    },
+    {
+      "claimId": "CLAIM-07",
+      "state": "S07_TURN_DIFF_INSPECTOR",
+      "category": "Word-Level Turn Diff Inspector",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S07_TURN_DIFF_INSPECTOR.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S07_TURN_DIFF_INSPECTOR.json",
+      "verifiedSelectors": 4,
+      "verifiedTouchTargets": 3
+    },
+    {
+      "claimId": "CLAIM-08",
+      "state": "S08_LIVE_ACTIVITY_LOCKSCREEN",
+      "category": "Dynamic Island & Lock Screen Live Activity",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/S08_LIVE_ACTIVITY_LOCKSCREEN.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/S08_LIVE_ACTIVITY_LOCKSCREEN.json",
+      "verifiedSelectors": 4,
+      "verifiedTouchTargets": 2
+    }
+  ]
+}

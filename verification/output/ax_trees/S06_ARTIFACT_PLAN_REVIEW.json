@@ -1,0 +1,49 @@
+{
+  "stateId": "S06_ARTIFACT_PLAN_REVIEW",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "elements": {
+    "#artifact-header": {
+      "exists": true,
+      "x": 16,
+      "y": 67,
+      "width": 361,
+      "height": 68,
+      "text": "implementation_plan.md\nArtifact Snapshot v3 \u00b7 RequestFeedback=true\nREVIEW REQUIRED"
+    },
+    "#artifact-alert-important": {
+      "exists": true,
+      "x": 16,
+      "y": 147,
+      "width": 361,
+      "height": 94,
+      "text": "[!IMPORTANT] DIRECT CONNECT-RPC ARCHITECTURE\nBypasses the 9MB desktop React web bundle and connects Swift 6 directly to "
+    },
+    "#artifact-mermaid-diagram": {
+      "exists": true,
+      "x": 16,
+      "y": 253,
+      "width": 361,
+      "height": 124,
+      "text": "MERMAID ARCHITECTURE DIAGRAM \u00b7 RENDERED NATIVELY\niOS Swift 6\nCoreText 120fps\n\u21c4\nConnect-RPC\n5B Frame + Proto\n\u21c4\nHub LS v2."
+    },
+    "#btn-proceed-plan": {
+      "exists": true,
+      "x": 16,
+      "y": 758,
+      "width": 198.9,
+      "height": 48,
+      "text": "Proceed with Plan"
+    },
+    "#btn-edit-plan": {
+      "exists": true,
+      "x": 224.9,
+      "y": 758,
+      "width": 152.1,
+      "height": 48,
+      "text": "Request Changes"
+    }
+  }
+}

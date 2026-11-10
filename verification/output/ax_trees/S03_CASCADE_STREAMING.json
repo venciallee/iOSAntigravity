@@ -1,0 +1,65 @@
+{
+  "stateId": "S03_CASCADE_STREAMING",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "elements": {
+    "#task-boundary-banner": {
+      "exists": true,
+      "x": 16,
+      "y": 67,
+      "width": 361,
+      "height": 122,
+      "text": "TASK BOUNDARY \u00b7 PHASE 2 OF 4\nSTREAMING 120FPS\nConnect-RPC Streaming & ESDD Verification\nExecuting 5-byte Connect framing"
+    },
+    "#step-thinking-capsule": {
+      "exists": true,
+      "x": 16,
+      "y": 294,
+      "width": 361,
+      "height": 44,
+      "text": "\u2726\nThought for 3.4s \u00b7 Verified field 56 RequestedInteraction\n\u25be"
+    },
+    "#step-file-evidence-group": {
+      "exists": true,
+      "x": 16,
+      "y": 426.3,
+      "width": 361,
+      "height": 74,
+      "text": "ConnectEnvelope.swift + 3 files\n5-byte Connect streaming parser & binary Protobuf\n+184\n-22\n\u203a"
+    },
+    "#step-terminal-card": {
+      "exists": true,
+      "x": 16,
+      "y": 510.3,
+      "width": 361,
+      "height": 81,
+      "text": "$ python3 verification/esdd-verify.py\nEXIT 0 \u00b7 1.4s\nPASS [Spec-DAG] 8/8 states, 9/9 events verified\nPASS [Connect-RPC] 5"
+    },
+    "#liquid-glass-composer": {
+      "exists": true,
+      "x": 16,
+      "y": 711,
+      "width": 361,
+      "height": 95,
+      "text": "Message Antigravity or type /plan, @file...\nClaude Sonnet 4.5 \u00b7 High \u00b7 Planning\n\u2191"
+    },
+    "#composer-send-btn": {
+      "exists": true,
+      "x": 316,
+      "y": 747,
+      "width": 48,
+      "height": 48,
+      "text": "\u2191"
+    },
+    "#composer-model-pill": {
+      "exists": true,
+      "x": 29,
+      "y": 749,
+      "width": 260.7,
+      "height": 44,
+      "text": "Claude Sonnet 4.5 \u00b7 High \u00b7 Planning"
+    }
+  }
+}

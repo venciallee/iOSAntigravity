@@ -1,0 +1,238 @@
+{
+  "schemaVersion": "1.0.0",
+  "project": "iOSAntigravity",
+  "methodology": "ESDD (Executable Spec Driven Development)",
+  "targetPlatform": {
+    "os": "iOS 18.0+",
+    "deviceBaseline": "iPhone 16 Pro",
+    "viewportPoints": { "width": 393, "height": 852 },
+    "scaleFactor": 3,
+    "safeAreaInsets": { "top": 59, "bottom": 34, "left": 0, "right": 0 },
+    "minTouchTargetPt": 44
+  },
+  "designSystem": {
+    "name": "Antigravity Obsidian & Liquid Glass",
+    "palette": {
+      "canvasObsidian": "#090B10",
+      "surfaceElevated": "#111520",
+      "surfaceCard": "#161B29",
+      "surfaceGlass": "rgba(22, 27, 41, 0.78)",
+      "hairlineBorder": "rgba(255, 255, 255, 0.08)",
+      "accentPrimary": "#6366F1",
+      "accentSecondary": "#8B5CF6",
+      "accentCyan": "#06B6D4",
+      "statusRunning": "#38BDF8",
+      "statusWaiting": "#F59E0B",
+      "statusDone": "#10B981",
+      "statusError": "#F43F5E",
+      "inkReading": "#F8FAFC",
+      "inkLabel": "#E2E8F0",
+      "inkSecondary": "#94A3B8",
+      "inkTertiary": "#64748B"
+    },
+    "typographyHierarchy": [
+      { "tier": "Reading", "usage": "User messages, Agent prose answers", "sizePt": 16, "lineHeightPt": 24, "weight": 400, "ink": "inkReading" },
+      { "tier": "Evidence", "usage": "Modified files, Artifacts, Turn Diff stats, Plan approval", "sizePt": 14, "lineHeightPt": 20, "weight": 500, "ink": "inkLabel" },
+      { "tier": "Process", "usage": "Thinking blocks, Tool calls, Terminal output, Subagent steps", "sizePt": 13, "lineHeightPt": 18, "weight": 400, "ink": "inkSecondary" },
+      { "tier": "Metadata", "usage": "Timestamps, step index, latency, token/effort badges", "sizePt": 11, "lineHeightPt": 14, "weight": 400, "ink": "inkTertiary" },
+      { "tier": "Chrome", "usage": "Navigation headers, Worktree pills, Composer controls, Tab bars", "sizePt": 13, "lineHeightPt": 18, "weight": 500, "ink": "inkSecondary" }
+    ]
+  },
+  "states": [
+    {
+      "id": "S01_PAIRING_QR",
+      "name": "Remote Control QR & Host Pairing",
+      "controller": "RemotePairingViewController",
+      "deeplink": "antigravity://verify/pairing-qr",
+      "description": "Scans Antigravity Desktop v2.30.0 Remote Control QR code (https://antigravity.google.com/r/<id>) or connects via direct Tailscale/LAN host."
+    },
+    {
+      "id": "S02_WORKSPACE_HOME",
+      "name": "Workspace & Jetbox Conversation Catalog",
+      "controller": "WorkspaceHomeViewController",
+      "deeplink": "antigravity://verify/workspace-home",
+      "description": "Displays connected host lt74xt6l0m-golden-star, active Git worktrees, and real-time JetboxSubscribeToSummaries conversations with <10ms SQLite cold start."
+    },
+    {
+      "id": "S03_CASCADE_STREAMING",
+      "name": "Cascade Active Streaming & Multi-Step Trajectory",
+      "controller": "CascadeChatViewController",
+      "deeplink": "antigravity://verify/cascade-streaming",
+      "description": "120fps streaming conversation with TaskBoundary progress header, collapsible Thinking capsule, CodeAction pills, RunCommand terminal card, and Liquid Glass Composer."
+    },
+    {
+      "id": "S04_PERMISSION_GATE",
+      "name": "Native Permission Approval & TurnGrants Sheet",
+      "controller": "InteractionGateSheetController",
+      "deeplink": "antigravity://verify/permission-gate",
+      "description": "Handles CORTEX_STEP_STATUS_WAITING (9) with requestedInteraction (runCommand / permission / filePermission) offering Allow Once, Always Allow in Turn (turnGrants), and Safe Auto-Accept."
+    },
+    {
+      "id": "S05_ASK_QUESTION_MODAL",
+      "name": "Interactive AskQuestion Elicitation Card",
+      "controller": "InteractionGateSheetController",
+      "deeplink": "antigravity://verify/ask-question",
+      "description": "Renders native multi-choice / single-choice selection sheet when the Agent invokes ask_question, with recommended badge and custom write-in input."
+    },
+    {
+      "id": "S06_ARTIFACT_PLAN_REVIEW",
+      "name": "Artifact Implementation Plan & Generative UI Preview",
+      "controller": "ArtifactReviewViewController",
+      "deeplink": "antigravity://verify/artifact-plan",
+      "description": "Displays Antigravity implementation_plan.md artifact with GitHub alerts, Mermaid architecture diagram, and native 'Proceed with Plan' feedback bar."
+    },
+    {
+      "id": "S07_TURN_DIFF_INSPECTOR",
+      "name": "Native Word-Level Turn Diff & Patch Inspector",
+      "controller": "TurnDiffViewController",
+      "deeplink": "antigravity://verify/turn-diff",
+      "description": "Renders GetTurnDiff / GetPatchAndCodeChange word-level additions/deletions with file tree tabs and hunk navigation."
+    },
+    {
+      "id": "S08_LIVE_ACTIVITY_LOCKSCREEN",
+      "name": "Dynamic Island & Lock Screen Live Activity",
+      "controller": "AntigravityLiveActivityWidget",
+      "deeplink": "antigravity://verify/live-activity",
+      "description": "Displays iOS 18 Dynamic Island (Expanded & Compact) and Lock Screen Live Activity banner with real-time step progress, elapsed timer, and interactive AppIntent Approve button."
+    }
+  ],
+  "events": [
+    {
+      "id": "E01_SCAN_QR_CODE",
+      "fromState": "S01_PAIRING_QR",
+      "toState": "S02_WORKSPACE_HOME",
+      "rpcMethod": "GetWorkspaceInfos",
+      "trigger": "Scan QR payload https://antigravity.google.com/r/lt74xt6l0m-golden-star"
+    },
+    {
+      "id": "E02_JETBOX_SUMMARY_STREAM",
+      "fromState": "S02_WORKSPACE_HOME",
+      "toState": "S02_WORKSPACE_HOME",
+      "rpcMethod": "JetboxSubscribeToSummaries",
+      "trigger": "Receive 5-byte Connect envelope with initial snapshot + incremental summary delta"
+    },
+    {
+      "id": "E03_OPEN_CASCADE_THREAD",
+      "fromState": "S02_WORKSPACE_HOME",
+      "toState": "S03_CASCADE_STREAMING",
+      "rpcMethod": "GetCascadeTrajectorySteps",
+      "trigger": "Select active conversation row; fetch binary protobuf steps and subscribe to StreamCascadeReactiveUpdates"
+    },
+    {
+      "id": "E04_STEP_WAITING_PERMISSION",
+      "fromState": "S03_CASCADE_STREAMING",
+      "toState": "S04_PERMISSION_GATE",
+      "rpcMethod": "StreamAgentStateUpdates",
+      "trigger": "Receive step with status=CORTEX_STEP_STATUS_WAITING (9) and requestedInteraction.permission / runCommand"
+    },
+    {
+      "id": "E05_APPROVE_INTERACTION",
+      "fromState": "S04_PERMISSION_GATE",
+      "toState": "S03_CASCADE_STREAMING",
+      "rpcMethod": "HandleCascadeUserInteraction",
+      "trigger": "Tap 'Always Allow in Turn' or 'Approve Command' -> dispatches matching oneof member to LanguageServerService"
+    },
+    {
+      "id": "E06_STEP_ASK_QUESTION",
+      "fromState": "S03_CASCADE_STREAMING",
+      "toState": "S05_ASK_QUESTION_MODAL",
+      "rpcMethod": "HandleCascadeUserInteraction",
+      "trigger": "Receive step with requestedInteraction.askQuestion -> user selects option and submits"
+    },
+    {
+      "id": "E07_OPEN_ARTIFACT_PLAN",
+      "fromState": "S03_CASCADE_STREAMING",
+      "toState": "S06_ARTIFACT_PLAN_REVIEW",
+      "rpcMethod": "GetArtifactSnapshots",
+      "trigger": "Tap Artifact card (implementation_plan.md) or 'Review Plan' button"
+    },
+    {
+      "id": "E08_INSPECT_TURN_DIFF",
+      "fromState": "S03_CASCADE_STREAMING",
+      "toState": "S07_TURN_DIFF_INSPECTOR",
+      "rpcMethod": "GetTurnDiff",
+      "trigger": "Tap grouped file changes summary block (+184 -22 across 4 files)"
+    },
+    {
+      "id": "E09_BACKGROUND_LIVE_ACTIVITY",
+      "fromState": "S03_CASCADE_STREAMING",
+      "toState": "S08_LIVE_ACTIVITY_LOCKSCREEN",
+      "rpcMethod": "StreamAgentStateUpdates",
+      "trigger": "App enters background during active Cascade or WAITING permission gate; ActivityKit updates Dynamic Island & Lock Screen"
+    }
+  ],
+  "claims": [
+    {
+      "id": "CLAIM-01",
+      "category": "Remote Control Pairing",
+      "state": "S01_PAIRING_QR",
+      "behavior": "QR Scanner & Host Pairing screen displays camera viewfinder for Antigravity Desktop QR code, parsed device badge 'lt74xt6l0m-golden-star (v2.30.0)', and Dual-Channel connection selector (Cloud Relay vs Direct LAN/Tailscale) with >=44pt buttons.",
+      "requiredSelectors": ["#qr-viewfinder", "#detected-host-card", "#btn-connect-relay", "#btn-connect-direct"],
+      "minTouchTargetSelectors": ["#btn-connect-relay", "#btn-connect-direct"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    },
+    {
+      "id": "CLAIM-02",
+      "category": "Workspace & Jetbox Sync",
+      "state": "S02_WORKSPACE_HOME",
+      "behavior": "Home screen shows connected host pill 'lt74xt6l0m-golden-star', Git worktree filter bar, Pinned & Recent cascades synced via JetboxSubscribeToSummaries, live status badges (RUNNING / WAITING / DONE), and quick New Cascade action.",
+      "requiredSelectors": ["#host-status-pill", "#worktree-filter-bar", "#session-row-waiting", "#session-row-running", "#btn-new-cascade"],
+      "minTouchTargetSelectors": ["#host-status-pill", "#session-row-waiting", "#session-row-running", "#btn-new-cascade"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    },
+    {
+      "id": "CLAIM-03",
+      "category": "Cascade Streaming & Native Step Cards",
+      "state": "S03_CASCADE_STREAMING",
+      "behavior": "Cascade chat screen renders TaskBoundary progress bar, collapsible Thinking block, grouped file modification evidence block, native RunCommand terminal card with exit code 0, and Liquid Glass Composer with model/effort pill (Claude Sonnet 4.5 · High).",
+      "requiredSelectors": ["#task-boundary-banner", "#step-thinking-capsule", "#step-file-evidence-group", "#step-terminal-card", "#liquid-glass-composer", "#composer-send-btn"],
+      "minTouchTargetSelectors": ["#step-thinking-capsule", "#step-file-evidence-group", "#composer-model-pill", "#composer-send-btn"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    },
+    {
+      "id": "CLAIM-04",
+      "category": "Permission Gate & TurnGrants",
+      "state": "S04_PERMISSION_GATE",
+      "behavior": "Waiting step triggers native glass Permission Gate sheet displaying command/resource details, risk badge, Safe Auto-Accept toggle, and three distinct >=44pt action buttons (Allow Once, Always Allow in Turn, Reject).",
+      "requiredSelectors": ["#permission-gate-sheet", "#permission-resource-box", "#toggle-safe-auto-accept", "#btn-allow-once", "#btn-allow-turn-grant", "#btn-reject-permission"],
+      "minTouchTargetSelectors": ["#toggle-safe-auto-accept", "#btn-allow-once", "#btn-allow-turn-grant", "#btn-reject-permission"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    },
+    {
+      "id": "CLAIM-05",
+      "category": "AskQuestion Interactive Elicitation",
+      "state": "S05_ASK_QUESTION_MODAL",
+      "behavior": "Agent ask_question tool call renders native interactive choice sheet with '(Recommended)' badge, selectable option cards (>=44pt), custom write-in field, and Submit Answer button.",
+      "requiredSelectors": ["#ask-question-sheet", "#option-card-0", "#option-card-1", "#option-card-2", "#btn-submit-answer"],
+      "minTouchTargetSelectors": ["#option-card-0", "#option-card-1", "#option-card-2", "#btn-submit-answer"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    },
+    {
+      "id": "CLAIM-06",
+      "category": "Artifact Implementation Plan Review",
+      "state": "S06_ARTIFACT_PLAN_REVIEW",
+      "behavior": "Artifact viewer renders implementation_plan.md with IMPORTANT alert callout, architecture flow diagram, clickable file symbol badges, and bottom RequestFeedback approval bar ('Proceed with Plan' & 'Request Changes').",
+      "requiredSelectors": ["#artifact-header", "#artifact-alert-important", "#artifact-mermaid-diagram", "#btn-proceed-plan", "#btn-edit-plan"],
+      "minTouchTargetSelectors": ["#btn-proceed-plan", "#btn-edit-plan"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    },
+    {
+      "id": "CLAIM-07",
+      "category": "Word-Level Turn Diff Inspector",
+      "state": "S07_TURN_DIFF_INSPECTOR",
+      "behavior": "Turn Diff inspector displays file switcher tabs, addition/deletion counters (+184 -22), line-numbered unified diff with word-level green/red highlights, and Accept/Revert Hunk controls.",
+      "requiredSelectors": ["#diff-file-tabs", "#diff-code-surface", "#btn-accept-patch", "#btn-revert-patch"],
+      "minTouchTargetSelectors": ["#diff-file-tabs", "#btn-accept-patch", "#btn-revert-patch"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    },
+    {
+      "id": "CLAIM-08",
+      "category": "Dynamic Island & Lock Screen Live Activity",
+      "state": "S08_LIVE_ACTIVITY_LOCKSCREEN",
+      "behavior": "iOS 18 Lock Screen & Dynamic Island showcase compact island, expanded island with step progress & timer, and Lock Screen Live Activity notification with one-tap interactive 'Approve Command' AppIntent button.",
+      "requiredSelectors": ["#dynamic-island-expanded", "#lockscreen-live-activity-card", "#btn-live-activity-approve", "#btn-live-activity-open"],
+      "minTouchTargetSelectors": ["#btn-live-activity-approve", "#btn-live-activity-open"],
+      "requiredEvidence": ["screenshot", "ax_tree"]
+    }
+  ]
+}

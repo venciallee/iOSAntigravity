@@ -1,0 +1,49 @@
+{
+  "stateId": "S05_ASK_QUESTION_MODAL",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "elements": {
+    "#ask-question-sheet": {
+      "exists": true,
+      "x": 16,
+      "y": 334.3,
+      "width": 361,
+      "height": 471.7,
+      "text": "CLARIFICATION NEEDED \u00b7 1 OF 1\nSingle-Select\nWhich transport channel should be prioritized when pairing a new iOS device "
+    },
+    "#option-card-0": {
+      "exists": true,
+      "x": 35,
+      "y": 460.3,
+      "width": 323,
+      "height": 94.7,
+      "text": "(Recommended) Dual-Channel Hybrid\nZero-config Google Cloud Relay + Direct LAN upgrade\n\u25cf"
+    },
+    "#option-card-1": {
+      "exists": true,
+      "x": 35,
+      "y": 567,
+      "width": 323,
+      "height": 74,
+      "text": "Google Cloud Relay Only\nConnect exclusively via antigravity.google.com/r/<id>\n\u25cb"
+    },
+    "#option-card-2": {
+      "exists": true,
+      "x": 35,
+      "y": 653,
+      "width": 323,
+      "height": 74,
+      "text": "Direct LAN / Tailscale Sidecar Only\nConnect directly to local language_server HTTPS port\n\u25cb"
+    },
+    "#btn-submit-answer": {
+      "exists": true,
+      "x": 35,
+      "y": 739,
+      "width": 323,
+      "height": 48,
+      "text": "Submit Answer to Cascade"
+    }
+  }
+}
