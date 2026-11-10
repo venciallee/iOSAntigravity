@@ -24,6 +24,19 @@ public enum CortexStepStatus: Int, Codable, Sendable, CaseIterable {
         }
     }
 
+    public var displayBadgeText: String {
+        switch self {
+        case .unspecified: return "IDLE"
+        case .pending: return "QUEUED"
+        case .inProgress: return "RUNNING"
+        case .done: return "DONE"
+        case .error: return "ERROR"
+        case .cancelled: return "STOPPED"
+        case .blocked: return "BLOCKED"
+        case .waiting: return "WAITING"
+        }
+    }
+
     public static func from(jsonName: String) -> CortexStepStatus {
         for status in Self.allCases where status.jsonName == jsonName {
             return status
@@ -83,17 +96,43 @@ public enum CortexStepType: Int, Codable, Sendable, CaseIterable {
         case .sendCommandInput: return "CORTEX_STEP_TYPE_SEND_COMMAND_INPUT"
         }
     }
+
+    /// True if this step represents a file read, directory scan, search, or file edit that can be
+    /// grouped into a collapsible File Evidence card when consecutive.
+    public var isGroupableEvidenceStep: Bool {
+        switch self {
+        case .codeAction, .viewFile, .listDirectory, .search, .viewContentChunk:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 public struct TaskBoundaryPayload: Codable, Sendable, Equatable {
     public var taskName: String
     public var taskStatus: String
     public var taskSummary: String
+    public var completedItems: Int
+    public var totalItems: Int
 
-    public init(taskName: String, taskStatus: String, taskSummary: String) {
+    public init(
+        taskName: String,
+        taskStatus: String,
+        taskSummary: String,
+        completedItems: Int = 4,
+        totalItems: Int = 5
+    ) {
         self.taskName = taskName
         self.taskStatus = taskStatus
         self.taskSummary = taskSummary
+        self.completedItems = completedItems
+        self.totalItems = totalItems
+    }
+
+    public var progressFraction: Double {
+        guard totalItems > 0 else { return 0 }
+        return min(1.0, max(0.0, Double(completedItems) / Double(totalItems)))
     }
 }
 
@@ -102,17 +141,20 @@ public struct PlannerResponsePayload: Codable, Sendable, Equatable {
     public var thinking: String?
     public var thinkingDurationSeconds: Double?
     public var messageId: String?
+    public var referencedFiles: [String]
 
     public init(
         response: String,
         thinking: String? = nil,
         thinkingDurationSeconds: Double? = nil,
-        messageId: String? = nil
+        messageId: String? = nil,
+        referencedFiles: [String] = []
     ) {
         self.response = response
         self.thinking = thinking
         self.thinkingDurationSeconds = thinkingDurationSeconds
         self.messageId = messageId
+        self.referencedFiles = referencedFiles
     }
 }
 
@@ -150,19 +192,62 @@ public struct CodeActionPayload: Codable, Sendable, Equatable {
     public var additions: Int
     public var deletions: Int
     public var isArtifactFile: Bool
+    public var startLine: Int?
+    public var endLine: Int?
+    public var diffPreviewLines: [String]
 
     public init(
         targetFileUri: String,
         description: String,
         additions: Int,
         deletions: Int,
-        isArtifactFile: Bool = false
+        isArtifactFile: Bool = false,
+        startLine: Int? = nil,
+        endLine: Int? = nil,
+        diffPreviewLines: [String] = []
     ) {
         self.targetFileUri = targetFileUri
         self.description = description
         self.additions = additions
         self.deletions = deletions
         self.isArtifactFile = isArtifactFile
+        self.startLine = startLine
+        self.endLine = endLine
+        self.diffPreviewLines = diffPreviewLines
+    }
+
+    public var fileName: String {
+        URL(string: targetFileUri)?.lastPathComponent ?? (targetFileUri as NSString).lastPathComponent
+    }
+}
+
+public struct ViewFilePayload: Codable, Sendable, Equatable {
+    public var fileUri: String
+    public var startLine: Int
+    public var endLine: Int
+    public var totalLines: Int
+
+    public init(fileUri: String, startLine: Int = 1, endLine: Int = 120, totalLines: Int = 240) {
+        self.fileUri = fileUri
+        self.startLine = startLine
+        self.endLine = endLine
+        self.totalLines = totalLines
+    }
+
+    public var fileName: String {
+        URL(string: fileUri)?.lastPathComponent ?? (fileUri as NSString).lastPathComponent
+    }
+}
+
+public struct SearchPayload: Codable, Sendable, Equatable {
+    public var query: String
+    public var scopeDirectory: String
+    public var matchCount: Int
+
+    public init(query: String, scopeDirectory: String, matchCount: Int) {
+        self.query = query
+        self.scopeDirectory = scopeDirectory
+        self.matchCount = matchCount
     }
 }
 
@@ -175,10 +260,14 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
     public var status: CortexStepStatus
     public var createdAt: Date
     public var userInput: String?
+    public var attachedMentions: [String]
+    public var isQueuedInOutbox: Bool
     public var plannerResponse: PlannerResponsePayload?
     public var taskBoundary: TaskBoundaryPayload?
     public var runCommand: RunCommandPayload?
     public var codeAction: CodeActionPayload?
+    public var viewFile: ViewFilePayload?
+    public var search: SearchPayload?
     public var requestedInteraction: RequestedInteraction?
 
     public init(
@@ -188,10 +277,14 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
         status: CortexStepStatus,
         createdAt: Date = Date(),
         userInput: String? = nil,
+        attachedMentions: [String] = [],
+        isQueuedInOutbox: Bool = false,
         plannerResponse: PlannerResponsePayload? = nil,
         taskBoundary: TaskBoundaryPayload? = nil,
         runCommand: RunCommandPayload? = nil,
         codeAction: CodeActionPayload? = nil,
+        viewFile: ViewFilePayload? = nil,
+        search: SearchPayload? = nil,
         requestedInteraction: RequestedInteraction? = nil
     ) {
         self.cascadeId = cascadeId
@@ -200,15 +293,68 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
         self.status = status
         self.createdAt = createdAt
         self.userInput = userInput
+        self.attachedMentions = attachedMentions
+        self.isQueuedInOutbox = isQueuedInOutbox
         self.plannerResponse = plannerResponse
         self.taskBoundary = taskBoundary
         self.runCommand = runCommand
         self.codeAction = codeAction
+        self.viewFile = viewFile
+        self.search = search
         self.requestedInteraction = requestedInteraction
     }
 }
 
-/// Summary item emitted by `JetboxSubscribeToSummaries`.
+/// Groups consecutive file reads, searches, and edits into a single collapsible evidence card
+/// while keeping user inputs, planner responses, terminal commands, and waiting gates standalone.
+public enum CascadeDisplayItem: Identifiable, Sendable, Equatable {
+    case single(CascadeStep)
+    case evidenceGroup(id: String, steps: [CascadeStep])
+
+    public var id: String {
+        switch self {
+        case .single(let step):
+            return step.id
+        case .evidenceGroup(let groupId, _):
+            return groupId
+        }
+    }
+
+    public static func buildDisplayItems(from steps: [CascadeStep]) -> [CascadeDisplayItem] {
+        var result: [CascadeDisplayItem] = []
+        var buffer: [CascadeStep] = []
+
+        func flushBuffer() {
+            guard !buffer.isEmpty else { return }
+            if buffer.count == 1, let only = buffer.first, only.type == .codeAction {
+                result.append(.single(only))
+            } else {
+                let firstIdx = buffer.first?.stepIndex ?? 0
+                let lastIdx = buffer.last?.stepIndex ?? 0
+                let cid = buffer.first?.cascadeId ?? "cas"
+                result.append(.evidenceGroup(id: "\(cid)-group-\(firstIdx)-\(lastIdx)", steps: buffer))
+            }
+            buffer.removeAll()
+        }
+
+        for step in steps {
+            if step.type == .taskBoundary {
+                // Rendered in sticky header banner AND inline timeline milestone
+                flushBuffer()
+                result.append(.single(step))
+            } else if step.type.isGroupableEvidenceStep && step.status != .waiting {
+                buffer.append(step)
+            } else {
+                flushBuffer()
+                result.append(.single(step))
+            }
+        }
+        flushBuffer()
+        return result
+    }
+}
+
+/// Summary item emitted by `JetboxSubscribeToSummaries` and `GetAllCascadeTrajectories`.
 public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
     public var id: String { cascadeId }
     public var cascadeId: String
@@ -221,6 +367,9 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
     public var isPinned: Bool
     public var isArchived: Bool
     public var pendingInteractionTitle: String?
+    public var lastMessagePreview: String?
+    public var totalAdditions: Int
+    public var totalDeletions: Int
 
     public init(
         cascadeId: String,
@@ -232,7 +381,10 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         updatedAt: Date = Date(),
         isPinned: Bool = false,
         isArchived: Bool = false,
-        pendingInteractionTitle: String? = nil
+        pendingInteractionTitle: String? = nil,
+        lastMessagePreview: String? = nil,
+        totalAdditions: Int = 0,
+        totalDeletions: Int = 0
     ) {
         self.cascadeId = cascadeId
         self.title = title
@@ -244,5 +396,8 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         self.isPinned = isPinned
         self.isArchived = isArchived
         self.pendingInteractionTitle = pendingInteractionTitle
+        self.lastMessagePreview = lastMessagePreview
+        self.totalAdditions = totalAdditions
+        self.totalDeletions = totalDeletions
     }
 }
