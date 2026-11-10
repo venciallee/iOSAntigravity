@@ -1,13 +1,196 @@
 import SwiftUI
 import AntigravityData
 
-/// Adaptive shell container (`AntigravityShellController`) that routes between
-/// Pairing (`S01`), Session List (`S02`), Cascade Message List & Composer (`S03`),
-/// Permission/Question Gates (`S04`/`S05`), Artifact Review (`S06`), and Turn Diffs (`S07`),
-/// or directly renders an isolated ESDD verification scene when launched with `--ui-verify`.
+public typealias AntigravityShellController = AntigravityRootContainerView
+
+/// Primary bottom navigation tabs in the Floating Liquid Glass Tab Bar.
+public enum ShellTab: String, CaseIterable, Sendable, Identifiable {
+    case agents
+    case automations
+    case settings
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .agents:      return "Agents"
+        case .automations: return "Automations"
+        case .settings:    return "Settings"
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .agents:      return "bubble.left"
+        case .automations: return "clock.arrow.circlepath"
+        case .settings:    return "slider.horizontal.3"
+        }
+    }
+
+    public var fabSymbolName: String {
+        switch self {
+        case .agents:      return "pencil"
+        case .automations: return "plus"
+        case .settings:    return "qrcode.viewfinder"
+        }
+    }
+
+    public var defaultFABAccessibilityId: String {
+        switch self {
+        case .agents:      return "fab-compose"
+        case .automations: return "fab-add-automation"
+        case .settings:    return "fab-pair-host"
+        }
+    }
+}
+
+/// Shared UE v2.0 surface, border, and ink tokens complementing `AntigravityTheme`.
+enum UEChromePalette {
+    static let surfacePopover = Color(red: 0x25 / 255.0, green: 0x27 / 255.0, blue: 0x2F / 255.0)
+    static let surfaceSheet = Color(red: 0x17 / 255.0, green: 0x18 / 255.0, blue: 0x1D / 255.0)
+    static let surfaceSheetGroup = Color(red: 0x20 / 255.0, green: 0x22 / 255.0, blue: 0x29 / 255.0)
+    static let surfacePill = Color(red: 0x17 / 255.0, green: 0x19 / 255.0, blue: 0x1F / 255.0)
+    static let surfaceSubtleBox = Color(red: 0x1B / 255.0, green: 0x1D / 255.0, blue: 0x23 / 255.0)
+    static let surfaceGlassTab = Color(red: 0x1B / 255.0, green: 0x1D / 255.0, blue: 0x23 / 255.0)
+    static let surfaceActiveTabSlot = Color(red: 0x31 / 255.0, green: 0x34 / 255.0, blue: 0x3E / 255.0)
+    static let inkOnPrimaryCTA = Color(red: 0x0A / 255.0, green: 0x0E / 255.0, blue: 0x17 / 255.0)
+    static let textPrimary = Color(red: 0xF5 / 255.0, green: 0xF7 / 255.0, blue: 0xFA / 255.0)
+    static let textBody = Color(red: 0xD5 / 255.0, green: 0xD8 / 255.0, blue: 0xE2 / 255.0)
+    static let textSecondary = Color(red: 0x8E / 255.0, green: 0x93 / 255.0, blue: 0xA2 / 255.0)
+    static let textMuted = Color(red: 0x7C / 255.0, green: 0x81 / 255.0, blue: 0x90 / 255.0)
+    static let cardBorder = Color.white.opacity(0.08)
+    static let subtleDivider = Color.white.opacity(0.07)
+}
+
+/// Signature UE01 / UE06 global bottom navigation chrome:
+/// Left Floating Liquid Glass 3-Tab Capsule (`Agents` | `Automations` | `Settings`)
+/// + Detached Right `56×56pt` Periwinkle (`AntigravityTheme.accentPeriwinkle`) Circular FAB.
+public struct AntigravityFloatingTabBar: View {
+    public let selectedTab: ShellTab
+    public let tabBarAccessibilityId: String
+    public let fabAccessibilityId: String
+    public var onSelectTab: (ShellTab) -> Void
+    public var onTapFAB: () -> Void
+
+    public init(
+        selectedTab: ShellTab,
+        tabBarAccessibilityId: String = "floating-tab-bar",
+        fabAccessibilityId: String? = nil,
+        onSelectTab: @escaping (ShellTab) -> Void = { _ in },
+        onTapFAB: @escaping () -> Void = {}
+    ) {
+        self.selectedTab = selectedTab
+        self.tabBarAccessibilityId = tabBarAccessibilityId
+        self.fabAccessibilityId = fabAccessibilityId ?? selectedTab.defaultFABAccessibilityId
+        self.onSelectTab = onSelectTab
+        self.onTapFAB = onTapFAB
+    }
+
+    public var body: some View {
+        HStack(spacing: 12) {
+            // Left: Floating Liquid Glass 3-Tab Capsule
+            HStack(spacing: 2) {
+                ForEach(ShellTab.allCases) { tab in
+                    let isSelected = (tab == selectedTab)
+                    Button {
+                        onSelectTab(tab)
+                    } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: tab.symbolName)
+                                .font(.system(size: 17, weight: .semibold))
+                            Text(tab.title)
+                                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(
+                            isSelected
+                                ? AntigravityTheme.accentPeriwinkle
+                                : Color(red: 0xC2 / 255.0, green: 0xC6 / 255.0, blue: 0xD2 / 255.0)
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(
+                            Group {
+                                if isSelected {
+                                    Capsule()
+                                        .fill(UEChromePalette.surfaceActiveTabSlot)
+                                }
+                            }
+                        )
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("tab-item-\(tab.rawValue)")
+                }
+            }
+            .padding(4)
+            .frame(height: 60)
+            .background(
+                ZStack {
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                    Capsule()
+                        .fill(UEChromePalette.surfaceGlassTab.opacity(0.90))
+                }
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.45), radius: 18, x: 0, y: 8)
+            .accessibilityIdentifier(tabBarAccessibilityId)
+
+            // Right: Detached 56x56pt Periwinkle Circular FAB
+            Button {
+                onTapFAB()
+            } label: {
+                Image(systemName: selectedTab.fabSymbolName)
+                    .font(.system(size: selectedTab == .automations ? 22 : 19, weight: .semibold))
+                    .foregroundStyle(UEChromePalette.inkOnPrimaryCTA)
+                    .frame(width: 56, height: 56)
+                    .background(
+                        Circle()
+                            .fill(AntigravityTheme.accentPeriwinkle)
+                    )
+                    .shadow(color: Color.black.opacity(0.40), radius: 14, x: 0, y: 6)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(fabAccessibilityId)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
+    }
+}
+
+/// Adaptive shell container (`AntigravityShellController`) routing all 13 UE v2.0 flows
+/// interactively or rendering deterministic isolated ESDD verification scenes (`UE01`..`UE13`).
 public struct AntigravityRootContainerView: View {
     @Bindable public var store: AntigravitySessionStore
     @Binding public var activeVerifyCase: ESDDVerifySceneCase?
+
+    @State private var selectedTab: ShellTab = .agents
+    @State private var activePushedScreen: PushedDestination?
+    @State private var activeModalSheet: ModalSheetDestination?
+
+    private enum PushedDestination: Identifiable, Equatable {
+        case projectDetail(String)
+        case chat(String)
+
+        var id: String {
+            switch self {
+            case .projectDetail(let slug): return "project-\(slug)"
+            case .chat(let convId):        return "chat-\(convId)"
+            }
+        }
+    }
+
+    private enum ModalSheetDestination: String, Identifiable {
+        case displayOptions
+        case createProject
+        case contextMenuPreview
+
+        var id: String { rawValue }
+    }
 
     public init(
         store: AntigravitySessionStore,
@@ -28,57 +211,112 @@ public struct AntigravityRootContainerView: View {
         .background(AntigravityTheme.canvasObsidian.ignoresSafeArea())
     }
 
+    // MARK: - Interactive Navigation Shell
+
     @ViewBuilder
     private var interactiveNavigationView: some View {
-        switch store.currentRoute {
-        case .pairingQR:
-            RemotePairingViewController(store: store)
-        case .workspaceHome:
-            WorkspaceHomeViewController(store: store)
-        case .cascadeChat:
-            CascadeChatViewController(store: store)
-        case .artifactInspector:
-            ArtifactReviewViewController(store: store)
-        case .turnDiffInspector:
-            TurnDiffViewController(store: store)
+        ZStack {
+            if let pushed = activePushedScreen {
+                switch pushed {
+                case .projectDetail(let projectSlug):
+                    ProjectDetailViewController(
+                        store: store,
+                        projectSlug: projectSlug,
+                        onBack: { activePushedScreen = nil },
+                        onOpenConversation: { convId in
+                            activePushedScreen = .chat(convId)
+                        }
+                    )
+                case .chat:
+                    CascadeChatViewController(store: store)
+                }
+            } else {
+                switch selectedTab {
+                case .agents:
+                    AgentsHomeViewController(
+                        store: store,
+                        onSelectTab: { tab in selectedTab = tab },
+                        onOpenDisplayOptions: { activeModalSheet = .displayOptions },
+                        onOpenNewProject: { activeModalSheet = .createProject },
+                        onOpenProjectDetail: { slug in activePushedScreen = .projectDetail(slug) },
+                        onOpenContextMenuPreview: { activeModalSheet = .contextMenuPreview },
+                        onOpenConversation: { convId in activePushedScreen = .chat(convId) }
+                    )
+                case .automations:
+                    AutomationsViewController(
+                        store: store,
+                        onSelectTab: { tab in selectedTab = tab },
+                        onOpenDisplayOptions: { activeModalSheet = .displayOptions }
+                    )
+                case .settings:
+                    VStack(spacing: 0) {
+                        RemotePairingViewController(
+                            store: store,
+                            onConnected: { selectedTab = .agents }
+                        )
+                        Spacer(minLength: 0)
+                        AntigravityFloatingTabBar(
+                            selectedTab: .settings,
+                            onSelectTab: { tab in selectedTab = tab },
+                            onTapFAB: { selectedTab = .agents }
+                        )
+                    }
+                    .background(AntigravityTheme.canvasObsidian)
+                }
+            }
+        }
+        .sheet(item: $activeModalSheet) { sheet in
+            switch sheet {
+            case .displayOptions:
+                DisplayOptionsSheetView(
+                    store: store,
+                    onDismiss: { activeModalSheet = nil }
+                )
+            case .createProject:
+                CreateProjectSheetView(
+                    store: store,
+                    onDismiss: { activeModalSheet = nil }
+                )
+            case .contextMenuPreview:
+                ConversationContextPreviewMenu(
+                    store: store,
+                    onDismiss: { activeModalSheet = nil }
+                )
+            }
         }
     }
+
+    // MARK: - Isolated Deterministic ESDD Scenes (UE01 .. UE13)
 
     @ViewBuilder
     private func isolatedESDDSceneView(for verifyCase: ESDDVerifySceneCase) -> some View {
         switch verifyCase {
-        case .pairingQR:
-            RemotePairingViewController(store: store)
-        case .workspaceHome:
-            WorkspaceHomeViewController(store: store)
-        case .cascadeStreaming:
+        case .agentsHome:
+            AgentsHomeViewController(store: store)
+        case .displayOptions:
+            DisplayOptionsSheetView(store: store)
+        case .contextMenuPin:
+            ConversationContextPreviewMenu(store: store)
+        case .projectDetail:
+            ProjectDetailViewController(store: store)
+        case .createProject:
+            CreateProjectSheetView(store: store)
+        case .automations:
+            AutomationsViewController(store: store)
+        case .chatAndComposer:
             CascadeChatViewController(store: store)
-        case .permissionGate:
-            InteractionGateSheetController(store: store, mode: .permissionGate)
-        case .askQuestion:
-            InteractionGateSheetController(store: store, mode: .askQuestion)
-        case .artifactPlan:
-            ArtifactReviewViewController(store: store)
-        case .turnDiff:
-            TurnDiffViewController(store: store)
-        case .liveActivity:
-            AntigravityLiveActivityView(
-                attributes: AntigravityActivityAttributes(
-                    cascadeId: store.activeCascadeId,
-                    cascadeTitle: "Implement Native Connect-RPC & Live Activity",
-                    hostName: store.activeHost.hostname,
-                    workspaceName: "venciallee/iOSAntigravity",
-                    branchName: "feat/connect-rpc-client"
-                ),
-                state: AntigravityActivityAttributes.ContentState(
-                    statusRaw: "WAITING",
-                    currentStepIndex: 24,
-                    totalSteps: 28,
-                    activeToolAction: "Waiting for approval: esdd-verify.py",
-                    pendingApprovalCommand: "python3 verification/esdd-verify.py --suite all",
-                    elapsedSeconds: 84
-                )
-            )
+        case .addContext:
+            AddContextSheetView(store: store)
+        case .modelAndMode:
+            ModelAndModeSheetView(store: store)
+        case .structuredQuestion:
+            StructuredQuestionCardView(store: store)
+        case .planReview:
+            ImplementationPlanReviewViewController(store: store)
+        case .turnDiffReview:
+            TurnDiffReviewViewController(store: store)
+        case .liveActivitySpec:
+            AntigravityLiveActivitySpecShowcaseView(store: store)
         }
     }
 }

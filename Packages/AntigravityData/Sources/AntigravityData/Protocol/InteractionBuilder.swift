@@ -1,12 +1,50 @@
 import Foundation
 
+/// Policy helper for mobile Safe Auto-Accept of read-only workspace operations.
+public enum SafeAutoAcceptPolicy: Sendable {
+    private static let safeGitSubcommands: Set<String> = [
+        "status", "diff", "log", "branch", "show", "rev-parse"
+    ]
+
+    private static let safeExecutables: Set<String> = [
+        "ls", "pwd", "cat", "head", "tail", "wc", "which", "rg", "grep", "find"
+    ]
+
+    private static let shellChainTokens: [String] = [
+        "&&", "||", ";", "|", ">", "<", "$(", "`"
+    ]
+
+    /// Returns `true` only for deterministic read-only commands without shell chaining or redirection.
+    public static func isSafeReadOnlyCommand(_ commandLine: String) -> Bool {
+        let trimmed = commandLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        for token in shellChainTokens where trimmed.contains(token) {
+            return false
+        }
+        let parts = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let binary = parts.first else { return false }
+        if binary == "git" {
+            guard parts.count >= 2 else { return false }
+            return safeGitSubcommands.contains(parts[1])
+        }
+        if binary == "find" && (parts.contains("-delete") || parts.contains("-exec")) {
+            return false
+        }
+        return safeExecutables.contains(binary)
+    }
+
+    public static func canAutoAccept(step: CascadeStep, allowedWorkspaceRoots: [String]) -> Bool {
+        InteractionBuilder.canSafeAutoAccept(step: step, allowedWorkspaceRoots: allowedWorkspaceRoots)
+    }
+}
+
 /// Builds authoritative `HandleCascadeUserInteraction` request payloads matching
 /// the exact oneof member declared in `step.requestedInteraction`.
 ///
 /// As verified against Antigravity's LanguageServer (`exa.cortex_pb.CascadeUserInteraction`),
 /// answering with any member other than the one declared in `requestedInteraction` is
 /// silently dropped by the server.
-public enum InteractionBuilder {
+public enum InteractionBuilder: Sendable {
 
     private static let readOnlyVerbs: Set<String> = [
         "read", "list", "view", "search", "stat", "glob", "grep", "find", "fetch", "get"
@@ -14,60 +52,85 @@ public enum InteractionBuilder {
 
     public static func buildPayload(
         step: CascadeStep,
-        decision: InteractionDecision
-    ) -> [String: Any]? {
+        decision: InteractionDecision,
+        workspaceUri: String? = nil
+    ) -> CascadeUserInteractionPayload? {
         guard let requested = step.requestedInteraction else {
             return nil
         }
 
-        var payload: [String: Any] = [
-            "trajectoryId": step.cascadeId,
-            "stepIndex": step.stepIndex
-        ]
-
         if decision == .reject {
             switch requested.kind {
             case .permission:
-                payload["permission"] = ["allow": false]
+                return CascadeUserInteractionPayload(
+                    cascadeId: step.cascadeId,
+                    stepIndex: step.stepIndex,
+                    kind: .permission,
+                    workspaceUri: workspaceUri,
+                    permission: .init(allow: false)
+                )
             case .filePermission:
-                payload["filePermission"] = ["allow": false]
+                return CascadeUserInteractionPayload(
+                    cascadeId: step.cascadeId,
+                    stepIndex: step.stepIndex,
+                    kind: .filePermission,
+                    workspaceUri: workspaceUri,
+                    filePermission: .init(allow: false, absolutePathUri: requested.filePermission?.absolutePathUri)
+                )
             case .runCommand:
-                payload["runCommand"] = ["confirm": false]
-            case .deploy:
-                payload["deploy"] = ["cancel": true]
+                let proposed = requested.runCommand?.proposedCommandLine
+                    ?? step.runCommand?.proposedCommandLine
+                    ?? step.runCommand?.commandLine
+                    ?? ""
+                return CascadeUserInteractionPayload(
+                    cascadeId: step.cascadeId,
+                    stepIndex: step.stepIndex,
+                    kind: .runCommand,
+                    workspaceUri: workspaceUri,
+                    runCommand: .init(
+                        confirm: false,
+                        proposedCommandLine: proposed,
+                        submittedCommandLine: proposed,
+                        faceIdVerified: false
+                    )
+                )
             default:
-                payload[requested.kind.rawValue] = ["confirm": false]
+                return CascadeUserInteractionPayload(
+                    cascadeId: step.cascadeId,
+                    stepIndex: step.stepIndex,
+                    kind: requested.kind,
+                    workspaceUri: workspaceUri,
+                    genericConfirm: false
+                )
             }
-            return payload
         }
 
         switch requested.kind {
         case .permission:
             guard let spec = requested.permission else { return nil }
+            var grants: [String] = []
             if decision == .alwaysAllowInTurn && spec.persistSuggestionType != .blocked {
                 let patternTarget = spec.suggestedPersistPattern ?? spec.target
-                let grantPattern = "\(spec.action)(\(patternTarget))"
-                payload["permission"] = [
-                    "allow": true,
-                    "turnGrants": [
-                        "allow": [grantPattern],
-                        "deny": [String]()
-                    ]
-                ]
-            } else {
-                payload["permission"] = ["allow": true]
+                grants = ["\(spec.action)(\(patternTarget))"]
             }
+            return CascadeUserInteractionPayload(
+                cascadeId: step.cascadeId,
+                stepIndex: step.stepIndex,
+                kind: .permission,
+                workspaceUri: workspaceUri,
+                permission: .init(allow: true, grantPatterns: grants)
+            )
 
         case .filePermission:
-            let uri = requested.filePermission?.absolutePathUri ?? ""
-            var fp: [String: Any] = [
-                "allow": true,
-                "scope": decision == .alwaysAllowInTurn ? "PERMISSION_SCOPE_TURN" : "PERMISSION_SCOPE_ONCE"
-            ]
-            if !uri.isEmpty {
-                fp["absolutePathUri"] = uri
-            }
-            payload["filePermission"] = fp
+            let uri = requested.filePermission?.absolutePathUri
+            let scope = decision == .alwaysAllowInTurn ? "PERMISSION_SCOPE_TURN" : "PERMISSION_SCOPE_ONCE"
+            return CascadeUserInteractionPayload(
+                cascadeId: step.cascadeId,
+                stepIndex: step.stepIndex,
+                kind: .filePermission,
+                workspaceUri: workspaceUri,
+                filePermission: .init(allow: true, scope: scope, absolutePathUri: uri)
+            )
 
         case .runCommand:
             let proposed = requested.runCommand?.proposedCommandLine
@@ -80,30 +143,44 @@ public enum InteractionBuilder {
             } else {
                 submitted = proposed
             }
-            payload["runCommand"] = [
-                "confirm": true,
-                "proposedCommandLine": proposed,
-                "submittedCommandLine": submitted
-            ]
+            let faceId = (decision == .allowWithFaceID)
+            return CascadeUserInteractionPayload(
+                cascadeId: step.cascadeId,
+                stepIndex: step.stepIndex,
+                kind: .runCommand,
+                workspaceUri: workspaceUri,
+                runCommand: .init(
+                    confirm: true,
+                    proposedCommandLine: proposed,
+                    submittedCommandLine: submitted,
+                    faceIdVerified: faceId
+                )
+            )
 
         case .askQuestion, .elicitation:
             guard case .answerQuestion(let selectedOptions, let customWriteIn) = decision else {
                 return nil
             }
-            var qa: [String: Any] = ["selectedOptions": selectedOptions]
-            if let custom = customWriteIn, !custom.isEmpty {
-                qa["customResponse"] = custom
-            }
-            payload["askQuestion"] = qa
-
-        case .deploy:
-            payload["deploy"] = ["cancel": false]
+            return CascadeUserInteractionPayload(
+                cascadeId: step.cascadeId,
+                stepIndex: step.stepIndex,
+                kind: requested.kind,
+                workspaceUri: workspaceUri,
+                askQuestion: .init(
+                    selectedOptions: selectedOptions,
+                    customResponse: (customWriteIn?.isEmpty == false) ? customWriteIn : nil
+                )
+            )
 
         default:
-            payload[requested.kind.rawValue] = ["confirm": true]
+            return CascadeUserInteractionPayload(
+                cascadeId: step.cascadeId,
+                stepIndex: step.stepIndex,
+                kind: requested.kind,
+                workspaceUri: workspaceUri,
+                genericConfirm: true
+            )
         }
-
-        return payload
     }
 
     /// Evaluates whether a `WAITING` step is eligible for Safe Auto-Accept on mobile.

@@ -1,17 +1,29 @@
 import Foundation
 import Observation
 
-/// Active navigation destination in `AntigravityShellController`.
-public enum AntigravityNavigationRoute: String, Sendable, Equatable {
-    case pairingQR
-    case workspaceHome
-    case cascadeChat
-    case artifactInspector
-    case turnDiffInspector
+/// Active navigation destination in `AntigravityShellController` across all 13 UE screens.
+public enum AntigravityNavigationRoute: Sendable, Equatable, Hashable {
+    case tabRoot
+    case projectDetail(String)
+    case cascadeChat(String)
+    case planReview
+    case turnDiffReview
+    case pairingSettings
+
+    // Compatibility aliases
+    public static var workspaceHome: AntigravityNavigationRoute { .tabRoot }
+    public static var artifactInspector: AntigravityNavigationRoute { .planReview }
+    public static var turnDiffInspector: AntigravityNavigationRoute { .turnDiffReview }
+    public static var pairingQR: AntigravityNavigationRoute { .pairingSettings }
 }
 
 /// Modal sheet presentation state in `AntigravityShellController`.
 public enum AntigravityModalSheet: Identifiable, Sendable, Equatable {
+    case displayOptions
+    case contextMenuPreview(cascadeId: String)
+    case createProject
+    case addContext
+    case modelAndMode
     case permissionGate(stepIndex: Int)
     case askQuestion(stepIndex: Int)
     case modelConfigPicker
@@ -20,6 +32,11 @@ public enum AntigravityModalSheet: Identifiable, Sendable, Equatable {
 
     public var id: String {
         switch self {
+        case .displayOptions: return "display-options"
+        case .contextMenuPreview(let cid): return "context-menu-\(cid)"
+        case .createProject: return "create-project"
+        case .addContext: return "add-context"
+        case .modelAndMode: return "model-and-mode"
         case .permissionGate(let idx): return "permission-\(idx)"
         case .askQuestion(let idx): return "question-\(idx)"
         case .modelConfigPicker: return "model-picker"
@@ -29,51 +46,56 @@ public enum AntigravityModalSheet: Identifiable, Sendable, Equatable {
     }
 }
 
-/// Inline review annotation attached to a specific line in `TurnDiffViewController`.
-public struct DiffLineComment: Codable, Sendable, Equatable, Identifiable {
-    public var id: UUID
-    public var filePath: String
-    public var lineNumber: Int
-    public var author: String
-    public var commentText: String
-    public var createdAt: Date
-
-    public init(
-        id: UUID = UUID(),
-        filePath: String,
-        lineNumber: Int,
-        author: String = "You (iOS)",
-        commentText: String,
-        createdAt: Date = Date()
-    ) {
-        self.id = id
-        self.filePath = filePath
-        self.lineNumber = lineNumber
-        self.author = author
-        self.commentText = commentText
-        self.createdAt = createdAt
-    }
-}
-
-/// Central `@Observable` state coordinator for `iOSAntigravity`.
-/// Drives Session List (`WorkspaceHomeViewController`), Message List (`CascadeChatViewController`),
-/// Composer Input Box (`ChatComposerView`), Permission Gates, Artifacts, and Turn Diffs.
+/// Central `@Observable` state coordinator for `iOSAntigravity` (v2.0 UE Aligned).
+/// Drives all 13 UE screens: Agents Home (`UE01`), Display Options (`UE02`), Long-Press & Pin (`UE03`),
+/// Project Detail (`UE04`), Create New Project (`UE05`), Automations (`UE06`), Chat & Composer (`UE07`),
+/// Add Context (`UE08`), Model & Mode (`UE09`), Structured Multi-Step Question (`UE10`),
+/// Implementation Plan Review (`UE11`), Turn Diff Line Review (`UE12`), and Live Activity (`UE13`).
 @MainActor
 @Observable
 public final class AntigravitySessionStore {
-    // MARK: - Host & Workspace State
-    public var activeHost: RemoteHostInstance
-    public var workspaces: [WorkspaceInfo]
-    public var selectedWorkspaceUri: String
 
-    // MARK: - Session List State (会话列表)
-    public var summaries: [CascadeSummary]
+    // MARK: - Top-Level Navigation & Sheet State
+    public var selectedTab: PrimaryTab = .agents
+    public var activeRoute: AntigravityNavigationRoute = .tabRoot
+    public var presentedSheet: AntigravityModalSheet? = nil
+
+    public var currentRoute: AntigravityNavigationRoute {
+        get { activeRoute }
+        set { activeRoute = newValue }
+    }
+
+    // MARK: - Agents Home, Display Options & Search State (`UE01`, `UE02`, `UE03`)
+    public var quickFilter: AgentsQuickFilter = .all
+    public var displayOptions: AgentDisplayOptions = AgentDisplayOptions()
+    public var isSortPopoverPresented: Bool = true
     public var searchQuery: String = ""
     public var selectedFilterCategory: SessionFilterCategory = .all
     public var selectedWorktreeFilter: String? = nil
     public var isRefreshingSummaries: Bool = false
+    public var contextMenuTargetCascadeId: String = "cas-flaky-settlement"
+    public var swipePreviewCascadeId: String = "cas-upgrade-go"
 
-    // MARK: - Active Conversation & Message List State (消息列表)
+    // MARK: - Hosts, Projects & Create Project State (`UE01`, `UE04`, `UE05`)
+    public var hosts: [RemoteHostInstance]
+    public var activeHost: RemoteHostInstance
+    public var projects: [ProjectWorkspace]
+    public var selectedProjectId: String = "ledger-svc"
+    public var selectedProjectTab: ProjectDetailTab = .active
+    public var newProjectDraft: NewProjectDraft = NewProjectDraft()
+    public var availableGitHubRepos: [GitHubRepoItem] = GitHubRepoItem.sampleCatalog
+    public var workspaces: [WorkspaceInfo]
+    public var selectedWorkspaceUri: String
+
+    // MARK: - Conversations, Automations & Context State (`UE01`, `UE06`, `UE08`)
+    public var summaries: [CascadeSummary]
+    public var automations: [AutomationItem]
+    public var automationPromptDraft: String = ""
+    public var contextCandidates: [ContextCandidateItem]
+    public var contextSearchQuery: String = ""
+    public var selectedContextCategoryFilter: ContextCategory? = nil
+
+    // MARK: - Active Trajectory & Message List State (`UE07`)
     public var activeCascadeId: String
     public var stepsByCascadeId: [String: [CascadeStep]] = [:]
     public var expandedThinkingStepIds: Set<String> = []
@@ -82,24 +104,32 @@ public final class AntigravitySessionStore {
     public var isAutoScrollPinnedToBottom: Bool = true
     public var unreadStreamingStepCount: Int = 0
 
-    // MARK: - Composer Input Box State (输入框)
+    // MARK: - Composer & Model Config State (`UE07`, `UE08`, `UE09`)
     public var composerDraftText: String = ""
     public var composerAttachments: [ComposerAttachmentChip] = []
     public var selectedModelConfig: CascadeModelConfig
     public var isSlashPopupDismissedManually: Bool = false
 
-    // MARK: - Permission Gate, Artifacts & Diff Inspector State
+    // MARK: - Structured Multi-Step Question State (`UE10`)
+    public var questionSteps: [StructuredQuestionStepItem]
+    public var activeQuestionStepIndex: Int = 1
+    public var questionFreeformReplyDraft: String = ""
+
+    // MARK: - Implementation Plan Review State (`UE11`)
     public var safeAutoAcceptEnabled: Bool
     public var activeTurnGrants: Set<String> = ["ReadOnlyWorkspace", "verification/*"]
     public var activeArtifacts: [ArtifactSnapshot]
     public var selectedArtifactPath: String = "/brain/implementation_plan.md"
-    public var activeTurnDiffs: [FilePatchDiff]
-    public var selectedDiffFilePath: String = "Packages/AntigravityData/Protocol/ConnectEnvelope.swift"
-    public var diffComments: [DiffLineComment] = []
+    public var planChanges: [PlanProposedFileChange]
+    public var planComments: [PlanInlineComment]
 
-    // MARK: - Navigation & Modal State
-    public var currentRoute: AntigravityNavigationRoute = .cascadeChat
-    public var presentedSheet: AntigravityModalSheet? = nil
+    // MARK: - Multi-Turn Line-Level Diff Review State (`UE12`)
+    public var activeTurnDiffs: [FilePatchDiff]
+    public var selectedDiffTurn: Int = 3
+    public var selectedDiffFileIndex: Int = 0
+    public var selectedDiffLineNumber: Int? = 29
+    public var activeLineCommentDraft: String
+    public var diffComments: [DiffLineComment] = []
     public var lastDispatchedInteraction: CascadeUserInteractionPayload? = nil
 
     // MARK: - Dependencies
@@ -107,57 +137,113 @@ public final class AntigravitySessionStore {
     private var rpcClient: AntigravityRPCClient?
 
     public init(
+        hosts: [RemoteHostInstance] = [],
         activeHost: RemoteHostInstance,
+        projects: [ProjectWorkspace] = [],
         workspaces: [WorkspaceInfo] = [],
         selectedWorkspaceUri: String = "",
         summaries: [CascadeSummary] = [],
+        automations: [AutomationItem] = [],
+        contextCandidates: [ContextCandidateItem] = [],
+        questionSteps: [StructuredQuestionStepItem] = [],
+        activeQuestionStepIndex: Int = 1,
+        planChanges: [PlanProposedFileChange] = [],
+        planComments: [PlanInlineComment] = [],
         activeCascadeId: String = "",
+        stepsByCascadeId: [String: [CascadeStep]] = [:],
         activeSteps: [CascadeStep] = [],
         activeArtifacts: [ArtifactSnapshot] = [],
         activeTurnDiffs: [FilePatchDiff] = [],
+        selectedDiffTurn: Int = 3,
+        selectedDiffFileIndex: Int = 0,
+        activeLineCommentDraft: String = "",
         selectedModelConfig: CascadeModelConfig = CascadeModelConfig.catalog[0],
         safeAutoAcceptEnabled: Bool = true,
         projectionStore: LocalProjectionStore = LocalProjectionStore()
     ) {
+        self.hosts = hosts.isEmpty ? [activeHost] : hosts
         self.activeHost = activeHost
+        self.projects = projects
         self.workspaces = workspaces
         self.selectedWorkspaceUri = selectedWorkspaceUri
         self.summaries = summaries
+        self.automations = automations
+        self.contextCandidates = contextCandidates
+        self.questionSteps = questionSteps
+        self.activeQuestionStepIndex = activeQuestionStepIndex
+        self.planChanges = planChanges
+        self.planComments = planComments
         self.activeCascadeId = activeCascadeId
-        if !activeCascadeId.isEmpty {
-            self.stepsByCascadeId[activeCascadeId] = activeSteps
+        var mergedSteps = stepsByCascadeId
+        if !activeCascadeId.isEmpty && mergedSteps[activeCascadeId] == nil && !activeSteps.isEmpty {
+            mergedSteps[activeCascadeId] = activeSteps
         }
+        self.stepsByCascadeId = mergedSteps
         self.activeArtifacts = activeArtifacts
         self.activeTurnDiffs = activeTurnDiffs
+        self.selectedDiffTurn = selectedDiffTurn
+        self.selectedDiffFileIndex = selectedDiffFileIndex
+        self.activeLineCommentDraft = activeLineCommentDraft
         self.selectedModelConfig = selectedModelConfig
         self.safeAutoAcceptEnabled = safeAutoAcceptEnabled
         self.projectionStore = projectionStore
         self.rpcClient = AntigravityRPCClient(
-            baseURL: activeHost.endpointURL,
-            csrfToken: "csrf-golden-star-session-token"
+            host: activeHost,
+            csrfToken: "csrf-antigravity-ios-session-token"
         )
     }
 
-    // MARK: - Computed Properties for Session List (会话列表)
+    // MARK: - Computed Properties for Agents Home & Project Hub (`UE01`, `UE02`, `UE04`)
 
     public var currentWorkspace: WorkspaceInfo? {
         workspaces.first(where: { $0.workspaceUri == selectedWorkspaceUri }) ?? workspaces.first
     }
 
-    public var availableWorktrees: [String] {
-        currentWorkspace?.worktrees ?? ["main"]
+    public var selectedProject: ProjectWorkspace? {
+        projects.first(where: { $0.id == selectedProjectId }) ?? projects.first
     }
 
-    /// Filtered and sorted conversation summaries for `WorkspaceHomeViewController`.
+    public var availableWorktrees: [String] {
+        selectedProject?.worktrees ?? currentWorkspace?.worktrees ?? ["main"]
+    }
+
+    public var runningCount: Int {
+        summaries.filter { !$0.isArchived && ($0.status == .inProgress || $0.status == .pending) }.count
+    }
+
+    public var runningCascadeCount: Int { runningCount }
+
+    public var needsYouCount: Int {
+        summaries.filter { !$0.isArchived && $0.status == .waiting }.count
+    }
+
+    public var waitingApprovalCount: Int { needsYouCount }
+
+    public var unreadCount: Int {
+        summaries.filter { !$0.isArchived && $0.isUnread }.count
+    }
+
+    /// Filtered and sorted conversation summaries driven by `quickFilter`, `displayOptions`, and `searchQuery`.
     public var filteredSummaries: [CascadeSummary] {
         summaries
-            .filter { !$0.isArchived }
             .filter { summary in
-                if !selectedWorkspaceUri.isEmpty && summary.workspaceUri != selectedWorkspaceUri {
-                    return false
+                if displayOptions.archivedOnly {
+                    if !summary.isArchived { return false }
+                } else {
+                    if summary.isArchived { return false }
                 }
                 if let branch = selectedWorktreeFilter, !branch.isEmpty, summary.branchName != branch {
                     return false
+                }
+                switch quickFilter {
+                case .all:
+                    break
+                case .running:
+                    if summary.status != .inProgress && summary.status != .pending { return false }
+                case .needsYou:
+                    if summary.status != .waiting { return false }
+                case .unread:
+                    if !summary.isUnread { return false }
                 }
                 switch selectedFilterCategory {
                 case .all:
@@ -174,18 +260,22 @@ public final class AntigravitySessionStore {
                 let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if !q.isEmpty {
                     let matchesTitle = summary.title.lowercased().contains(q)
+                    let matchesProject = summary.projectSlug.lowercased().contains(q)
+                    let matchesSubtitle = summary.statusSubtitle.lowercased().contains(q)
                     let matchesBranch = summary.branchName.lowercased().contains(q)
-                    let matchesPending = (summary.pendingInteractionTitle ?? "").lowercased().contains(q)
                     let matchesPreview = (summary.lastMessagePreview ?? "").lowercased().contains(q)
-                    return matchesTitle || matchesBranch || matchesPending || matchesPreview
+                    return matchesTitle || matchesProject || matchesSubtitle || matchesBranch || matchesPreview
                 }
                 return true
             }
             .sorted { lhs, rhs in
-                if lhs.status == .waiting && rhs.status != .waiting { return true }
-                if rhs.status == .waiting && lhs.status != .waiting { return false }
-                if lhs.isPinned != rhs.isPinned { return lhs.isPinned && !rhs.isPinned }
-                return lhs.updatedAt > rhs.updatedAt
+                switch displayOptions.sortBy {
+                case .title:
+                    let cmp = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+                    return displayOptions.newestFirst ? (cmp == .orderedAscending) : (cmp == .orderedDescending)
+                case .lastUpdated, .dateCreated:
+                    return displayOptions.newestFirst ? (lhs.updatedAt > rhs.updatedAt) : (lhs.updatedAt < rhs.updatedAt)
+                }
             }
     }
 
@@ -197,18 +287,73 @@ public final class AntigravitySessionStore {
         filteredSummaries.filter { !$0.isPinned }
     }
 
-    public var waitingApprovalCount: Int {
-        summaries.filter { !$0.isArchived && $0.status == .waiting }.count
+    public func unpinnedSummaries(forProject projectSlug: String) -> [CascadeSummary] {
+        unpinnedSummaries.filter { $0.projectSlug == projectSlug }
     }
 
-    public var runningCascadeCount: Int {
-        summaries.filter { !$0.isArchived && ($0.status == .inProgress || $0.status == .pending) }.count
+    public func activeSummaries(forProject projectSlug: String) -> [CascadeSummary] {
+        summaries.filter { $0.projectSlug == projectSlug && !$0.isArchived }
     }
 
-    // MARK: - Computed Properties for Active Message List (消息列表)
+    public func archivedSummaries(forProject projectSlug: String) -> [CascadeSummary] {
+        summaries.filter { $0.projectSlug == projectSlug && $0.isArchived }
+    }
+
+    public func totalConversationCount(forProject projectSlug: String) -> Int {
+        summaries.filter { $0.projectSlug == projectSlug }.count
+    }
+
+    public func automations(forProject projectSlug: String) -> [AutomationItem] {
+        automations.filter { $0.projectSlug == projectSlug }
+    }
+
+    public var filteredGitHubRepos: [GitHubRepoItem] {
+        let q = newProjectDraft.repoSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return availableGitHubRepos }
+        return availableGitHubRepos.filter {
+            $0.fullName.lowercased().contains(q) || $0.visibilityLabel.lowercased().contains(q)
+        }
+    }
+
+    // MARK: - Computed Properties for Automations & Context (`UE06`, `UE08`)
+
+    public var scheduledAutomations: [AutomationItem] {
+        automations.filter { $0.section == .scheduled }
+    }
+
+    public var alwaysOnAutomations: [AutomationItem] {
+        automations.filter { $0.section == .alwaysOn }
+    }
+
+    public var pausedAutomations: [AutomationItem] {
+        automations.filter { $0.section == .paused }
+    }
+
+    public var filteredContextCandidates: [ContextCandidateItem] {
+        let q = contextSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return contextCandidates.filter { item in
+            if let cat = selectedContextCategoryFilter, item.category != cat {
+                return false
+            }
+            if !q.isEmpty {
+                return item.title.lowercased().contains(q) || item.subtitle.lowercased().contains(q)
+            }
+            return true
+        }
+    }
+
+    public var selectedContextCount: Int {
+        contextCandidates.filter { $0.isSelected }.count
+    }
+
+    // MARK: - Computed Properties for Active Chat, Question, Plan & Diff (`UE07`, `UE10`, `UE11`, `UE12`)
 
     public var activeSummary: CascadeSummary? {
         summaries.first(where: { $0.cascadeId == activeCascadeId })
+    }
+
+    public var contextMenuTargetSummary: CascadeSummary? {
+        summaries.first(where: { $0.cascadeId == contextMenuTargetCascadeId }) ?? summaries.first
     }
 
     public var activeSteps: [CascadeStep] {
@@ -216,7 +361,6 @@ public final class AntigravitySessionStore {
         set { stepsByCascadeId[activeCascadeId] = newValue }
     }
 
-    /// Groups consecutive file reads, searches, and edits into collapsible `evidenceGroup` items.
     public var displayItems: [CascadeDisplayItem] {
         CascadeDisplayItem.buildDisplayItems(from: activeSteps)
     }
@@ -236,9 +380,38 @@ public final class AntigravitySessionStore {
         return activeSteps.contains(where: { $0.status == .inProgress || $0.status == .pending })
     }
 
-    // MARK: - Computed Properties for Composer Input Box (输入框)
+    public var currentQuestionStep: StructuredQuestionStepItem? {
+        guard questionSteps.indices.contains(activeQuestionStepIndex) else { return questionSteps.first }
+        return questionSteps[activeQuestionStepIndex]
+    }
 
-    /// Active `/slash` command suggestions when the user types `/` at the start of the composer.
+    public var currentDiffFile: FilePatchDiff? {
+        guard !activeTurnDiffs.isEmpty else { return nil }
+        let clamped = min(max(0, selectedDiffFileIndex), activeTurnDiffs.count - 1)
+        return activeTurnDiffs[clamped]
+    }
+
+    public var selectedDiffFilePath: String {
+        get { currentDiffFile?.filePath ?? "middleware/ratelimit.go" }
+        set {
+            if let idx = activeTurnDiffs.firstIndex(where: { $0.filePath == newValue }) {
+                selectedDiffFileIndex = idx
+            }
+        }
+    }
+
+    public var totalDiffAdditions: Int {
+        let sum = activeTurnDiffs.reduce(0) { $0 + $1.additions }
+        return sum > 0 ? sum : (activeSummary?.totalAdditions ?? 128)
+    }
+
+    public var totalDiffDeletions: Int {
+        let sum = activeTurnDiffs.reduce(0) { $0 + $1.deletions }
+        return sum > 0 ? sum : (activeSummary?.totalDeletions ?? 14)
+    }
+
+    // MARK: - Composer Suggestions (`UE07`)
+
     public var activeSlashCommandSuggestions: [SlashCommandItem] {
         guard !isSlashPopupDismissedManually else { return [] }
         let trimmed = composerDraftText.trimmingCharacters(in: .whitespaces)
@@ -252,7 +425,6 @@ public final class AntigravitySessionStore {
         }
     }
 
-    /// Active `@file` autocomplete suggestions when the user types `@` in the composer.
     public var activeFileMentionSuggestions: [String] {
         guard let lastWord = composerDraftText.split(separator: " ").last,
               lastWord.hasPrefix("@") else {
@@ -260,13 +432,11 @@ public final class AntigravitySessionStore {
         }
         let query = String(lastWord.dropFirst()).lowercased()
         let files = currentWorkspace?.indexedFiles ?? [
-            "Packages/AntigravityData/Protocol/ConnectEnvelope.swift",
-            "Packages/AntigravityData/Protocol/ProtobufStepDecoder.swift",
-            "Packages/AntigravityData/Protocol/InteractionBuilder.swift",
-            "iOS/ViewControllers/Cascade/CascadeChatViewController.swift",
-            "iOS/Views/Composer/ChatComposerView.swift",
-            "verification/esdd-verify.py",
-            "specs/esdd-ir.json"
+            "internal/middleware/ratelimit.go",
+            "internal/router/transfers.go",
+            "internal/settlement/batch.go",
+            "internal/settlement/settlement_test.go",
+            "load/transfers.txt"
         ]
         if query.isEmpty { return Array(files.prefix(5)) }
         return files.filter { $0.lowercased().contains(query) }
@@ -276,7 +446,28 @@ public final class AntigravitySessionStore {
         !composerDraftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composerAttachments.isEmpty
     }
 
-    // MARK: - Session List Actions (会话列表交互)
+    // MARK: - Navigation & Display Options Actions (`UE01`, `UE02`)
+
+    public func selectHost(_ host: RemoteHostInstance) {
+        activeHost = host
+        rpcClient = AntigravityRPCClient(
+            host: host,
+            csrfToken: "csrf-antigravity-ios-session-token"
+        )
+    }
+
+    public func selectProject(_ projectSlug: String) {
+        selectedProjectId = projectSlug
+        if let project = projects.first(where: { $0.id == projectSlug }) {
+            selectedWorkspaceUri = project.workspaceUri
+        }
+        activeRoute = .projectDetail(projectSlug)
+    }
+
+    public func toggleProjectExpandedInHome(_ projectSlug: String) {
+        guard let idx = projects.firstIndex(where: { $0.id == projectSlug }) else { return }
+        projects[idx].isExpandedInHome.toggle()
+    }
 
     public func selectWorkspace(_ workspaceUri: String) {
         selectedWorkspaceUri = workspaceUri
@@ -288,49 +479,84 @@ public final class AntigravitySessionStore {
 
     public func selectCascade(_ cascadeId: String) {
         activeCascadeId = cascadeId
-        currentRoute = .cascadeChat
+        if let idx = summaries.firstIndex(where: { $0.cascadeId == cascadeId }) {
+            summaries[idx].isUnread = false
+        }
+        activeRoute = .cascadeChat(cascadeId)
         unreadStreamingStepCount = 0
         isAutoScrollPinnedToBottom = true
     }
 
-    public func createNewCascade(
-        title: String = "New Agentic Session",
-        branchName: String? = nil,
-        initialPrompt: String? = nil
-    ) {
-        let newId = "cas-\(UUID().uuidString.prefix(8).lowercased())"
-        let branch = branchName ?? currentWorkspace?.activeBranch ?? "main"
-        let workspaceUri = selectedWorkspaceUri.isEmpty
-            ? (workspaces.first?.workspaceUri ?? "file:///home/antigravity/venciallee/iOSAntigravity")
-            : selectedWorkspaceUri
-
-        let newSummary = CascadeSummary(
-            cascadeId: newId,
-            title: title,
-            workspaceUri: workspaceUri,
-            branchName: branch,
-            status: initialPrompt != nil ? .inProgress : .done,
-            stepCount: initialPrompt != nil ? 1 : 0,
-            updatedAt: Date(),
-            isPinned: false,
-            lastMessagePreview: initialPrompt ?? "Ready for instructions..."
-        )
-        summaries.insert(newSummary, at: 0)
-        stepsByCascadeId[newId] = []
-        activeCascadeId = newId
-        currentRoute = .cascadeChat
-
-        if let prompt = initialPrompt, !prompt.isEmpty {
-            composerDraftText = prompt
-            sendCurrentDraft()
+    public func resetDisplayOptions() {
+        displayOptions = AgentDisplayOptions()
+        let opts = displayOptions
+        let storeRef = projectionStore
+        Task {
+            await storeRef.saveDisplayOptions(opts)
         }
     }
+
+    public func markAllConversationsAsRead() {
+        for idx in summaries.indices {
+            summaries[idx].isUnread = false
+        }
+        let snapshot = summaries
+        let storeRef = projectionStore
+        Task {
+            await storeRef.saveProjectedSummaries(snapshot)
+        }
+    }
+
+    // MARK: - Conversation Context Menu & Swipe Actions (`UE03`)
 
     public func togglePinCascade(_ cascadeId: String) {
         guard let idx = summaries.firstIndex(where: { $0.cascadeId == cascadeId }) else { return }
         summaries[idx].isPinned.toggle()
+        let isPinned = summaries[idx].isPinned
+        let snapshot = summaries
+        let storeRef = projectionStore
+        let clientRef = rpcClient
         Task {
-            await projectionStore.saveProjectedSummaries(summaries)
+            await storeRef.saveProjectedSummaries(snapshot)
+            try? await clientRef?.pinCascade(cascadeId: cascadeId, isPinned: isPinned)
+        }
+    }
+
+    public func toggleUnreadCascade(_ cascadeId: String) {
+        guard let idx = summaries.firstIndex(where: { $0.cascadeId == cascadeId }) else { return }
+        summaries[idx].isUnread.toggle()
+        let snapshot = summaries
+        let storeRef = projectionStore
+        Task {
+            await storeRef.saveProjectedSummaries(snapshot)
+        }
+    }
+
+    public func renameCascade(_ cascadeId: String, newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let idx = summaries.firstIndex(where: { $0.cascadeId == cascadeId }) else { return }
+        summaries[idx].title = trimmed
+        let snapshot = summaries
+        let storeRef = projectionStore
+        let clientRef = rpcClient
+        Task {
+            await storeRef.saveProjectedSummaries(snapshot)
+            try? await clientRef?.renameCascade(cascadeId: cascadeId, newTitle: trimmed)
+        }
+    }
+
+    public func moveCascade(_ cascadeId: String, toProject projectSlug: String) {
+        guard let idx = summaries.firstIndex(where: { $0.cascadeId == cascadeId }) else { return }
+        summaries[idx].projectSlug = projectSlug
+        let targetUri = projects.first(where: { $0.id == projectSlug })?.workspaceUri ?? summaries[idx].workspaceUri
+        summaries[idx].workspaceUri = targetUri
+        let snapshot = summaries
+        let storeRef = projectionStore
+        let clientRef = rpcClient
+        Task {
+            await storeRef.saveProjectedSummaries(snapshot)
+            try? await clientRef?.moveCascadeToWorkspace(cascadeId: cascadeId, workspaceUri: targetUri)
         }
     }
 
@@ -340,8 +566,12 @@ public final class AntigravitySessionStore {
         if activeCascadeId == cascadeId, let next = filteredSummaries.first {
             activeCascadeId = next.cascadeId
         }
+        let snapshot = summaries
+        let storeRef = projectionStore
+        let clientRef = rpcClient
         Task {
-            await projectionStore.saveProjectedSummaries(summaries)
+            await storeRef.saveProjectedSummaries(snapshot)
+            try? await clientRef?.archiveCascade(cascadeId: cascadeId, isArchived: true)
         }
     }
 
@@ -351,8 +581,138 @@ public final class AntigravitySessionStore {
         if activeCascadeId == cascadeId, let next = filteredSummaries.first {
             activeCascadeId = next.cascadeId
         }
+        let snapshot = summaries
+        let storeRef = projectionStore
+        let clientRef = rpcClient
         Task {
-            await projectionStore.saveProjectedSummaries(summaries)
+            await storeRef.saveProjectedSummaries(snapshot)
+            try? await clientRef?.deleteCascade(cascadeId: cascadeId)
+        }
+    }
+
+    // MARK: - Project Creation & Scoped Conversation Actions (`UE04`, `UE05`)
+
+    @discardableResult
+    public func createNewProject(
+        name: String? = nil,
+        runtime: ProjectRuntimeTarget? = nil,
+        source: ProjectSourceKind? = nil,
+        selectedRepo: GitHubRepoItem? = nil,
+        branchWorktree: String? = nil
+    ) -> ProjectWorkspace {
+        var draft = newProjectDraft
+        if let runtime { draft.runsOn = runtime }
+        if let source { draft.source = source }
+        if let selectedRepo { draft.selectedRepo = selectedRepo }
+        if let branchWorktree { draft.branchWorktree = branchWorktree }
+        if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft.projectName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let slug = draft.projectName.isEmpty ? "new-project" : draft.projectName
+        let repoPath = draft.selectedRepo?.fullName ?? "acme/\(slug)"
+        let pathDisplay = draft.runsOn == .cloud ? "cloud://\(repoPath)" : "~/code/\(slug)"
+        let workspaceUri = draft.runsOn == .cloud ? "cloud://\(repoPath)" : "file:///Users/wl/code/\(slug)"
+        let branch = draft.selectedRepo?.defaultBranch ?? "main"
+
+        let created = ProjectWorkspace(
+            id: slug,
+            name: slug,
+            pathDisplay: pathDisplay,
+            workspaceUri: workspaceUri,
+            runtime: draft.runsOn,
+            hostName: draft.runsOn.rawValue,
+            activeBranch: branch,
+            worktrees: [branch, "worktree/\(slug)"],
+            isExpandedInHome: true,
+            rulesAndSkillsCount: 4
+        )
+        if let existingIdx = projects.firstIndex(where: { $0.id == slug }) {
+            projects[existingIdx] = created
+        } else {
+            projects.append(created)
+        }
+        selectedProjectId = created.id
+        selectedWorkspaceUri = created.workspaceUri
+        presentedSheet = nil
+        activeRoute = .projectDetail(created.id)
+
+        let projectsSnapshot = projects
+        let storeRef = projectionStore
+        let clientRef = rpcClient
+        Task {
+            await storeRef.saveProjects(projectsSnapshot)
+            _ = try? await clientRef?.createProjectWorkspace(draft: draft)
+        }
+        return created
+    }
+
+    @discardableResult
+    public func createConversationInProject(
+        _ projectSlug: String,
+        title: String = "New Conversation",
+        initialPrompt: String? = nil
+    ) -> String {
+        let newId = "cas-\(UUID().uuidString.prefix(8).lowercased())"
+        let project = projects.first(where: { $0.id == projectSlug })
+        let workspaceUri = project?.workspaceUri ?? "file:///Users/wl/code/\(projectSlug)"
+        let branch = project?.activeBranch ?? "main"
+
+        let newSummary = CascadeSummary(
+            cascadeId: newId,
+            title: title,
+            projectSlug: projectSlug,
+            workspaceUri: workspaceUri,
+            branchName: branch,
+            status: initialPrompt != nil ? .inProgress : .done,
+            stepCount: initialPrompt != nil ? 1 : 0,
+            currentStepIndex: 1,
+            totalSteps: 1,
+            updatedAt: Date(),
+            relativeTimeLabel: "now",
+            statusSubtitle: initialPrompt != nil ? "Running · Step 1 of 1" : "Ready for instructions",
+            isPinned: displayOptions.autoPinOnMessage,
+            isArchived: false,
+            isUnread: false,
+            modelLabel: selectedModelConfig.displayName,
+            lastMessagePreview: initialPrompt ?? "Ready for instructions..."
+        )
+        summaries.insert(newSummary, at: 0)
+        stepsByCascadeId[newId] = []
+        activeCascadeId = newId
+        selectedProjectId = projectSlug
+        selectedWorkspaceUri = workspaceUri
+        activeRoute = .cascadeChat(newId)
+
+        if let prompt = initialPrompt, !prompt.isEmpty {
+            composerDraftText = prompt
+            sendCurrentDraft()
+        }
+        return newId
+    }
+
+    public func createNewCascade(
+        title: String = "New Agentic Session",
+        branchName: String? = nil,
+        initialPrompt: String? = nil
+    ) {
+        let slug = selectedProject?.id ?? "ledger-svc"
+        let newId = createConversationInProject(slug, title: title, initialPrompt: nil)
+        if let branchName, let idx = summaries.firstIndex(where: { $0.cascadeId == newId }) {
+            summaries[idx].branchName = branchName
+        }
+        if let initialPrompt, !initialPrompt.isEmpty {
+            composerDraftText = initialPrompt
+            sendCurrentDraft()
+        }
+    }
+
+    public func revealProjectInFinder(_ projectSlug: String) {
+        guard let project = projects.first(where: { $0.id == projectSlug }) else { return }
+        let uri = project.workspaceUri
+        let clientRef = rpcClient
+        Task {
+            try? await clientRef?.openWorkspaceInFinder(workspaceUri: uri)
         }
     }
 
@@ -373,94 +733,99 @@ public final class AntigravitySessionStore {
         }
     }
 
-    // MARK: - Message List & Step Actions (消息列表交互)
+    // MARK: - Automations Actions (`UE06`)
 
-    public func toggleThinkingExpanded(stepId: String) {
-        if expandedThinkingStepIds.contains(stepId) {
-            expandedThinkingStepIds.remove(stepId)
-        } else {
-            expandedThinkingStepIds.insert(stepId)
-        }
-    }
+    @discardableResult
+    public func createAutomationFromPrompt(_ prompt: String = "") -> AutomationItem? {
+        let raw = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? automationPromptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            : prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
 
-    public func toggleEvidenceGroupExpanded(groupId: String) {
-        if expandedEvidenceGroupIds.contains(groupId) {
-            expandedEvidenceGroupIds.remove(groupId)
-        } else {
-            expandedEvidenceGroupIds.insert(groupId)
-        }
-    }
-
-    public func toggleTerminalOutputExpanded(stepId: String) {
-        if expandedTerminalStepIds.contains(stepId) {
-            expandedTerminalStepIds.remove(stepId)
-        } else {
-            expandedTerminalStepIds.insert(stepId)
-        }
-    }
-
-    /// Resolves a `WAITING` permission or command step via `InteractionBuilder` and `AntigravityRPCClient`.
-    public func resolveWaitingStep(
-        stepIndex: Int,
-        decision: InteractionDecision
-    ) {
-        guard var steps = stepsByCascadeId[activeCascadeId],
-              let idx = steps.firstIndex(where: { $0.stepIndex == stepIndex }) else {
-            return
-        }
-        let targetStep = steps[idx]
-        let payload = InteractionBuilder.buildPayload(
-            step: targetStep,
-            decision: decision,
-            workspaceUri: selectedWorkspaceUri
+        let slug = selectedProject?.id ?? "ledger-svc"
+        let item = AutomationItem(
+            id: "auto-\(UUID().uuidString.prefix(8).lowercased())",
+            title: raw,
+            projectSlug: slug,
+            scheduleSummary: "\(slug) · Weekdays at 09:00 · Flash",
+            section: .scheduled,
+            nextRunText: "Tomorrow, 09:00",
+            lastRunText: "Created just now",
+            needsReview: false,
+            isRunningNow: false
         )
-        lastDispatchedInteraction = payload
+        automations.insert(item, at: 0)
+        automationPromptDraft = ""
 
-        switch decision {
-        case .reject:
-            steps[idx].status = .cancelled
-            if let sumIdx = summaries.firstIndex(where: { $0.cascadeId == activeCascadeId }) {
-                summaries[sumIdx].status = .cancelled
-                summaries[sumIdx].pendingInteractionTitle = nil
-            }
-        case .allowOnce, .alwaysAllowInTurn, .allowWithModifiedCommand, .answerQuestion:
-            if case .alwaysAllowInTurn = decision,
-               let pattern = targetStep.requestedInteraction?.permission?.suggestedPersistPattern {
-                activeTurnGrants.insert(pattern)
-            }
-            steps[idx].status = .done
-            let nextStepIndex = (steps.map(\.stepIndex).max() ?? stepIndex) + 1
-            let followUp = CascadeStep(
-                cascadeId: activeCascadeId,
-                stepIndex: nextStepIndex,
-                type: .plannerResponse,
-                status: .done,
-                plannerResponse: PlannerResponsePayload(
-                    response: "Permission granted (`\(targetStep.runCommand?.commandLine ?? "interaction")`). ESDD verification completed with **8/8 claims passing**.",
-                    thinking: "Received HandleCascadeUserInteraction approval on step \(stepIndex). Resuming trajectory execution.",
-                    thinkingDurationSeconds: 1.2,
-                    referencedFiles: ["verification/output/report.md"]
-                )
-            )
-            steps.append(followUp)
-            if let sumIdx = summaries.firstIndex(where: { $0.cascadeId == activeCascadeId }) {
-                summaries[sumIdx].status = .done
-                summaries[sumIdx].stepCount = steps.count
-                summaries[sumIdx].pendingInteractionTitle = nil
-                summaries[sumIdx].updatedAt = Date()
-            }
+        let snapshot = automations
+        let storeRef = projectionStore
+        let clientRef = rpcClient
+        Task {
+            await storeRef.saveAutomations(snapshot)
+            _ = try? await clientRef?.createAutomation(prompt: raw, projectSlug: slug)
         }
-        stepsByCascadeId[activeCascadeId] = steps
-        presentedSheet = nil
+        return item
+    }
 
-        if let client = rpcClient {
-            Task {
-                _ = try? await client.handleCascadeUserInteraction(payload)
-            }
+    public func triggerAutomationNow(_ automationId: String) {
+        guard let idx = automations.firstIndex(where: { $0.id == automationId }) else { return }
+        automations[idx].isRunningNow = true
+        automations[idx].needsReview = false
+        automations[idx].lastRunText = "Running now..."
+
+        let snapshot = automations
+        let storeRef = projectionStore
+        let clientRef = rpcClient
+        Task {
+            await storeRef.enqueueOutbox(
+                OutboxEntry(cascadeId: automationId, kind: .automationTrigger, messageText: "TriggerAutomationNow")
+            )
+            await storeRef.saveAutomations(snapshot)
+            try? await clientRef?.triggerAutomationNow(automationId: automationId)
         }
     }
 
-    // MARK: - Composer Input Box Actions (输入框交互)
+    public func resumeAutomation(_ automationId: String) {
+        guard let idx = automations.firstIndex(where: { $0.id == automationId }) else { return }
+        automations[idx].section = .scheduled
+        automations[idx].nextRunText = "Tomorrow, 08:00"
+        automations[idx].lastRunText = "Resumed · just now"
+
+        let snapshot = automations
+        let storeRef = projectionStore
+        let clientRef = rpcClient
+        Task {
+            await storeRef.saveAutomations(snapshot)
+            try? await clientRef?.setAutomationPaused(automationId: automationId, isPaused: false)
+        }
+    }
+
+    // MARK: - Add Context & Composer Actions (`UE07`, `UE08`, `UE09`)
+
+    public func toggleContextCandidate(_ candidateId: String) {
+        guard let idx = contextCandidates.firstIndex(where: { $0.id == candidateId }) else { return }
+        contextCandidates[idx].isSelected.toggle()
+    }
+
+    public func applySelectedContextToComposer() {
+        for candidate in contextCandidates where candidate.isSelected {
+            if candidate.isActionTrigger {
+                if !composerDraftText.hasPrefix(candidate.chipLabel) {
+                    composerDraftText = "\(candidate.chipLabel) \(composerDraftText)".trimmingCharacters(in: .whitespaces)
+                }
+            } else if !composerAttachments.contains(where: { $0.label == candidate.chipLabel }) {
+                composerAttachments.append(
+                    ComposerAttachmentChip(
+                        id: "chip-\(candidate.id)",
+                        kind: candidate.attachmentKind,
+                        label: candidate.chipLabel,
+                        targetUri: "antigravity://context/\(candidate.id)"
+                    )
+                )
+            }
+        }
+        presentedSheet = nil
+    }
 
     public func applySlashCommand(_ item: SlashCommandItem) {
         composerDraftText = "\(item.command) "
@@ -472,12 +837,11 @@ public final class AntigravitySessionStore {
         let chip = ComposerAttachmentChip(
             kind: .fileMention,
             label: "@\(fileName)",
-            targetUri: "file:///home/antigravity/venciallee/iOSAntigravity/\(filePath)"
+            targetUri: "file:///Users/wl/code/ledger-svc/\(filePath)"
         )
-        if !composerAttachments.contains(where: { $0.targetUri == chip.targetUri }) {
+        if !composerAttachments.contains(where: { $0.targetUri == chip.targetUri || $0.label == chip.label }) {
             composerAttachments.append(chip)
         }
-        // Strip trailing @query token from draft text if present
         if let lastRange = composerDraftText.range(of: "@[^\\s]*$", options: .regularExpression) {
             composerDraftText.removeSubrange(lastRange)
         }
@@ -487,8 +851,6 @@ public final class AntigravitySessionStore {
         composerAttachments.removeAll { $0.id == chipId }
     }
 
-    /// Sends the current composer message, persists to the Durable Outbox, appends the user turn
-    /// to `activeSteps`, and dispatches `SendUserCascadeMessage` over Connect-RPC.
     public func sendCurrentDraft() {
         let trimmed = composerDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !composerAttachments.isEmpty else { return }
@@ -520,9 +882,9 @@ public final class AntigravitySessionStore {
             status: .inProgress,
             createdAt: Date(),
             plannerResponse: PlannerResponsePayload(
-                response: "Executing request with `\(selectedModelConfig.displayName)` (`\(selectedModelConfig.effort.rawValue)` effort, `\(selectedModelConfig.mode.rawValue)` mode)...",
-                thinking: "Parsing user prompt and \(mentionLabels.count) attached context references on branch \(activeSummary?.branchName ?? "main").",
-                thinkingDurationSeconds: 1.8,
+                response: "Running in `\(selectedModelConfig.mode.rawValue)` mode with `\(selectedModelConfig.displayName)` (`\(selectedModelConfig.agentPersona)` agent)...",
+                thinking: "Evaluating prompt with \(mentionLabels.count) context chips on branch \(activeSummary?.branchName ?? "main").",
+                thinkingDurationSeconds: 2.0,
                 referencedFiles: composerAttachments.map(\.targetUri)
             )
         )
@@ -533,17 +895,20 @@ public final class AntigravitySessionStore {
             summaries[sumIdx].stepCount = currentSteps.count
             summaries[sumIdx].status = .inProgress
             summaries[sumIdx].lastMessagePreview = messageBody
+            summaries[sumIdx].relativeTimeLabel = "now"
             summaries[sumIdx].updatedAt = Date()
+            if displayOptions.autoPinOnMessage {
+                summaries[sumIdx].isPinned = true
+            }
         }
 
-        // Reset composer state
         composerDraftText = ""
         composerAttachments.removeAll()
         isSlashPopupDismissedManually = false
         isAutoScrollPinnedToBottom = true
 
         let cid = activeCascadeId
-        let modelId = selectedModelConfig.modelId
+        let cfg = selectedModelConfig
         let storeRef = projectionStore
         let clientRef = rpcClient
         Task {
@@ -551,10 +916,13 @@ public final class AntigravitySessionStore {
                 OutboxEntry(cascadeId: cid, kind: .userMessage, messageText: messageBody)
             )
             await storeRef.saveProjectedSteps(currentSteps, for: cid)
-            _ = try? await clientRef?.sendUserCascadeMessage(
+            try? await clientRef?.sendUserCascadeMessage(
                 cascadeId: cid,
-                text: messageBody,
-                modelId: modelId
+                message: messageBody,
+                modelId: cfg.modelId,
+                effort: cfg.effort,
+                mode: cfg.mode,
+                agentPersona: cfg.agentPersona
             )
             _ = await storeRef.drainOutbox()
         }
@@ -562,289 +930,1233 @@ public final class AntigravitySessionStore {
 
     public func stopActiveCascadeStreaming() {
         guard var currentSteps = stepsByCascadeId[activeCascadeId] else { return }
-        for i in currentSteps.indices where currentSteps[i].status == .inProgress || currentSteps[i].status == .pending {
+        for i in currentSteps.indices where currentSteps[i].status == .inProgress || currentSteps[i].status == .pending || currentSteps[i].status == .waiting {
             currentSteps[i].status = .cancelled
         }
         stepsByCascadeId[activeCascadeId] = currentSteps
         if let sumIdx = summaries.firstIndex(where: { $0.cascadeId == activeCascadeId }) {
             summaries[sumIdx].status = .cancelled
+            summaries[sumIdx].statusSubtitle = "Stopped"
+        }
+        let cid = activeCascadeId
+        let clientRef = rpcClient
+        Task {
+            try? await clientRef?.cancelCascadeInvocation(cascadeId: cid)
         }
     }
 
-    // MARK: - Artifact & Turn Diff Actions
+    // MARK: - Step Expansion & Face ID Command Approval Actions (`UE07`, `UE13`)
 
-    public func approveArtifactPlan(artifactPath: String) {
+    public func toggleThinkingExpanded(stepId: String) {
+        if expandedThinkingStepIds.contains(stepId) {
+            expandedThinkingStepIds.remove(stepId)
+        } else {
+            expandedThinkingStepIds.insert(stepId)
+        }
+    }
+
+    public func toggleEvidenceGroupExpanded(groupId: String) {
+        if expandedEvidenceGroupIds.contains(groupId) {
+            expandedEvidenceGroupIds.remove(groupId)
+        } else {
+            expandedEvidenceGroupIds.insert(groupId)
+        }
+    }
+
+    public func toggleTerminalOutputExpanded(stepId: String) {
+        if expandedTerminalStepIds.contains(stepId) {
+            expandedTerminalStepIds.remove(stepId)
+        } else {
+            expandedTerminalStepIds.insert(stepId)
+        }
+    }
+
+    public func approveWaitingCommandWithFaceID(stepIndex: Int? = nil) {
+        let targetIdx = stepIndex ?? pendingWaitingStep?.stepIndex
+        guard let resolvedStepIndex = targetIdx else { return }
+        resolveWaitingStep(stepIndex: resolvedStepIndex, decision: .allowWithFaceID)
+    }
+
+    public func denyWaitingCommand(stepIndex: Int? = nil) {
+        let targetIdx = stepIndex ?? pendingWaitingStep?.stepIndex
+        guard let resolvedStepIndex = targetIdx else { return }
+        resolveWaitingStep(stepIndex: resolvedStepIndex, decision: .reject)
+    }
+
+    public func resolveWaitingStep(
+        stepIndex: Int,
+        decision: InteractionDecision
+    ) {
+        guard var steps = stepsByCascadeId[activeCascadeId],
+              let idx = steps.firstIndex(where: { $0.stepIndex == stepIndex }) else {
+            return
+        }
+        let targetStep = steps[idx]
+        let payload = InteractionBuilder.buildPayload(
+            step: targetStep,
+            decision: decision,
+            workspaceUri: selectedWorkspaceUri
+        )
+        lastDispatchedInteraction = payload
+
+        switch decision {
+        case .reject:
+            steps[idx].status = .cancelled
+            if let sumIdx = summaries.firstIndex(where: { $0.cascadeId == activeCascadeId }) {
+                summaries[sumIdx].status = .cancelled
+                summaries[sumIdx].statusSubtitle = "Denied · Awaiting instructions"
+                summaries[sumIdx].pendingInteractionTitle = nil
+            }
+        case .allowOnce, .allowWithFaceID, .alwaysAllowInTurn, .allowWithModifiedCommand, .answerQuestion:
+            if case .alwaysAllowInTurn = decision,
+               let pattern = targetStep.requestedInteraction?.permission?.suggestedPersistPattern {
+                activeTurnGrants.insert(pattern)
+            }
+            steps[idx].status = .done
+
+            // Advance 7-segment task checklist if present
+            if let tbIdx = steps.lastIndex(where: { $0.type == .taskBoundary }),
+               var boundary = steps[tbIdx].taskBoundary {
+                boundary.completedCount = min(boundary.totalCount, boundary.completedCount + 1)
+                boundary.taskName = "Task · \(boundary.completedCount) of \(boundary.totalCount) done"
+                for cIdx in boundary.checklist.indices where boundary.checklist[cIdx].status == .waiting {
+                    boundary.checklist[cIdx].status = .done
+                    boundary.checklist[cIdx].trailingBadge = "p99 4.2ms"
+                }
+                steps[tbIdx].taskBoundary = boundary
+            }
+
+            let nextStepIndex = (steps.map(\.stepIndex).max() ?? stepIndex) + 1
+            let followUp = CascadeStep(
+                cascadeId: activeCascadeId,
+                stepIndex: nextStepIndex,
+                type: .plannerResponse,
+                status: .done,
+                plannerResponse: PlannerResponsePayload(
+                    response: "Face ID verified — executed `\(targetStep.runCommand?.commandLine ?? "approved action")`. Load test sustained 2,000 req/s with 0 drops.",
+                    thinking: "Received signed HandleCascadeUserInteraction approval on step \(stepIndex).",
+                    thinkingDurationSeconds: 1.4
+                )
+            )
+            steps.append(followUp)
+
+            if let sumIdx = summaries.firstIndex(where: { $0.cascadeId == activeCascadeId }) {
+                summaries[sumIdx].status = .done
+                summaries[sumIdx].stepCount = steps.count
+                summaries[sumIdx].currentStepIndex = min(summaries[sumIdx].totalSteps, summaries[sumIdx].currentStepIndex + 1)
+                summaries[sumIdx].statusSubtitle = "Done · Load test passed"
+                summaries[sumIdx].pendingInteractionTitle = nil
+                summaries[sumIdx].updatedAt = Date()
+            }
+        }
+
+        stepsByCascadeId[activeCascadeId] = steps
+        presentedSheet = nil
+
+        if let payload, let clientRef = rpcClient {
+            let storeRef = projectionStore
+            let cid = activeCascadeId
+            Task {
+                await storeRef.enqueueOutbox(
+                    OutboxEntry(cascadeId: cid, kind: .interactionApproval, messageText: "\(payload.stepIndex)")
+                )
+                try? await clientRef.handleCascadeUserInteraction(payload)
+                _ = await storeRef.drainOutbox()
+            }
+        }
+    }
+
+    // MARK: - Structured Multi-Step Question Actions (`UE10`)
+
+    public func toggleQuestionOption(_ option: String, stepIndex: Int? = nil) {
+        let idx = stepIndex ?? activeQuestionStepIndex
+        guard questionSteps.indices.contains(idx) else { return }
+        if questionSteps[idx].selectedOptions.contains(option) {
+            questionSteps[idx].selectedOptions.remove(option)
+        } else {
+            if !questionSteps[idx].isMultiSelect {
+                questionSteps[idx].selectedOptions.removeAll()
+            }
+            questionSteps[idx].selectedOptions.insert(option)
+        }
+    }
+
+    public func advanceQuestionStep() {
+        guard questionSteps.indices.contains(activeQuestionStepIndex) else { return }
+        questionSteps[activeQuestionStepIndex].isCompleted = true
+        if activeQuestionStepIndex + 1 < questionSteps.count {
+            activeQuestionStepIndex += 1
+        } else if let waiting = pendingWaitingStep {
+            let combinedOptions = questionSteps.flatMap { Array($0.selectedOptions).sorted() }
+            let custom = questionSteps
+                .map(\.customWriteIn)
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "; ")
+            resolveWaitingStep(
+                stepIndex: waiting.stepIndex,
+                decision: .answerQuestion(
+                    selectedOptions: combinedOptions,
+                    customWriteIn: custom.isEmpty ? nil : custom
+                )
+            )
+        }
+    }
+
+    public func previousQuestionStep() {
+        guard activeQuestionStepIndex > 0 else { return }
+        activeQuestionStepIndex -= 1
+    }
+
+    public func submitFreeformQuestionReply(_ text: String? = nil) {
+        let body = (text ?? questionFreeformReplyDraft).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        questionFreeformReplyDraft = ""
+        if let waiting = pendingWaitingStep {
+            resolveWaitingStep(
+                stepIndex: waiting.stepIndex,
+                decision: .answerQuestion(selectedOptions: [], customWriteIn: body)
+            )
+        } else {
+            composerDraftText = body
+            sendCurrentDraft()
+        }
+    }
+
+    // MARK: - Implementation Plan Review Actions (`UE11`)
+
+    @discardableResult
+    public func addPlanComment(
+        targetFilePath: String = "settlement/settlement_test.go",
+        quotedSpan: String = "remove the package-level clk variable",
+        body: String
+    ) -> PlanInlineComment? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let comment = PlanInlineComment(
+            authorInitials: "WL",
+            authorName: "You",
+            statusLabel: "Pending",
+            targetFilePath: targetFilePath,
+            quotedSpan: quotedSpan,
+            body: trimmed
+        )
+        planComments.append(comment)
+        return comment
+    }
+
+    public func sendPlanCommentsToAgent() {
+        guard !planComments.isEmpty else { return }
+        for idx in planComments.indices {
+            planComments[idx].statusLabel = "Sent"
+        }
+        let commentsSnapshot = planComments
+        let cid = activeCascadeId
+        if let idx = summaries.firstIndex(where: { $0.cascadeId == "cas-flaky-settlement" }) {
+            summaries[idx].status = .inProgress
+            summaries[idx].statusSubtitle = "Running · Addressing \(commentsSnapshot.count) plan comments"
+            summaries[idx].isUnread = false
+        }
+        activeRoute = .cascadeChat(cid)
+
+        let storeRef = projectionStore
+        let clientRef = rpcClient
+        Task {
+            await storeRef.enqueueOutbox(
+                OutboxEntry(
+                    cascadeId: cid,
+                    kind: .planComments,
+                    messageText: "Sent \(commentsSnapshot.count) plan review comments"
+                )
+            )
+            try? await clientRef?.sendPlanReviewComments(cascadeId: cid, comments: commentsSnapshot)
+            _ = await storeRef.drainOutbox()
+        }
+    }
+
+    public func approveArtifactPlan(artifactPath: String = "/brain/implementation_plan.md") {
         if let idx = activeArtifacts.firstIndex(where: { $0.artifactPath == artifactPath }) {
             activeArtifacts[idx].requestFeedback = false
+            activeArtifacts[idx].summary = "Approved · \(planComments.count) comments addressed"
         }
         if let waiting = pendingWaitingStep {
             resolveWaitingStep(stepIndex: waiting.stepIndex, decision: .allowOnce)
         }
-        currentRoute = .cascadeChat
+        activeRoute = .cascadeChat(activeCascadeId)
+    }
+
+    // MARK: - Turn Diff Line-Level Review Actions (`UE12`)
+
+    public func selectNextDiffFile() {
+        guard !activeTurnDiffs.isEmpty else { return }
+        selectedDiffFileIndex = (selectedDiffFileIndex + 1) % activeTurnDiffs.count
+    }
+
+    public func selectPreviousDiffFile() {
+        guard !activeTurnDiffs.isEmpty else { return }
+        selectedDiffFileIndex = (selectedDiffFileIndex - 1 + activeTurnDiffs.count) % activeTurnDiffs.count
     }
 
     public func addDiffComment(filePath: String, lineNumber: Int, text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         diffComments.append(
-            DiffLineComment(filePath: filePath, lineNumber: lineNumber, commentText: trimmed)
+            DiffLineComment(filePath: filePath, lineNumber: lineNumber, body: trimmed, sentToAgent: false)
         )
     }
 
-    public func acceptPatchFile(_ filePath: String) {
-        activeTurnDiffs.removeAll { $0.filePath == filePath }
-        if let next = activeTurnDiffs.first {
-            selectedDiffFilePath = next.filePath
-        } else {
-            currentRoute = .cascadeChat
+    public func submitDiffLineComment(sendImmediately: Bool) {
+        let trimmed = activeLineCommentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let path = currentDiffFile?.filePath ?? "middleware/ratelimit.go"
+        let line = selectedDiffLineNumber ?? 29
+        let comment = DiffLineComment(
+            filePath: path,
+            lineNumber: line,
+            body: trimmed,
+            sentToAgent: sendImmediately
+        )
+        diffComments.append(comment)
+        activeLineCommentDraft = ""
+
+        if sendImmediately {
+            let cid = activeCascadeId
+            let clientRef = rpcClient
+            let storeRef = projectionStore
+            Task {
+                await storeRef.enqueueOutbox(
+                    OutboxEntry(cascadeId: cid, kind: .diffComments, messageText: comment.body)
+                )
+                try? await clientRef?.sendDiffReviewComments(cascadeId: cid, comments: [comment])
+                _ = await storeRef.drainOutbox()
+            }
         }
     }
 
-    // MARK: - Deterministic ESDD Fixture Factory
+    public func toggleDiffFileViewed() {
+        guard activeTurnDiffs.indices.contains(selectedDiffFileIndex) else { return }
+        activeTurnDiffs[selectedDiffFileIndex].isReviewed.toggle()
+    }
+
+    public func acceptCurrentDiffFile() {
+        guard activeTurnDiffs.indices.contains(selectedDiffFileIndex) else { return }
+        activeTurnDiffs.remove(at: selectedDiffFileIndex)
+        if activeTurnDiffs.isEmpty {
+            selectedDiffFileIndex = 0
+            activeRoute = .cascadeChat(activeCascadeId)
+        } else {
+            selectedDiffFileIndex = min(selectedDiffFileIndex, activeTurnDiffs.count - 1)
+        }
+    }
+
+    public func acceptPatchFile(_ filePath: String) {
+        if let idx = activeTurnDiffs.firstIndex(where: { $0.filePath == filePath }) {
+            selectedDiffFileIndex = idx
+            acceptCurrentDiffFile()
+        }
+    }
+
+    public func revertCurrentDiffHunk() {
+        guard let current = currentDiffFile else { return }
+        let cid = activeCascadeId
+        let clientRef = rpcClient
+        Task {
+            try? await clientRef?.revertDiffHunk(
+                cascadeId: cid,
+                filePath: current.filePath,
+                hunkHeader: current.hunkHeader
+            )
+        }
+    }
+
+    public func revertCurrentDiffFile() {
+        guard activeTurnDiffs.indices.contains(selectedDiffFileIndex) else { return }
+        let removed = activeTurnDiffs.remove(at: selectedDiffFileIndex)
+        if let sumIdx = summaries.firstIndex(where: { $0.cascadeId == activeCascadeId }) {
+            summaries[sumIdx].totalAdditions = max(0, summaries[sumIdx].totalAdditions - removed.additions)
+            summaries[sumIdx].totalDeletions = max(0, summaries[sumIdx].totalDeletions - removed.deletions)
+        }
+        if activeTurnDiffs.isEmpty {
+            selectedDiffFileIndex = 0
+            activeRoute = .cascadeChat(activeCascadeId)
+        } else {
+            selectedDiffFileIndex = min(selectedDiffFileIndex, activeTurnDiffs.count - 1)
+        }
+        let cid = activeCascadeId
+        let clientRef = rpcClient
+        Task {
+            try? await clientRef?.revertDiffHunk(cascadeId: cid, filePath: removed.filePath, hunkHeader: nil)
+        }
+    }
+
+    public func acceptAllTurnDiffs() {
+        activeTurnDiffs.removeAll()
+        selectedDiffFileIndex = 0
+        activeRoute = .cascadeChat(activeCascadeId)
+    }
+
+    // MARK: - Deterministic Scene Routing Helper (`UE01` .. `UE13`)
+
+    public func configureForVerifyScene(_ scene: ESDDVerifySceneCase) {
+        presentedSheet = nil
+        switch scene {
+        case .agentsHome:
+            selectedTab = .agents
+            activeRoute = .tabRoot
+        case .displayOptions:
+            selectedTab = .agents
+            activeRoute = .tabRoot
+            presentedSheet = .displayOptions
+            isSortPopoverPresented = true
+        case .contextMenuPin:
+            selectedTab = .agents
+            activeRoute = .tabRoot
+            contextMenuTargetCascadeId = "cas-flaky-settlement"
+            swipePreviewCascadeId = "cas-upgrade-go"
+            presentedSheet = .contextMenuPreview(cascadeId: "cas-flaky-settlement")
+        case .projectDetail:
+            selectedTab = .agents
+            selectedProjectId = "ledger-svc"
+            selectedProjectTab = .active
+            // Align ledger-svc to Active 3 / Archived 2 (5 conversations) as depicted in UE04
+            if let idx = summaries.firstIndex(where: { $0.cascadeId == "cas-idempotency-payouts" }) {
+                summaries[idx].isArchived = true
+            }
+            summaries.removeAll { $0.cascadeId == "cas-pgx-v5-migration" }
+            activeRoute = .projectDetail("ledger-svc")
+        case .createProject:
+            selectedTab = .agents
+            activeRoute = .tabRoot
+            presentedSheet = .createProject
+        case .automations:
+            selectedTab = .automations
+            activeRoute = .tabRoot
+        case .chatAndComposer:
+            selectedTab = .agents
+            activeCascadeId = "cas-rate-limiter"
+            activeRoute = .cascadeChat("cas-rate-limiter")
+        case .addContext:
+            selectedTab = .agents
+            activeCascadeId = "cas-rate-limiter"
+            activeRoute = .cascadeChat("cas-rate-limiter")
+            presentedSheet = .addContext
+        case .modelAndMode:
+            selectedTab = .agents
+            activeCascadeId = "cas-rate-limiter"
+            activeRoute = .cascadeChat("cas-rate-limiter")
+            presentedSheet = .modelAndMode
+        case .structuredQuestion:
+            selectedTab = .agents
+            activeCascadeId = "cas-audit-log-admin"
+            activeQuestionStepIndex = 1
+            activeRoute = .cascadeChat("cas-audit-log-admin")
+        case .planReview:
+            selectedTab = .agents
+            activeCascadeId = "cas-flaky-settlement"
+            selectedArtifactPath = "/brain/implementation_plan.md"
+            activeRoute = .planReview
+        case .turnDiffReview:
+            selectedTab = .agents
+            activeCascadeId = "cas-rate-limiter"
+            selectedDiffTurn = 3
+            selectedDiffFileIndex = 0
+            selectedDiffLineNumber = 29
+            activeRoute = .turnDiffReview
+        case .liveActivitySpec:
+            selectedTab = .agents
+            activeCascadeId = "cas-rate-limiter"
+            activeRoute = .cascadeChat("cas-rate-limiter")
+        }
+    }
+
+    // MARK: - Deterministic 1:1 UE Fixture Factory (`UE01` .. `UE13`)
 
     public static func makeESDDVerificationStore() -> AntigravitySessionStore {
-        let host = RemoteHostInstance(
-            instanceId: "lt74xt6l0m-golden-star",
-            hostname: "lt74xt6l0m-golden-star",
-            version: "v2.30.0",
-            channel: .cloudRelay,
-            endpointURL: URL(string: "https://antigravity.google.com/r/lt74xt6l0m-golden-star")!,
+        let macHost = RemoteHostInstance(
+            instanceId: "macbook-pro-local",
+            hostname: "MacBook Pro",
+            version: "v2.32.0",
+            channel: .directHost,
+            endpointURL: URL(string: "https://127.0.0.1:42100")!,
             isOnline: true,
-            latencyMs: 18
+            latencyMs: 6
+        )
+        let cloudHost = RemoteHostInstance(
+            instanceId: "cloud-vm-us-central1",
+            hostname: "Cloud",
+            version: "v2.32.0",
+            channel: .cloudRelay,
+            endpointURL: URL(string: "https://antigravity.google.com/r/cloud-vm-us-central1")!,
+            isOnline: true,
+            latencyMs: 24
         )
 
-        let workspaces = [
-            WorkspaceInfo(
-                workspaceUri: "file:///home/antigravity/venciallee/iOSAntigravity",
-                displayName: "venciallee/iOSAntigravity",
+        let projects: [ProjectWorkspace] = [
+            ProjectWorkspace(
+                id: "ledger-svc",
+                name: "ledger-svc",
+                pathDisplay: "~/code/ledger-svc",
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                runtime: .macBookPro,
+                hostName: "MacBook Pro",
                 activeBranch: "main",
-                worktrees: ["main", "feat/connect-rpc-client", "feat/live-activity"],
+                worktrees: ["main", "feat/ratelimit", "fix/settlement-clock"],
+                isExpandedInHome: true,
+                rulesAndSkillsCount: 4
+            ),
+            ProjectWorkspace(
+                id: "web-console",
+                name: "web-console",
+                pathDisplay: "cloud://acme/web-console",
+                workspaceUri: "cloud://acme/web-console",
+                runtime: .cloud,
+                hostName: "Cloud",
+                activeBranch: "main",
+                worktrees: ["main", "feat/dark-mode"],
+                isExpandedInHome: true,
+                rulesAndSkillsCount: 3
+            )
+        ]
+
+        let workspaces: [WorkspaceInfo] = [
+            WorkspaceInfo(
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                displayName: "ledger-svc",
+                activeBranch: "main",
+                worktrees: ["main", "feat/ratelimit", "fix/settlement-clock"],
                 activeCascadeCount: 3,
                 indexedFiles: [
-                    "Packages/AntigravityData/Protocol/ConnectEnvelope.swift",
-                    "Packages/AntigravityData/Protocol/ProtobufStepDecoder.swift",
-                    "Packages/AntigravityData/Protocol/InteractionBuilder.swift",
-                    "iOS/ViewControllers/Cascade/CascadeChatViewController.swift",
-                    "iOS/Views/Composer/ChatComposerView.swift",
-                    "verification/esdd-verify.py"
+                    "internal/middleware/ratelimit.go",
+                    "internal/router/transfers.go",
+                    "internal/settlement/batch.go",
+                    "internal/settlement/settlement_test.go",
+                    "load/transfers.txt"
                 ]
             ),
             WorkspaceInfo(
-                workspaceUri: "file:///home/antigravity/exa-core",
-                displayName: "antigravity/exa-core",
-                activeBranch: "release/v2.30",
-                worktrees: ["release/v2.30", "fix/connect-keepalive"],
-                activeCascadeCount: 1,
+                workspaceUri: "cloud://acme/web-console",
+                displayName: "web-console",
+                activeBranch: "main",
+                worktrees: ["main", "feat/dark-mode"],
+                activeCascadeCount: 2,
                 indexedFiles: [
-                    "exa/language_server_pb/language_server.proto",
-                    "exa/cortex_pb/cortex_step.proto"
+                    "src/pages/settings/DarkModeToggle.tsx",
+                    "src/theme/tokens.ts"
                 ]
             )
         ]
 
-        let summaries = [
+        let baseNow = Date(timeIntervalSince1970: 1_762_793_357)
+        let summaries: [CascadeSummary] = [
             CascadeSummary(
-                cascadeId: "cas-01-waiting",
-                title: "Implement Native Connect-RPC & Live Activity",
-                workspaceUri: "file:///home/antigravity/venciallee/iOSAntigravity",
-                branchName: "feat/connect-rpc-client",
-                status: .waiting,
-                stepCount: 24,
-                updatedAt: Date(),
-                isPinned: true,
-                pendingInteractionTitle: "Approve command: python3 verification/esdd-verify.py",
-                lastMessagePreview: "Waiting for permission to execute E2E verification suite",
-                totalAdditions: 412,
-                totalDeletions: 38
-            ),
-            CascadeSummary(
-                cascadeId: "cas-02-running",
-                title: "Audit CoreText 120fps Streaming Cell Layout",
-                workspaceUri: "file:///home/antigravity/venciallee/iOSAntigravity",
-                branchName: "feat/live-activity",
+                cascadeId: "cas-rate-limiter",
+                title: "Add rate limiter to /transfers",
+                projectSlug: "ledger-svc",
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                branchName: "main",
                 status: .inProgress,
-                stepCount: 14,
-                updatedAt: Date().addingTimeInterval(-180),
+                stepCount: 28,
+                currentStepIndex: 4,
+                totalSteps: 7,
+                updatedAt: baseNow,
+                relativeTimeLabel: "now",
+                statusSubtitle: "Running · Step 4 of 7 · go test ./internal/...",
                 isPinned: true,
-                lastMessagePreview: "Grouping consecutive view_file and code_action steps into Evidence Card",
-                totalAdditions: 198,
+                isArchived: false,
+                isUnread: false,
+                modelLabel: "Gemini 3.1 Pro",
+                pendingInteractionTitle: "Approve: vegeta attack...",
+                lastMessagePreview: "Plan approved with your 2 comments. Tests pass — next is a load test, which needs your OK.",
+                totalAdditions: 128,
                 totalDeletions: 14
             ),
             CascadeSummary(
-                cascadeId: "cas-03-done",
-                title: "Decode Binary Protobuf Trajectory Steps (>600 ceiling)",
-                workspaceUri: "file:///home/antigravity/venciallee/iOSAntigravity",
+                cascadeId: "cas-flaky-settlement",
+                title: "Fix flaky TestSettlementBatch",
+                projectSlug: "ledger-svc",
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                branchName: "main",
+                status: .waiting,
+                stepCount: 12,
+                currentStepIndex: 2,
+                totalSteps: 5,
+                updatedAt: baseNow.addingTimeInterval(-480),
+                relativeTimeLabel: "8m",
+                statusSubtitle: "Needs review · Implementation plan ready",
+                isPinned: false,
+                isArchived: false,
+                isUnread: true,
+                modelLabel: "Gemini 3.1 Pro",
+                pendingInteractionTitle: "Awaiting review · Implementation Plan",
+                lastMessagePreview: "The flake comes from a shared fake clock across parallel subtests in settlement_test.go. I wrote a plan to isolate it per test — review it before I change anything?",
+                totalAdditions: 0,
+                totalDeletions: 0
+            ),
+            CascadeSummary(
+                cascadeId: "cas-release-checklist",
+                title: "Release checklist v2.3",
+                projectSlug: "web-console",
+                workspaceUri: "cloud://acme/web-console",
                 branchName: "main",
                 status: .done,
-                stepCount: 642,
-                updatedAt: Date().addingTimeInterval(-3600),
+                stepCount: 19,
+                currentStepIndex: 5,
+                totalSteps: 5,
+                updatedAt: baseNow.addingTimeInterval(-3500),
+                relativeTimeLabel: "1h",
+                statusSubtitle: "Done · Walkthrough ready",
+                isPinned: true,
+                isArchived: false,
+                isUnread: false,
+                modelLabel: "Gemini 3.8 Flash",
+                lastMessagePreview: "All v2.3 release checks succeeded and walkthrough artifact is ready.",
+                totalAdditions: 34,
+                totalDeletions: 8
+            ),
+            CascadeSummary(
+                cascadeId: "cas-upgrade-go",
+                title: "Upgrade to Go 1.25",
+                projectSlug: "ledger-svc",
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                branchName: "main",
+                status: .done,
+                stepCount: 31,
+                currentStepIndex: 6,
+                totalSteps: 6,
+                updatedAt: baseNow.addingTimeInterval(-3600),
+                relativeTimeLabel: "1h",
+                statusSubtitle: "Done · 6 files changed +42 -31",
                 isPinned: false,
-                lastMessagePreview: "Verified binary wire format fallback when JSON serializer exceeds 600 steps",
-                totalAdditions: 229,
-                totalDeletions: 12
+                isArchived: false,
+                isUnread: true,
+                modelLabel: "Gemini 3.1 Pro",
+                lastMessagePreview: "Updated go.mod toolchain to Go 1.25 across 6 packages.",
+                totalAdditions: 42,
+                totalDeletions: 31
+            ),
+            CascadeSummary(
+                cascadeId: "cas-dark-mode-cloud",
+                title: "Dark mode for settings page",
+                projectSlug: "web-console",
+                workspaceUri: "cloud://acme/web-console",
+                branchName: "feat/dark-mode",
+                status: .inProgress,
+                stepCount: 9,
+                currentStepIndex: 2,
+                totalSteps: 5,
+                updatedAt: baseNow.addingTimeInterval(-7200),
+                relativeTimeLabel: "12:04",
+                statusSubtitle: "Running in cloud · Step 2 of 5",
+                isPinned: false,
+                isArchived: false,
+                isUnread: true,
+                modelLabel: "Gemini 3.8 Flash",
+                lastMessagePreview: "Applying semantic obsidian tokens to SettingsView...",
+                totalAdditions: 64,
+                totalDeletions: 21
+            ),
+            CascadeSummary(
+                cascadeId: "cas-idempotency-payouts",
+                title: "Idempotency keys for payouts",
+                projectSlug: "ledger-svc",
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                branchName: "main",
+                status: .done,
+                stepCount: 45,
+                currentStepIndex: 8,
+                totalSteps: 8,
+                updatedAt: baseNow.addingTimeInterval(-86400),
+                relativeTimeLabel: "Yesterday",
+                statusSubtitle: "Done · Merged into main",
+                isPinned: false,
+                isArchived: false,
+                isUnread: false,
+                modelLabel: "Gemini 3.1 Pro",
+                lastMessagePreview: "Merged payout idempotency key store into main.",
+                totalAdditions: 210,
+                totalDeletions: 19
+            ),
+            CascadeSummary(
+                cascadeId: "cas-audit-log-admin",
+                title: "Audit log for admin actions",
+                projectSlug: "ledger-svc",
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                branchName: "main",
+                status: .waiting,
+                stepCount: 3,
+                currentStepIndex: 2,
+                totalSteps: 3,
+                updatedAt: baseNow.addingTimeInterval(-172_800),
+                relativeTimeLabel: "2d",
+                statusSubtitle: "Archived · Planning",
+                isPinned: false,
+                isArchived: true,
+                isUnread: false,
+                modelLabel: "Gemini 3.1 Pro",
+                lastMessagePreview: "Before I draft the plan I need three decisions. Tap to answer — you can also reply in your own words."
+            ),
+            CascadeSummary(
+                cascadeId: "cas-pgx-v5-migration",
+                title: "Migrate settlement store to pgx v5",
+                projectSlug: "ledger-svc",
+                workspaceUri: "file:///Users/wl/code/ledger-svc",
+                branchName: "main",
+                status: .done,
+                stepCount: 37,
+                currentStepIndex: 6,
+                totalSteps: 6,
+                updatedAt: baseNow.addingTimeInterval(-345_600),
+                relativeTimeLabel: "4d",
+                statusSubtitle: "Archived · Merged",
+                isPinned: false,
+                isArchived: true,
+                isUnread: false,
+                modelLabel: "Gemini 3.1 Pro",
+                lastMessagePreview: "Completed pgxpool v5 batch migration."
             )
         ]
 
-        let steps: [CascadeStep] = [
+        let automations: [AutomationItem] = [
+            AutomationItem(
+                id: "auto-nightly-audit",
+                title: "Nightly dependency audit",
+                projectSlug: "ledger-svc",
+                scheduleSummary: "ledger-svc · Daily at 02:00 · Flash",
+                section: .scheduled,
+                nextRunText: "Tonight, 02:00",
+                lastRunText: "Succeeded · 22h ago",
+                needsReview: false,
+                isRunningNow: false
+            ),
+            AutomationItem(
+                id: "auto-weekly-flaky",
+                title: "Weekly flaky-test report",
+                projectSlug: "ledger-svc",
+                scheduleSummary: "ledger-svc · Mondays at 09:00 · Pro",
+                section: .scheduled,
+                nextRunText: "Mon, 09:00",
+                lastRunText: "Needs review · 2d",
+                needsReview: true,
+                isRunningNow: false
+            ),
+            AutomationItem(
+                id: "auto-pr-triage",
+                title: "Triage new pull requests",
+                projectSlug: "web-console",
+                scheduleSummary: "web-console · On PR opened · Flash Lite",
+                section: .alwaysOn,
+                nextRunText: "On PR opened",
+                lastRunText: "Last run 14m ago",
+                needsReview: false,
+                isRunningNow: false
+            ),
+            AutomationItem(
+                id: "auto-bundle-size",
+                title: "Bundle size watch",
+                projectSlug: "web-console",
+                scheduleSummary: "web-console · Daily at 08:00 · Flash",
+                section: .paused,
+                nextRunText: "Paused",
+                lastRunText: "Paused · 5d ago",
+                needsReview: false,
+                isRunningNow: false
+            )
+        ]
+
+        let contextCandidates: [ContextCandidateItem] = [
+            ContextCandidateItem(
+                id: "ctx-ratelimit",
+                category: .files,
+                title: "ratelimit.go",
+                subtitle: "internal/middleware · changed this turn",
+                chipLabel: "@ratelimit.go",
+                isActionTrigger: false,
+                isSelected: true
+            ),
+            ContextCandidateItem(
+                id: "ctx-load-folder",
+                category: .folder,
+                title: "load/",
+                subtitle: "Folder · 3 files",
+                chipLabel: "@load/",
+                isActionTrigger: false,
+                isSelected: false
+            ),
+            ContextCandidateItem(
+                id: "ctx-idempotency-conv",
+                category: .mentions,
+                title: "Idempotency keys for payouts",
+                subtitle: "Conversation · ledger-svc",
+                chipLabel: "@Idempotency keys for payouts",
+                isActionTrigger: false,
+                isSelected: true
+            ),
+            ContextCandidateItem(
+                id: "ctx-terminal-last-test",
+                category: .mentions,
+                title: "Terminal · last test run",
+                subtitle: "Output · 214 lines",
+                chipLabel: "@terminal:last-test",
+                isActionTrigger: false,
+                isSelected: false
+            ),
+            ContextCandidateItem(
+                id: "ctx-action-boost",
+                category: .actions,
+                title: "/boost",
+                subtitle: "Action · extra multi-agent reasoning pass",
+                chipLabel: "/boost",
+                isActionTrigger: true,
+                isSelected: false
+            ),
+            ContextCandidateItem(
+                id: "ctx-skill-go-testing",
+                category: .skills,
+                title: "go-testing",
+                subtitle: "Skill · table-driven tests, -race, golden files",
+                chipLabel: "Skill · go-testing",
+                isActionTrigger: false,
+                isSelected: true
+            )
+        ]
+
+        let questionSteps: [StructuredQuestionStepItem] = [
+            StructuredQuestionStepItem(
+                id: "q-step-1-storage",
+                stepNumber: 1,
+                shortTabTitle: "Storage",
+                questionTitle: "Where should admin audit events be persisted?",
+                options: [
+                    "Dedicated audit_events Postgres table",
+                    "Append-only Kafka audit topic",
+                    "Daily S3 Parquet archive"
+                ],
+                selectedOptions: ["Dedicated audit_events Postgres table"],
+                customWriteIn: "",
+                isCompleted: true,
+                isMultiSelect: false
+            ),
+            StructuredQuestionStepItem(
+                id: "q-step-2-actions",
+                stepNumber: 2,
+                shortTabTitle: "Actions",
+                questionTitle: "Which admin actions should be audited?",
+                options: [
+                    "Account freeze / unfreeze",
+                    "Limit changes",
+                    "Manual ledger adjustments",
+                    "Role & permission changes"
+                ],
+                selectedOptions: [
+                    "Account freeze / unfreeze",
+                    "Limit changes",
+                    "Manual ledger adjustments"
+                ],
+                customWriteIn: "",
+                isCompleted: false,
+                isMultiSelect: true
+            ),
+            StructuredQuestionStepItem(
+                id: "q-step-3-retention",
+                stepNumber: 3,
+                shortTabTitle: "Retention",
+                questionTitle: "How long should audit entries be retained?",
+                options: [
+                    "90 days hot + 7 years cold compliance archive",
+                    "1 year hot Postgres",
+                    "Indefinite immutable retention"
+                ],
+                selectedOptions: ["90 days hot + 7 years cold compliance archive"],
+                customWriteIn: "",
+                isCompleted: false,
+                isMultiSelect: false
+            )
+        ]
+
+        let planChanges: [PlanProposedFileChange] = [
+            PlanProposedFileChange(
+                id: "plan-change-batch",
+                changeKind: "MODIFY",
+                filePath: "settlement/batch.go",
+                summaryText: "Accept a clock.Clock through BatchOptions instead of calling time.Now() directly.",
+                highlightedSpan: "instead of calling time.Now() directly",
+                isSelectedForCallout: false
+            ),
+            PlanProposedFileChange(
+                id: "plan-change-test",
+                changeKind: "MODIFY",
+                filePath: "settlement/settlement_test.go",
+                summaryText: "Create one clock per subtest; remove the package-level clk variable.",
+                highlightedSpan: "remove the package-level clk variable",
+                isSelectedForCallout: true
+            ),
+            PlanProposedFileChange(
+                id: "plan-change-clock",
+                changeKind: "NEW",
+                filePath: "testutil/clock.go",
+                summaryText: "NewTestClock(t) helper, released with t.Cleanup.",
+                highlightedSpan: nil,
+                isSelectedForCallout: false
+            )
+        ]
+
+        let planComments: [PlanInlineComment] = [
+            PlanInlineComment(
+                id: "plan-comment-1",
+                authorInitials: "WL",
+                authorName: "You",
+                statusLabel: "Pending",
+                targetFilePath: "settlement/batch.go",
+                quotedSpan: "instead of calling time.Now() directly",
+                body: "Default to the real clock when Clock is nil, so existing callers don't break."
+            ),
+            PlanInlineComment(
+                id: "plan-comment-2",
+                authorInitials: "WL",
+                authorName: "You",
+                statusLabel: "Pending",
+                targetFilePath: "Verification",
+                quotedSpan: "go test -race -count=100 ./internal/settlement/...",
+                body: "Run with -count=100 and -race to confirm the 3% flake is gone."
+            )
+        ]
+
+        let vegetaCmd = "vegeta attack -rate=2000/s -duration=30s \\\n  -targets=load/transfers.txt | vegeta report"
+        let rateLimiterSteps: [CascadeStep] = [
             CascadeStep(
-                cascadeId: "cas-01-waiting",
-                stepIndex: 19,
+                cascadeId: "cas-rate-limiter",
+                stepIndex: 0,
                 type: .userInput,
                 status: .done,
-                userInput: "Implement the Connect-RPC 5-byte envelope parser, wire up Session List / Message List / Composer Input, and run the ESDD verification suite.",
-                attachedMentions: ["@ConnectEnvelope.swift", "@esdd-ir.json"]
+                createdAt: baseNow.addingTimeInterval(-161),
+                userInput: "Add a per-tenant token-bucket rate limiter to POST /transfers and run load tests.",
+                attachedMentions: ["@transfers.go", "Skill · go-testing"]
             ),
             CascadeStep(
-                cascadeId: "cas-01-waiting",
-                stepIndex: 20,
-                type: .taskBoundary,
-                status: .inProgress,
-                taskBoundary: TaskBoundaryPayload(
-                    taskName: "Phase 2: Connect-RPC Streaming & ESDD Verification",
-                    taskStatus: "Running E2E protocol & HIG geometry assertions",
-                    taskSummary: "Verified 5-byte Connect framing and binary Protobuf step decoding.",
-                    completedItems: 4,
-                    totalItems: 5
-                )
-            ),
-            CascadeStep(
-                cascadeId: "cas-01-waiting",
-                stepIndex: 21,
+                cascadeId: "cas-rate-limiter",
+                stepIndex: 1,
                 type: .viewFile,
                 status: .done,
+                createdAt: baseNow.addingTimeInterval(-140),
                 viewFile: ViewFilePayload(
-                    fileUri: "file:///home/antigravity/venciallee/iOSAntigravity/specs/esdd-ir.json",
+                    fileUri: "file:///Users/wl/code/ledger-svc/internal/router/transfers.go",
                     startLine: 1,
-                    endLine: 120,
-                    totalLines: 210
+                    endLine: 96,
+                    totalLines: 148
                 )
             ),
             CascadeStep(
-                cascadeId: "cas-01-waiting",
-                stepIndex: 22,
+                cascadeId: "cas-rate-limiter",
+                stepIndex: 2,
                 type: .codeAction,
                 status: .done,
+                createdAt: baseNow.addingTimeInterval(-95),
                 codeAction: CodeActionPayload(
-                    targetFileUri: "file:///home/antigravity/venciallee/iOSAntigravity/Packages/AntigravityData/Sources/AntigravityData/Protocol/ConnectEnvelope.swift",
-                    description: "Implement 5-byte Connect streaming parser & binary Protobuf decoder",
-                    additions: 184,
-                    deletions: 22,
-                    startLine: 1,
-                    endLine: 77,
+                    targetFileUri: "file:///Users/wl/code/ledger-svc/internal/middleware/ratelimit.go",
+                    description: "Add per-tenant sync.Mutex and configurable BucketTTL to Limiter.Allow",
+                    additions: 96,
+                    deletions: 4,
+                    startLine: 18,
+                    endLine: 44,
                     diffPreviewLines: [
-                        "+ public static func encode(payload: Data, flags: Flags = []) -> Data",
-                        "+ public mutating func feed(_ chunk: Data) -> [ConnectEnvelopeFrame]"
+                        "+    mu     sync.Mutex",
+                        "+ const ttl = cfg.BucketTTL",
+                        "+    b.mu.Lock(); defer b.mu.Unlock()"
                     ]
                 )
             ),
             CascadeStep(
-                cascadeId: "cas-01-waiting",
-                stepIndex: 23,
+                cascadeId: "cas-rate-limiter",
+                stepIndex: 3,
                 type: .plannerResponse,
                 status: .done,
+                createdAt: baseNow.addingTimeInterval(-35),
                 plannerResponse: PlannerResponsePayload(
-                    response: "I have implemented `ConnectEnvelope.swift` and `ProtobufStepDecoder.swift`, and wired `InteractionBuilder` to match field 56 (`requestedInteraction`). Now executing the ESDD suite.",
-                    thinking: "Analyzing exa.language_server_pb.LanguageServerService framing: 1B flags + 4B big-endian uint32 length. Checking RequestedInteraction oneof field numbers (3=runCommand, 19=filePermission, 21=permission, 22=askQuestion).",
-                    thinkingDurationSeconds: 3.4,
-                    referencedFiles: [
-                        "Packages/AntigravityData/Protocol/ConnectEnvelope.swift",
-                        "Packages/AntigravityData/Protocol/ProtobufStepDecoder.swift"
+                    response: "Plan approved with your 2 comments. Tests pass — next is a load test, which needs your OK.",
+                    thinking: "Addressed both review comments on Implementation Plan v2 (configurable BucketTTL and per-tenant mutex lock). Ran go test ./internal/... with 42/42 passing. Preparing vegeta load test against load/transfers.txt.",
+                    thinkingDurationSeconds: 14.0,
+                    referencedFiles: ["/brain/rate_limiter_plan.md", "middleware/ratelimit.go"]
+                )
+            ),
+            CascadeStep(
+                cascadeId: "cas-rate-limiter",
+                stepIndex: 4,
+                type: .taskBoundary,
+                status: .inProgress,
+                createdAt: baseNow.addingTimeInterval(-12),
+                taskBoundary: TaskBoundaryPayload(
+                    taskName: "Task · 4 of 7 done",
+                    taskStatus: "Waiting for your approval · Step 5 of 7",
+                    taskSummary: "42 unit tests passed; awaiting Face ID confirmation for vegeta load test.",
+                    completedCount: 4,
+                    totalCount: 7,
+                    elapsedLabel: "2m 41s",
+                    checklist: [
+                        TaskChecklistItem(
+                            id: "chk-wire-router",
+                            title: "Wire limiter into router",
+                            status: .done,
+                            trailingBadge: nil
+                        ),
+                        TaskChecklistItem(
+                            id: "chk-go-test",
+                            title: "go test ./internal/...",
+                            status: .done,
+                            trailingBadge: "42 passed"
+                        ),
+                        TaskChecklistItem(
+                            id: "chk-vegeta-load",
+                            title: "Load test with vegeta",
+                            status: .waiting,
+                            trailingBadge: nil
+                        )
                     ]
                 )
             ),
             CascadeStep(
-                cascadeId: "cas-01-waiting",
-                stepIndex: 24,
+                cascadeId: "cas-rate-limiter",
+                stepIndex: 5,
                 type: .runCommand,
                 status: .waiting,
+                createdAt: baseNow,
                 runCommand: RunCommandPayload(
-                    commandId: "cmd-esdd-01",
-                    commandLine: "python3 verification/esdd-verify.py --suite all",
-                    proposedCommandLine: "python3 verification/esdd-verify.py --suite all",
-                    cwd: "/home/antigravity/venciallee/iOSAntigravity",
-                    exitCode: 0,
-                    outputPreview: "PASS [Spec-DAG] 8/8 states, 9/9 events verified\nPASS [Connect-RPC] 5-byte framing & binary Protobuf (>600 steps) OK",
-                    durationMs: 1420
+                    commandId: "cmd-vegeta-01",
+                    commandLine: vegetaCmd,
+                    proposedCommandLine: vegetaCmd,
+                    cwd: "~/code/ledger-svc"
                 ),
                 requestedInteraction: RequestedInteraction(
-                    kind: .permission,
-                    permission: PermissionInteractionSpec(
-                        action: "execute",
-                        target: "python3 verification/esdd-verify.py --suite all",
-                        suggestedPersistPattern: "verification/*",
-                        persistSuggestionType: .suggested,
-                        reason: "Run ESDD E2E protocol & visual screenshot verification suite"
+                    kind: .runCommand,
+                    runCommand: RunCommandInteractionSpec(
+                        proposedCommandLine: vegetaCmd,
+                        cwd: "~/code/ledger-svc",
+                        isDaemon: false
                     )
                 )
             )
         ]
 
-        let artifacts = [
-            ArtifactSnapshot(
-                artifactPath: "/brain/implementation_plan.md",
-                title: "implementation_plan.md",
-                summary: "Architecture plan for Native iOS Antigravity Client over Connect-RPC",
-                kind: .implementationPlan,
-                content: "# iOSAntigravity Native Architecture Plan\n\n> [!IMPORTANT]\n> Connects directly to `language_server --standalone --subclient_type hub` via Connect-RPC without intermediate CRDT transcoding.",
-                requestFeedback: true,
-                userFacing: true,
-                version: 3
+        let auditQuestionSteps: [CascadeStep] = [
+            CascadeStep(
+                cascadeId: "cas-audit-log-admin",
+                stepIndex: 0,
+                type: .userInput,
+                status: .done,
+                createdAt: baseNow.addingTimeInterval(-600),
+                userInput: "Design an immutable audit log for privileged admin actions in ledger-svc."
             ),
-            ArtifactSnapshot(
-                artifactPath: "/brain/esdd_verification_walkthrough.md",
-                title: "esdd_verification_walkthrough.md",
-                summary: "Visual verification report with 8 @3x iPhone 16 Pro screenshots",
-                kind: .walkthrough,
-                content: "# ESDD Verification Walkthrough\nAll 8 states and 8 acceptance claims verified at @3x.",
-                requestFeedback: false,
-                userFacing: true,
-                version: 1
+            CascadeStep(
+                cascadeId: "cas-audit-log-admin",
+                stepIndex: 1,
+                type: .plannerResponse,
+                status: .done,
+                createdAt: baseNow.addingTimeInterval(-580),
+                plannerResponse: PlannerResponsePayload(
+                    response: "Before I draft the plan I need three decisions. Tap to answer — you can also reply in your own words.",
+                    thinking: "Identifying storage sink, auditable admin mutations, and compliance retention window.",
+                    thinkingDurationSeconds: 6.0
+                )
+            ),
+            CascadeStep(
+                cascadeId: "cas-audit-log-admin",
+                stepIndex: 2,
+                type: .ephemeralMessage,
+                status: .waiting,
+                createdAt: baseNow.addingTimeInterval(-575),
+                requestedInteraction: RequestedInteraction(
+                    kind: .askQuestion,
+                    askQuestion: AskQuestionInteractionSpec(
+                        question: "Which admin actions should be audited?",
+                        options: [
+                            "Account freeze / unfreeze",
+                            "Limit changes",
+                            "Manual ledger adjustments",
+                            "Role & permission changes"
+                        ],
+                        isMultiSelect: true
+                    )
+                )
             )
         ]
 
-        let diffs = [
+        let flakySettlementSteps: [CascadeStep] = [
+            CascadeStep(
+                cascadeId: "cas-flaky-settlement",
+                stepIndex: 0,
+                type: .userInput,
+                status: .done,
+                createdAt: baseNow.addingTimeInterval(-520),
+                userInput: "Fix flaky TestSettlementBatch in CI without disabling t.Parallel()."
+            ),
+            CascadeStep(
+                cascadeId: "cas-flaky-settlement",
+                stepIndex: 1,
+                type: .plannerResponse,
+                status: .waiting,
+                createdAt: baseNow.addingTimeInterval(-480),
+                plannerResponse: PlannerResponsePayload(
+                    response: "The flake comes from a shared fake clock across parallel subtests in settlement_test.go. I wrote a plan to isolate it per test — review it before I change anything?",
+                    thinking: "Traced ~3% failure in TestSettlementBatch to concurrent Advance() calls on package-level clk.",
+                    thinkingDurationSeconds: 9.0,
+                    referencedFiles: ["/brain/implementation_plan.md"]
+                ),
+                requestedInteraction: RequestedInteraction(
+                    kind: .filePermission,
+                    filePermission: FilePermissionInteractionSpec(
+                        absolutePathUri: "file:///brain/implementation_plan.md",
+                        isDirectory: false
+                    )
+                )
+            )
+        ]
+
+        let artifacts: [ArtifactSnapshot] = [
+            ArtifactSnapshot(
+                artifactPath: "/brain/implementation_plan.md",
+                title: "Implementation Plan",
+                summary: "Isolate the fake clock in settlement tests",
+                kind: .implementationPlan,
+                content: """
+                # Isolate the fake clock in settlement tests
+
+                TestSettlementBatch fails in ~3% of CI runs. Parallel subtests share one fake clock, so `Advance()` in one subtest moves time for the others.
+
+                ## Proposed changes
+                - **MODIFY** `settlement/batch.go` — Accept a `clock.Clock` through BatchOptions instead of calling time.Now() directly.
+                - **MODIFY** `settlement/settlement_test.go` — Create one clock per subtest; remove the package-level clk variable.
+                - **NEW** `testutil/clock.go` — NewTestClock(t) helper, released with t.Cleanup.
+
+                ## Verification
+                - `go test -race -count=100 ./internal/settlement/...`
+                """,
+                requestFeedback: true,
+                userFacing: true,
+                version: 2,
+                updatedAt: baseNow.addingTimeInterval(-480)
+            ),
+            ArtifactSnapshot(
+                artifactPath: "/brain/rate_limiter_plan.md",
+                title: "Implementation Plan",
+                summary: "Approved · 2 comments addressed",
+                kind: .implementationPlan,
+                content: "# Per-Tenant Rate Limiter Plan\n\nApproved · 2 comments addressed.",
+                requestFeedback: false,
+                userFacing: true,
+                version: 2,
+                updatedAt: baseNow.addingTimeInterval(-120)
+            ),
+            ArtifactSnapshot(
+                artifactPath: "/brain/release_walkthrough_v2_3.md",
+                title: "Walkthrough · v2.3",
+                summary: "Walkthrough ready",
+                kind: .walkthrough,
+                content: "# Release v2.3 Walkthrough\n\nAll staging verification checks passed.",
+                requestFeedback: false,
+                userFacing: true,
+                version: 1,
+                updatedAt: baseNow.addingTimeInterval(-3500)
+            )
+        ]
+
+        let diffs: [FilePatchDiff] = [
             FilePatchDiff(
-                filePath: "Packages/AntigravityData/Protocol/ConnectEnvelope.swift",
-                additions: 184,
-                deletions: 22,
+                turnNumber: 3,
+                filePath: "middleware/ratelimit.go",
+                additions: 96,
+                deletions: 4,
+                hunkHeader: "@@ -18,9 +18,27 @@ Allow",
+                isReviewed: false,
                 lines: [
-                    DiffLine(id: 1, kind: .hunkHeader, text: "@@ -12,6 +12,19 @@ public struct ConnectEnvelopeFrame: Sendable {"),
-                    DiffLine(id: 2, kind: .context, oldLineNumber: 12, newLineNumber: 12, text: "    public let flags: Flags"),
-                    DiffLine(id: 3, kind: .deletion, oldLineNumber: 13, newLineNumber: nil, text: "    public let rawJSON: String"),
-                    DiffLine(id: 4, kind: .addition, oldLineNumber: nil, newLineNumber: 13, text: "    public let payload: Data"),
-                    DiffLine(id: 5, kind: .addition, oldLineNumber: nil, newLineNumber: 14, text: "    public static let endStream = Flags(rawValue: 0x02)"),
-                    DiffLine(id: 6, kind: .context, oldLineNumber: 14, newLineNumber: 15, text: "}")
+                    DiffLine(id: 1, kind: .hunkHeader, text: "@@ -18,9 +18,27 @@ Allow"),
+                    DiffLine(id: 18, kind: .context, oldLineNumber: 18, newLineNumber: 18, text: "type bucket struct {"),
+                    DiffLine(id: 19, kind: .context, oldLineNumber: 19, newLineNumber: 19, text: "    tokens float64"),
+                    DiffLine(id: 20, kind: .context, oldLineNumber: 20, newLineNumber: 20, text: "    last   time.Time"),
+                    DiffLine(id: 21, kind: .addition, oldLineNumber: nil, newLineNumber: 21, text: "    mu     sync.Mutex", wordHighlightRange: "sync.Mutex"),
+                    DiffLine(id: 22, kind: .context, oldLineNumber: 21, newLineNumber: 22, text: "}"),
+                    DiffLine(id: 23, kind: .context, oldLineNumber: 22, newLineNumber: 23, text: ""),
+                    DiffLine(id: 240, kind: .deletion, oldLineNumber: 24, newLineNumber: nil, text: "const ttl = 5 * time.Minute", wordHighlightRange: "5 * time.Minute"),
+                    DiffLine(id: 241, kind: .addition, oldLineNumber: nil, newLineNumber: 24, text: "const ttl = cfg.BucketTTL", wordHighlightRange: "cfg.BucketTTL"),
+                    DiffLine(id: 25, kind: .context, oldLineNumber: 25, newLineNumber: 25, text: ""),
+                    DiffLine(id: 26, kind: .context, oldLineNumber: 26, newLineNumber: 26, text: "func (l *Limiter) Allow(tenant string) bool {"),
+                    DiffLine(id: 27, kind: .addition, oldLineNumber: nil, newLineNumber: 27, text: "    b := l.bucketFor(tenant)"),
+                    DiffLine(id: 28, kind: .addition, oldLineNumber: nil, newLineNumber: 28, text: "    b.mu.Lock(); defer b.mu.Unlock()"),
+                    DiffLine(id: 29, kind: .addition, oldLineNumber: nil, newLineNumber: 29, text: "    now := time.Now()"),
+                    DiffLine(id: 30, kind: .addition, oldLineNumber: nil, newLineNumber: 30, text: "    elapsed := now.Sub(b.last).Seconds()"),
+                    DiffLine(id: 31, kind: .addition, oldLineNumber: nil, newLineNumber: 31, text: "    b.tokens = min(l.burst, b.tokens+elapsed*l.rate)")
                 ]
             ),
             FilePatchDiff(
-                filePath: "iOS/Views/Composer/ChatComposerView.swift",
-                additions: 215,
-                deletions: 12,
+                turnNumber: 3,
+                filePath: "router/transfers.go",
+                additions: 18,
+                deletions: 6,
+                hunkHeader: "@@ -42,8 +42,20 @@ RegisterTransferRoutes",
+                isReviewed: true,
                 lines: [
-                    DiffLine(id: 10, kind: .hunkHeader, text: "@@ -1,18 +1,64 @@ public struct ChatComposerView: View {"),
-                    DiffLine(id: 11, kind: .addition, oldLineNumber: nil, newLineNumber: 18, text: "    TextField(\"Ask Antigravity or type / for workflows...\", text: $store.composerDraftText, axis: .vertical)"),
-                    DiffLine(id: 12, kind: .addition, oldLineNumber: nil, newLineNumber: 19, text: "        .lineLimit(1...6)")
+                    DiffLine(id: 101, kind: .hunkHeader, text: "@@ -42,8 +42,20 @@ RegisterTransferRoutes"),
+                    DiffLine(id: 102, kind: .addition, oldLineNumber: nil, newLineNumber: 45, text: "    r.Use(middleware.RateLimit(limiter))")
+                ]
+            ),
+            FilePatchDiff(
+                turnNumber: 2,
+                filePath: "middleware/ratelimit_test.go",
+                additions: 10,
+                deletions: 2,
+                hunkHeader: "@@ -1,6 +1,14 @@ TestLimiterAllow",
+                isReviewed: true,
+                lines: [
+                    DiffLine(id: 201, kind: .hunkHeader, text: "@@ -1,6 +1,14 @@ TestLimiterAllow"),
+                    DiffLine(id: 202, kind: .addition, oldLineNumber: nil, newLineNumber: 12, text: "    require.True(t, lim.Allow(\"tenant-acme\"))")
+                ]
+            ),
+            FilePatchDiff(
+                turnNumber: 1,
+                filePath: "config/limits.yaml",
+                additions: 4,
+                deletions: 2,
+                hunkHeader: "@@ -8,4 +8,6 @@ transfers:",
+                isReviewed: false,
+                lines: [
+                    DiffLine(id: 301, kind: .hunkHeader, text: "@@ -8,4 +8,6 @@ transfers:"),
+                    DiffLine(id: 302, kind: .addition, oldLineNumber: nil, newLineNumber: 10, text: "  bucket_ttl: 10m")
                 ]
             )
         ]
 
         let store = AntigravitySessionStore(
-            activeHost: host,
+            hosts: [macHost, cloudHost],
+            activeHost: macHost,
+            projects: projects,
             workspaces: workspaces,
             selectedWorkspaceUri: workspaces[0].workspaceUri,
             summaries: summaries,
-            activeCascadeId: "cas-01-waiting",
-            activeSteps: steps,
+            automations: automations,
+            contextCandidates: contextCandidates,
+            questionSteps: questionSteps,
+            activeQuestionStepIndex: 1,
+            planChanges: planChanges,
+            planComments: planComments,
+            activeCascadeId: "cas-rate-limiter",
+            stepsByCascadeId: [
+                "cas-rate-limiter": rateLimiterSteps,
+                "cas-audit-log-admin": auditQuestionSteps,
+                "cas-flaky-settlement": flakySettlementSteps
+            ],
             activeArtifacts: artifacts,
-            activeTurnDiffs: diffs
+            activeTurnDiffs: diffs,
+            selectedDiffTurn: 3,
+            selectedDiffFileIndex: 0,
+            activeLineCommentDraft: "Use l.clock.Now() — the plan says to inject the clock so tests can control time.",
+            selectedModelConfig: CascadeModelConfig.catalog[0]
         )
         store.composerAttachments = [
             ComposerAttachmentChip(
+                id: "chip-ratelimit",
                 kind: .fileMention,
-                label: "@ConnectEnvelope.swift",
-                targetUri: "file:///home/antigravity/venciallee/iOSAntigravity/Packages/AntigravityData/Protocol/ConnectEnvelope.swift"
+                label: "@ratelimit.go",
+                targetUri: "file:///Users/wl/code/ledger-svc/internal/middleware/ratelimit.go"
             )
         ]
+        store.composerDraftText = "Use 1000/s instead — staging is smaller than prod."
         return store
     }
 }

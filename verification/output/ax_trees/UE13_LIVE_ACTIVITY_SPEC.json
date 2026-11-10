@@ -1,0 +1,66 @@
+{
+  "stateId": "UE13_LIVE_ACTIVITY_SPEC",
+  "viewportWidth": 800,
+  "viewportHeight": 500,
+  "scrollWidth": 800,
+  "scrollHeight": 500,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='di-compact-running']": {
+      "exists": true,
+      "x": 41.3,
+      "y": 132.5,
+      "width": 146,
+      "height": 26,
+      "text": "4/7"
+    },
+    "[data-testid='di-compact-waiting']": {
+      "exists": true,
+      "x": 230.8,
+      "y": 132.5,
+      "width": 148,
+      "height": 26,
+      "text": "Approve"
+    },
+    "[data-testid='di-minimal-ring']": {
+      "exists": true,
+      "x": 521.8,
+      "y": 132.5,
+      "width": 26,
+      "height": 26,
+      "text": ""
+    },
+    "[data-testid='di-compact-done']": {
+      "exists": true,
+      "x": 611.8,
+      "y": 132.5,
+      "width": 148,
+      "height": 26,
+      "text": "\u2713\n+128 -14"
+    },
+    "[data-testid='di-expanded-running']": {
+      "exists": true,
+      "x": 37,
+      "y": 283,
+      "width": 205.4,
+      "height": 110,
+      "text": "Add rate limiter to /transfers\nledger-svc \u00b7 MacBook Pro\n2:41\ngo test ./internal/...\nStop\nOpen"
+    },
+    "[data-testid='di-expanded-waiting']": {
+      "exists": true,
+      "x": 278.4,
+      "y": 282,
+      "width": 253.2,
+      "height": 112,
+      "text": "Run this command?\nAdd rate limiter \u00b7 step 5 of 7\nvegeta attack -rate=2000/s -duration=30s\nDeny\nAllow"
+    },
+    "[data-testid='lockscreen-multi-agent-card']": {
+      "exists": true,
+      "x": 567.6,
+      "y": 319,
+      "width": 211.8,
+      "height": 94,
+      "text": "Agents \u00b7 2 running \u00b7 1 needs you\nAdd rate limiter to /transfers\nApprove: vegeta attack...\nReview\nDark mode for settings page\nCloud \u00b7 step 2 "
+    }
+  }
+}

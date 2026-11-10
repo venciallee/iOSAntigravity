@@ -1,0 +1,82 @@
+{
+  "stateId": "UE06_AUTOMATIONS",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='automation-prompt-input']": {
+      "exists": true,
+      "x": 54,
+      "y": 162,
+      "width": 237,
+      "height": 48,
+      "text": ""
+    },
+    "[data-testid='btn-create-automation-inline']": {
+      "exists": true,
+      "x": 300,
+      "y": 168,
+      "width": 68,
+      "height": 36,
+      "text": "Create"
+    },
+    "[data-testid='automation-card-nightly']": {
+      "exists": true,
+      "x": 16,
+      "y": 252,
+      "width": 361,
+      "height": 156,
+      "text": "Nightly dependency audit\nledger-svc \u00b7 Daily at 02:00 \u00b7 Flash\nNEXT RUN\nTonight, 02:00\nLAST RUN\n\u2713\nSucceeded \u00b7 22h ago"
+    },
+    "[data-testid='btn-run-nightly']": {
+      "exists": true,
+      "x": 317,
+      "y": 268,
+      "width": 44,
+      "height": 44,
+      "text": ""
+    },
+    "[data-testid='automation-card-flaky']": {
+      "exists": true,
+      "x": 16,
+      "y": 418,
+      "width": 361,
+      "height": 140,
+      "text": "Weekly flaky-test report\nledger-svc \u00b7 Mondays at 09:00 \u00b7 Pro\nNEXT RUN\nMon, 09:00\nLAST RUN\nNeeds review \u00b7 2d"
+    },
+    "[data-testid='automation-card-always-on']": {
+      "exists": true,
+      "x": 16,
+      "y": 596,
+      "width": 361,
+      "height": 82,
+      "text": "Triage new pull requests\nweb-console \u00b7 On PR opened \u00b7 Flash Lite\nLast run 14m ago"
+    },
+    "[data-testid='btn-resume-paused']": {
+      "exists": true,
+      "x": 281.6,
+      "y": 726,
+      "width": 79.4,
+      "height": 36,
+      "text": "Resume"
+    },
+    "[data-testid='floating-tab-bar']": {
+      "exists": true,
+      "x": 16,
+      "y": 768,
+      "width": 287,
+      "height": 62,
+      "text": "Agents\nAutomations\nSettings"
+    },
+    "[data-testid='fab-add-automation']": {
+      "exists": true,
+      "x": 315,
+      "y": 768,
+      "width": 62,
+      "height": 62,
+      "text": ""
+    }
+  }
+}

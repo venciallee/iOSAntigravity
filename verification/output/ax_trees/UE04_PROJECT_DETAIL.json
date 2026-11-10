@@ -1,0 +1,66 @@
+{
+  "stateId": "UE04_PROJECT_DETAIL",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='btn-back-agents']": {
+      "exists": true,
+      "x": 16,
+      "y": 56,
+      "width": 88,
+      "height": 44,
+      "text": "Agents"
+    },
+    "[data-testid='project-hero-title']": {
+      "exists": true,
+      "x": 86,
+      "y": 114.5,
+      "width": 132.6,
+      "height": 33,
+      "text": "ledger-svc"
+    },
+    "[data-testid='btn-new-conv-in-project']": {
+      "exists": true,
+      "x": 16,
+      "y": 228,
+      "width": 361,
+      "height": 52,
+      "text": "New Conversation in Project"
+    },
+    "[data-testid='project-tab-active']": {
+      "exists": true,
+      "x": 16,
+      "y": 298,
+      "width": 53,
+      "height": 40,
+      "text": "Active 3"
+    },
+    "[data-testid='project-conv-list']": {
+      "exists": true,
+      "x": 16,
+      "y": 351,
+      "width": 361,
+      "height": 193,
+      "text": "Add rate limiter to /transfers\nnow\nRunning \u00b7 Step 4 of 7\nFix flaky TestSettlementBatch\n8m\nNeeds review \u00b7 Implementation plan ready\nUpgrade t"
+    },
+    "[data-testid='project-row-automation']": {
+      "exists": true,
+      "x": 17,
+      "y": 587,
+      "width": 359,
+      "height": 58,
+      "text": "Nightly dependency audit\nDaily 02:00 \u00b7 Next run in 6h"
+    },
+    "[data-testid='project-row-skills']": {
+      "exists": true,
+      "x": 17,
+      "y": 695,
+      "width": 359,
+      "height": 48,
+      "text": "Project rules & skills\n4"
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "stateId": "UE10_STRUCTURED_QUESTION",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='q-step-1-storage']": {
+      "exists": true,
+      "x": 33,
+      "y": 198,
+      "width": 103.7,
+      "height": 36,
+      "text": "\u2713\n1 Storage"
+    },
+    "[data-testid='q-step-2-actions']": {
+      "exists": true,
+      "x": 144.7,
+      "y": 198,
+      "width": 103.7,
+      "height": 36,
+      "text": "2 Actions"
+    },
+    "[data-testid='q-step-3-retention']": {
+      "exists": true,
+      "x": 256.3,
+      "y": 198,
+      "width": 103.7,
+      "height": 36,
+      "text": "3 Retention"
+    },
+    "[data-testid='q-opt-freeze']": {
+      "exists": true,
+      "x": 33,
+      "y": 331,
+      "width": 327,
+      "height": 52,
+      "text": "Account freeze / unfreeze"
+    },
+    "[data-testid='q-opt-limit']": {
+      "exists": true,
+      "x": 33,
+      "y": 393,
+      "width": 327,
+      "height": 52,
+      "text": "Limit changes"
+    },
+    "[data-testid='q-opt-role']": {
+      "exists": true,
+      "x": 33,
+      "y": 517,
+      "width": 327,
+      "height": 52,
+      "text": "Role & permission changes"
+    },
+    "[data-testid='q-input-something-else']": {
+      "exists": true,
+      "x": 77,
+      "y": 581,
+      "width": 268,
+      "height": 46,
+      "text": ""
+    },
+    "[data-testid='q-btn-back']": {
+      "exists": true,
+      "x": 33,
+      "y": 645,
+      "width": 84,
+      "height": 48,
+      "text": "Back"
+    },
+    "[data-testid='q-btn-next']": {
+      "exists": true,
+      "x": 127,
+      "y": 645,
+      "width": 233,
+      "height": 50,
+      "text": "Next"
+    },
+    "[data-testid='composer-freeform-reply']": {
+      "exists": true,
+      "x": 16,
+      "y": 778,
+      "width": 361,
+      "height": 50,
+      "text": "Reply in your own words"
+    }
+  }
+}

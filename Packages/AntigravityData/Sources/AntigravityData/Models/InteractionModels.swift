@@ -120,11 +120,140 @@ public struct AskQuestionInteractionSpec: Codable, Sendable, Equatable {
     }
 }
 
-/// User decision mode when answering a permission gate.
+// MARK: - Multi-Step Structured Question Wizard (UE10)
+
+/// Single step in the multi-question interactive stepper card (`✓ 1 Storage`, `2 Actions`, `3 Retention` in `UE10`).
+public struct StructuredQuestionStepItem: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var stepNumber: Int
+    public var shortTabTitle: String
+    public var questionTitle: String
+    public var options: [String]
+    public var selectedOptions: Set<String>
+    public var customWriteIn: String
+    public var isCompleted: Bool
+    public var isMultiSelect: Bool
+
+    public init(
+        id: String,
+        stepNumber: Int,
+        shortTabTitle: String,
+        questionTitle: String,
+        options: [String],
+        selectedOptions: Set<String> = [],
+        customWriteIn: String = "",
+        isCompleted: Bool = false,
+        isMultiSelect: Bool = true
+    ) {
+        self.id = id
+        self.stepNumber = stepNumber
+        self.shortTabTitle = shortTabTitle
+        self.questionTitle = questionTitle
+        self.options = options
+        self.selectedOptions = selectedOptions
+        self.customWriteIn = customWriteIn
+        self.isCompleted = isCompleted
+        self.isMultiSelect = isMultiSelect
+    }
+}
+
+public typealias StructuredQuestionStep = StructuredQuestionStepItem
+
+/// User decision mode when answering a permission gate or structured question.
 public enum InteractionDecision: Sendable, Equatable {
     case allowOnce
+    case allowWithFaceID
     case alwaysAllowInTurn
     case allowWithModifiedCommand(String)
     case answerQuestion(selectedOptions: [String], customWriteIn: String?)
     case reject
+}
+
+// MARK: - Typed Sendable HandleCascadeUserInteraction Payload
+
+/// Strictly typed, `Sendable` representation of `exa.cortex_pb.CascadeUserInteraction`
+/// safe to pass across Swift 6 actor isolation boundaries.
+public struct CascadeUserInteractionPayload: Codable, Sendable, Equatable {
+    public struct RunCommandAnswer: Codable, Sendable, Equatable {
+        public var confirm: Bool
+        public var proposedCommandLine: String
+        public var submittedCommandLine: String
+        public var faceIdVerified: Bool
+
+        public init(
+            confirm: Bool,
+            proposedCommandLine: String,
+            submittedCommandLine: String,
+            faceIdVerified: Bool = false
+        ) {
+            self.confirm = confirm
+            self.proposedCommandLine = proposedCommandLine
+            self.submittedCommandLine = submittedCommandLine
+            self.faceIdVerified = faceIdVerified
+        }
+    }
+
+    public struct PermissionAnswer: Codable, Sendable, Equatable {
+        public var allow: Bool
+        public var grantPatterns: [String]
+
+        public init(allow: Bool, grantPatterns: [String] = []) {
+            self.allow = allow
+            self.grantPatterns = grantPatterns
+        }
+    }
+
+    public struct FilePermissionAnswer: Codable, Sendable, Equatable {
+        public var allow: Bool
+        public var scope: String
+        public var absolutePathUri: String?
+
+        public init(allow: Bool, scope: String = "PERMISSION_SCOPE_ONCE", absolutePathUri: String? = nil) {
+            self.allow = allow
+            self.scope = scope
+            self.absolutePathUri = absolutePathUri
+        }
+    }
+
+    public struct AskQuestionAnswer: Codable, Sendable, Equatable {
+        public var selectedOptions: [String]
+        public var customResponse: String?
+
+        public init(selectedOptions: [String], customResponse: String? = nil) {
+            self.selectedOptions = selectedOptions
+            self.customResponse = customResponse
+        }
+    }
+
+    public var cascadeId: String
+    public var stepIndex: Int
+    public var kind: RequestedInteraction.MemberKind
+    public var workspaceUri: String?
+    public var runCommand: RunCommandAnswer?
+    public var permission: PermissionAnswer?
+    public var filePermission: FilePermissionAnswer?
+    public var askQuestion: AskQuestionAnswer?
+    public var genericConfirm: Bool?
+
+    public init(
+        cascadeId: String,
+        stepIndex: Int,
+        kind: RequestedInteraction.MemberKind,
+        workspaceUri: String? = nil,
+        runCommand: RunCommandAnswer? = nil,
+        permission: PermissionAnswer? = nil,
+        filePermission: FilePermissionAnswer? = nil,
+        askQuestion: AskQuestionAnswer? = nil,
+        genericConfirm: Bool? = nil
+    ) {
+        self.cascadeId = cascadeId
+        self.stepIndex = stepIndex
+        self.kind = kind
+        self.workspaceUri = workspaceUri
+        self.runCommand = runCommand
+        self.permission = permission
+        self.filePermission = filePermission
+        self.askQuestion = askQuestion
+        self.genericConfirm = genericConfirm
+    }
 }

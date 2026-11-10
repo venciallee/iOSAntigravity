@@ -1,238 +1,292 @@
 {
-  "schemaVersion": "1.0.0",
+  "specVersion": "2.0.0",
   "project": "iOSAntigravity",
-  "methodology": "ESDD (Executable Spec Driven Development)",
   "targetPlatform": {
     "os": "iOS 18.0+",
-    "deviceBaseline": "iPhone 16 Pro",
-    "viewportPoints": { "width": 393, "height": 852 },
+    "swiftVersion": "6.0",
+    "baselineDevice": "iPhone 16 Pro",
+    "viewportPt": { "width": 393, "height": 852 },
     "scaleFactor": 3,
-    "safeAreaInsets": { "top": 59, "bottom": 34, "left": 0, "right": 0 },
+    "screenshotPx": { "width": 1179, "height": 2556 },
     "minTouchTargetPt": 44
   },
-  "designSystem": {
-    "name": "Antigravity Obsidian & Liquid Glass",
-    "palette": {
-      "canvasObsidian": "#090B10",
-      "surfaceElevated": "#111520",
-      "surfaceCard": "#161B29",
-      "surfaceGlass": "rgba(22, 27, 41, 0.78)",
-      "hairlineBorder": "rgba(255, 255, 255, 0.08)",
-      "accentPrimary": "#6366F1",
-      "accentSecondary": "#8B5CF6",
-      "accentCyan": "#06B6D4",
-      "statusRunning": "#38BDF8",
-      "statusWaiting": "#F59E0B",
-      "statusDone": "#10B981",
-      "statusError": "#F43F5E",
-      "inkReading": "#F8FAFC",
-      "inkLabel": "#E2E8F0",
-      "inkSecondary": "#94A3B8",
-      "inkTertiary": "#64748B"
+  "designTokens": {
+    "colors": {
+      "canvasObsidian": "#090A0D",
+      "surfaceCard": "#141519",
+      "surfaceElevated": "#1D1F26",
+      "surfacePopover": "#25272F",
+      "accentPeriwinkle": "#8EB4FF",
+      "inkOnPrimaryCTA": "#0A0E17",
+      "statusRunning": "#7DA7FF",
+      "statusWaiting": "#EBB365",
+      "statusDone": "#57C88A",
+      "statusError": "#F07167"
     },
-    "typographyHierarchy": [
-      { "tier": "Reading", "usage": "User messages, Agent prose answers", "sizePt": 16, "lineHeightPt": 24, "weight": 400, "ink": "inkReading" },
-      { "tier": "Evidence", "usage": "Modified files, Artifacts, Turn Diff stats, Plan approval", "sizePt": 14, "lineHeightPt": 20, "weight": 500, "ink": "inkLabel" },
-      { "tier": "Process", "usage": "Thinking blocks, Tool calls, Terminal output, Subagent steps", "sizePt": 13, "lineHeightPt": 18, "weight": 400, "ink": "inkSecondary" },
-      { "tier": "Metadata", "usage": "Timestamps, step index, latency, token/effort badges", "sizePt": 11, "lineHeightPt": 14, "weight": 400, "ink": "inkTertiary" },
-      { "tier": "Chrome", "usage": "Navigation headers, Worktree pills, Composer controls, Tab bars", "sizePt": 13, "lineHeightPt": 18, "weight": 500, "ink": "inkSecondary" }
-    ]
+    "typographyTiers": ["Reading", "Evidence", "Process", "Metadata", "Chrome"]
   },
   "states": [
     {
-      "id": "S01_PAIRING_QR",
-      "name": "Remote Control QR & Host Pairing",
-      "controller": "RemotePairingViewController",
-      "deeplink": "antigravity://verify/pairing-qr",
-      "description": "Scans Antigravity Desktop v2.30.0 Remote Control QR code (https://antigravity.google.com/r/<id>) or connects via direct Tailscale/LAN host."
+      "id": "UE01_AGENTS_HOME",
+      "title": "Agents Home (Conversation & Project Hub)",
+      "referenceUEImage": "/home/antigravity/iOS_·_Agents_首页.png",
+      "swiftController": "AgentsHomeViewController",
+      "claimId": "CLAIM-01",
+      "requiredSelectors": [
+        "[data-testid='host-switcher-pill']",
+        "[data-testid='btn-display-options']",
+        "[data-testid='btn-new-project']",
+        "[data-testid='agents-search-input']",
+        "[data-testid='filter-pill-all']",
+        "[data-testid='filter-pill-needs-you']",
+        "[data-testid='pinned-section-card']",
+        "[data-testid='project-group-ledger-svc']",
+        "[data-testid='floating-tab-bar']",
+        "[data-testid='fab-compose']"
+      ]
     },
     {
-      "id": "S02_WORKSPACE_HOME",
-      "name": "Workspace & Jetbox Conversation Catalog",
-      "controller": "WorkspaceHomeViewController",
-      "deeplink": "antigravity://verify/workspace-home",
-      "description": "Displays connected host lt74xt6l0m-golden-star, active Git worktrees, and real-time JetboxSubscribeToSummaries conversations with <10ms SQLite cold start."
+      "id": "UE02_DISPLAY_OPTIONS",
+      "title": "Display Options & Sort Popover Sheet",
+      "referenceUEImage": "/home/antigravity/iOS_·_Display_Options.png",
+      "swiftController": "DisplayOptionsSheetView",
+      "claimId": "CLAIM-02",
+      "requiredSelectors": [
+        "[data-testid='sheet-reset-btn']",
+        "[data-testid='sheet-done-btn']",
+        "[data-testid='row-group-by']",
+        "[data-testid='row-sort-conversations']",
+        "[data-testid='sort-popover-menu']",
+        "[data-testid='toggle-auto-pin']",
+        "[data-testid='toggle-archived-only']",
+        "[data-testid='btn-mark-all-read']"
+      ]
     },
     {
-      "id": "S03_CASCADE_STREAMING",
-      "name": "Cascade Active Streaming & Multi-Step Trajectory",
-      "controller": "CascadeChatViewController",
-      "deeplink": "antigravity://verify/cascade-streaming",
-      "description": "120fps streaming conversation with TaskBoundary progress header, collapsible Thinking capsule, CodeAction pills, RunCommand terminal card, and Liquid Glass Composer."
+      "id": "UE03_CONTEXT_MENU_PIN",
+      "title": "Long-Press Context Preview Menu & Swipe Pin/Archive",
+      "referenceUEImage": "/home/antigravity/iOS_·_长按菜单_Pin.png",
+      "swiftController": "ConversationContextPreviewMenu",
+      "claimId": "CLAIM-03",
+      "requiredSelectors": [
+        "[data-testid='context-preview-card']",
+        "[data-testid='chip-implementation-plan']",
+        "[data-testid='chip-awaiting-review']",
+        "[data-testid='menu-action-pin']",
+        "[data-testid='menu-action-unread']",
+        "[data-testid='menu-action-delete']",
+        "[data-testid='swipe-action-pin']",
+        "[data-testid='swipe-action-archive']"
+      ]
     },
     {
-      "id": "S04_PERMISSION_GATE",
-      "name": "Native Permission Approval & TurnGrants Sheet",
-      "controller": "InteractionGateSheetController",
-      "deeplink": "antigravity://verify/permission-gate",
-      "description": "Handles CORTEX_STEP_STATUS_WAITING (9) with requestedInteraction (runCommand / permission / filePermission) offering Allow Once, Always Allow in Turn (turnGrants), and Safe Auto-Accept."
+      "id": "UE04_PROJECT_DETAIL",
+      "title": "Project Page & New Conversation in Project",
+      "referenceUEImage": "/home/antigravity/iOS_·_项目页_New_Conversation_in_Project.png",
+      "swiftController": "ProjectDetailViewController",
+      "claimId": "CLAIM-04",
+      "requiredSelectors": [
+        "[data-testid='btn-back-agents']",
+        "[data-testid='project-hero-title']",
+        "[data-testid='btn-new-conv-in-project']",
+        "[data-testid='project-tab-active']",
+        "[data-testid='project-conv-list']",
+        "[data-testid='project-row-automation']",
+        "[data-testid='project-row-skills']"
+      ]
     },
     {
-      "id": "S05_ASK_QUESTION_MODAL",
-      "name": "Interactive AskQuestion Elicitation Card",
-      "controller": "InteractionGateSheetController",
-      "deeplink": "antigravity://verify/ask-question",
-      "description": "Renders native multi-choice / single-choice selection sheet when the Agent invokes ask_question, with recommended badge and custom write-in input."
+      "id": "UE05_CREATE_PROJECT",
+      "title": "Create New Project (MacBook Pro / Cloud + GitHub / Drive)",
+      "referenceUEImage": "/home/antigravity/iOS_·_Create_New_Project.png",
+      "swiftController": "CreateProjectSheetView",
+      "claimId": "CLAIM-05",
+      "requiredSelectors": [
+        "[data-testid='btn-cancel-project']",
+        "[data-testid='seg-runs-on-mac']",
+        "[data-testid='seg-runs-on-cloud']",
+        "[data-testid='source-card-github']",
+        "[data-testid='source-card-drive']",
+        "[data-testid='repo-search-input']",
+        "[data-testid='repo-row-ledger-svc']",
+        "[data-testid='btn-submit-create-project']"
+      ]
     },
     {
-      "id": "S06_ARTIFACT_PLAN_REVIEW",
-      "name": "Artifact Implementation Plan & Generative UI Preview",
-      "controller": "ArtifactReviewViewController",
-      "deeplink": "antigravity://verify/artifact-plan",
-      "description": "Displays Antigravity implementation_plan.md artifact with GitHub alerts, Mermaid architecture diagram, and native 'Proceed with Plan' feedback bar."
+      "id": "UE06_AUTOMATIONS",
+      "title": "Automations (Scheduled, Always On, Paused)",
+      "referenceUEImage": "/home/antigravity/iOS_·_Automations.png",
+      "swiftController": "AutomationsViewController",
+      "claimId": "CLAIM-06",
+      "requiredSelectors": [
+        "[data-testid='automation-prompt-input']",
+        "[data-testid='btn-create-automation-inline']",
+        "[data-testid='automation-card-nightly']",
+        "[data-testid='btn-run-nightly']",
+        "[data-testid='automation-card-flaky']",
+        "[data-testid='automation-card-always-on']",
+        "[data-testid='btn-resume-paused']",
+        "[data-testid='floating-tab-bar']",
+        "[data-testid='fab-add-automation']"
+      ]
     },
     {
-      "id": "S07_TURN_DIFF_INSPECTOR",
-      "name": "Native Word-Level Turn Diff & Patch Inspector",
-      "controller": "TurnDiffViewController",
-      "deeplink": "antigravity://verify/turn-diff",
-      "description": "Renders GetTurnDiff / GetPatchAndCodeChange word-level additions/deletions with file tree tabs and hunk navigation."
+      "id": "UE07_CHAT_AND_COMPOSER",
+      "title": "Message List, 7-Segment Task Card, Face ID Command Gate & Composer",
+      "referenceUEImage": "/home/antigravity/iOS_·_消息列表与输入框.png",
+      "swiftController": "CascadeChatViewController",
+      "claimId": "CLAIM-07",
+      "requiredSelectors": [
+        "[data-testid='chat-diff-pill']",
+        "[data-testid='row-thought-14s']",
+        "[data-testid='card-artifact-plan']",
+        "[data-testid='card-task-progress-7seg']",
+        "[data-testid='card-command-approval']",
+        "[data-testid='btn-command-deny']",
+        "[data-testid='btn-command-allow-faceid']",
+        "[data-testid='btn-stop-turn']",
+        "[data-testid='composer-chip-ratelimit']",
+        "[data-testid='composer-btn-add-context']",
+        "[data-testid='composer-pill-mode']",
+        "[data-testid='composer-pill-model']",
+        "[data-testid='composer-btn-send']"
+      ]
     },
     {
-      "id": "S08_LIVE_ACTIVITY_LOCKSCREEN",
-      "name": "Dynamic Island & Lock Screen Live Activity",
-      "controller": "AntigravityLiveActivityWidget",
-      "deeplink": "antigravity://verify/live-activity",
-      "description": "Displays iOS 18 Dynamic Island (Expanded & Compact) and Lock Screen Live Activity banner with real-time step progress, elapsed timer, and interactive AppIntent Approve button."
+      "id": "UE08_ADD_CONTEXT",
+      "title": "Add Context Sheet (Files, Folder, Mentions, Actions, Skills)",
+      "referenceUEImage": "/home/antigravity/iOS_·_Add_Context.png",
+      "swiftController": "AddContextSheetView",
+      "claimId": "CLAIM-08",
+      "requiredSelectors": [
+        "[data-testid='context-search-input']",
+        "[data-testid='tile-files']",
+        "[data-testid='tile-folder']",
+        "[data-testid='tile-mentions']",
+        "[data-testid='tile-actions']",
+        "[data-testid='tile-skills']",
+        "[data-testid='ctx-row-ratelimit']",
+        "[data-testid='ctx-row-go-testing']",
+        "[data-testid='btn-add-to-message']"
+      ]
+    },
+    {
+      "id": "UE09_MODEL_AND_MODE",
+      "title": "Model, Mode (Planning / Fast) & Custom Agent Picker",
+      "referenceUEImage": "/home/antigravity/iOS_·_模型_Agent_模式选择.png",
+      "swiftController": "ModelAndModeSheetView",
+      "claimId": "CLAIM-09",
+      "requiredSelectors": [
+        "[data-testid='btn-model-done']",
+        "[data-testid='mode-card-planning']",
+        "[data-testid='mode-card-fast']",
+        "[data-testid='model-row-gemini-pro']",
+        "[data-testid='model-row-gemini-flash']",
+        "[data-testid='model-row-claude-opus']",
+        "[data-testid='agent-pill-default']",
+        "[data-testid='agent-pill-go-reviewer']"
+      ]
+    },
+    {
+      "id": "UE10_STRUCTURED_QUESTION",
+      "title": "Interactive Multi-Step Multi-Select Question Card",
+      "referenceUEImage": "/home/antigravity/iOS_·_结构化多选问答（可交互）.png",
+      "swiftController": "StructuredQuestionCardView",
+      "claimId": "CLAIM-10",
+      "requiredSelectors": [
+        "[data-testid='q-step-1-storage']",
+        "[data-testid='q-step-2-actions']",
+        "[data-testid='q-step-3-retention']",
+        "[data-testid='q-opt-freeze']",
+        "[data-testid='q-opt-limit']",
+        "[data-testid='q-opt-role']",
+        "[data-testid='q-input-something-else']",
+        "[data-testid='q-btn-back']",
+        "[data-testid='q-btn-next']",
+        "[data-testid='composer-freeform-reply']"
+      ]
+    },
+    {
+      "id": "UE11_PLAN_REVIEW",
+      "title": "Implementation Plan Review & Inline Selection Commenting",
+      "referenceUEImage": "/home/antigravity/iOS_·_Implementation_Plan_审阅.png",
+      "swiftController": "ImplementationPlanReviewViewController",
+      "claimId": "CLAIM-11",
+      "requiredSelectors": [
+        "[data-testid='plan-comments-badge']",
+        "[data-testid='plan-paused-banner']",
+        "[data-testid='plan-pending-comment-card']",
+        "[data-testid='selection-callout-comment']",
+        "[data-testid='btn-plan-proceed']",
+        "[data-testid='btn-plan-send-comments']"
+      ]
+    },
+    {
+      "id": "UE12_TURN_DIFF_REVIEW",
+      "title": "Turn Diff Line-Level Review & Comment Composer",
+      "referenceUEImage": "/home/antigravity/iOS_·_Turn_Diff_行级审查.png",
+      "swiftController": "TurnDiffReviewViewController",
+      "claimId": "CLAIM-12",
+      "requiredSelectors": [
+        "[data-testid='btn-accept-all-diffs']",
+        "[data-testid='turn-pill-3-latest']",
+        "[data-testid='file-pager-card']",
+        "[data-testid='btn-revert-hunk']",
+        "[data-testid='diff-line-29']",
+        "[data-testid='line-comment-composer']",
+        "[data-testid='btn-add-to-review']",
+        "[data-testid='btn-send-to-agent']",
+        "[data-testid='checkbox-viewed']",
+        "[data-testid='btn-revert-file']",
+        "[data-testid='btn-accept-file']"
+      ]
+    },
+    {
+      "id": "UE13_LIVE_ACTIVITY_SPEC",
+      "title": "Dynamic Island (Compact / Minimal / Expanded) & Lock Screen Multi-Agent Spec",
+      "referenceUEImage": "/home/antigravity/灵动岛_Live_Activity_规格.png",
+      "swiftController": "AntigravityLiveActivityWidget",
+      "claimId": "CLAIM-13",
+      "viewportOverridePt": { "width": 800, "height": 500 },
+      "requiredSelectors": [
+        "[data-testid='di-compact-running']",
+        "[data-testid='di-compact-waiting']",
+        "[data-testid='di-minimal-ring']",
+        "[data-testid='di-compact-done']",
+        "[data-testid='di-expanded-running']",
+        "[data-testid='di-expanded-waiting']",
+        "[data-testid='lockscreen-multi-agent-card']"
+      ]
     }
   ],
   "events": [
-    {
-      "id": "E01_SCAN_QR_CODE",
-      "fromState": "S01_PAIRING_QR",
-      "toState": "S02_WORKSPACE_HOME",
-      "rpcMethod": "GetWorkspaceInfos",
-      "trigger": "Scan QR payload https://antigravity.google.com/r/lt74xt6l0m-golden-star"
-    },
-    {
-      "id": "E02_JETBOX_SUMMARY_STREAM",
-      "fromState": "S02_WORKSPACE_HOME",
-      "toState": "S02_WORKSPACE_HOME",
-      "rpcMethod": "JetboxSubscribeToSummaries",
-      "trigger": "Receive 5-byte Connect envelope with initial snapshot + incremental summary delta"
-    },
-    {
-      "id": "E03_OPEN_CASCADE_THREAD",
-      "fromState": "S02_WORKSPACE_HOME",
-      "toState": "S03_CASCADE_STREAMING",
-      "rpcMethod": "GetCascadeTrajectorySteps",
-      "trigger": "Select active conversation row; fetch binary protobuf steps and subscribe to StreamCascadeReactiveUpdates"
-    },
-    {
-      "id": "E04_STEP_WAITING_PERMISSION",
-      "fromState": "S03_CASCADE_STREAMING",
-      "toState": "S04_PERMISSION_GATE",
-      "rpcMethod": "StreamAgentStateUpdates",
-      "trigger": "Receive step with status=CORTEX_STEP_STATUS_WAITING (9) and requestedInteraction.permission / runCommand"
-    },
-    {
-      "id": "E05_APPROVE_INTERACTION",
-      "fromState": "S04_PERMISSION_GATE",
-      "toState": "S03_CASCADE_STREAMING",
-      "rpcMethod": "HandleCascadeUserInteraction",
-      "trigger": "Tap 'Always Allow in Turn' or 'Approve Command' -> dispatches matching oneof member to LanguageServerService"
-    },
-    {
-      "id": "E06_STEP_ASK_QUESTION",
-      "fromState": "S03_CASCADE_STREAMING",
-      "toState": "S05_ASK_QUESTION_MODAL",
-      "rpcMethod": "HandleCascadeUserInteraction",
-      "trigger": "Receive step with requestedInteraction.askQuestion -> user selects option and submits"
-    },
-    {
-      "id": "E07_OPEN_ARTIFACT_PLAN",
-      "fromState": "S03_CASCADE_STREAMING",
-      "toState": "S06_ARTIFACT_PLAN_REVIEW",
-      "rpcMethod": "GetArtifactSnapshots",
-      "trigger": "Tap Artifact card (implementation_plan.md) or 'Review Plan' button"
-    },
-    {
-      "id": "E08_INSPECT_TURN_DIFF",
-      "fromState": "S03_CASCADE_STREAMING",
-      "toState": "S07_TURN_DIFF_INSPECTOR",
-      "rpcMethod": "GetTurnDiff",
-      "trigger": "Tap grouped file changes summary block (+184 -22 across 4 files)"
-    },
-    {
-      "id": "E09_BACKGROUND_LIVE_ACTIVITY",
-      "fromState": "S03_CASCADE_STREAMING",
-      "toState": "S08_LIVE_ACTIVITY_LOCKSCREEN",
-      "rpcMethod": "StreamAgentStateUpdates",
-      "trigger": "App enters background during active Cascade or WAITING permission gate; ActivityKit updates Dynamic Island & Lock Screen"
-    }
+    { "id": "E01", "from": "UE01_AGENTS_HOME", "to": "UE02_DISPLAY_OPTIONS", "trigger": "Tap Display Options filter button" },
+    { "id": "E02", "from": "UE01_AGENTS_HOME", "to": "UE03_CONTEXT_MENU_PIN", "trigger": "Long-press or swipe conversation row" },
+    { "id": "E03", "from": "UE01_AGENTS_HOME", "to": "UE04_PROJECT_DETAIL", "trigger": "Tap project header ledger-svc" },
+    { "id": "E04", "from": "UE01_AGENTS_HOME", "to": "UE05_CREATE_PROJECT", "trigger": "Tap folder+ New Project button" },
+    { "id": "E05", "from": "UE01_AGENTS_HOME", "to": "UE06_AUTOMATIONS", "trigger": "Tap Automations tab in Liquid Glass tab bar" },
+    { "id": "E06", "from": "UE01_AGENTS_HOME", "to": "UE07_CHAT_AND_COMPOSER", "trigger": "Tap conversation row Add rate limiter to /transfers" },
+    { "id": "E07", "from": "UE04_PROJECT_DETAIL", "to": "UE07_CHAT_AND_COMPOSER", "trigger": "Tap New Conversation in Project CTA" },
+    { "id": "E08", "from": "UE07_CHAT_AND_COMPOSER", "to": "UE08_ADD_CONTEXT", "trigger": "Tap + button in ChatComposerView" },
+    { "id": "E09", "from": "UE07_CHAT_AND_COMPOSER", "to": "UE09_MODEL_AND_MODE", "trigger": "Tap Planning or Gemini 3.1 Pro pill in ChatComposerView" },
+    { "id": "E10", "from": "UE07_CHAT_AND_COMPOSER", "to": "UE10_STRUCTURED_QUESTION", "trigger": "Receive ask_question step in trajectory" },
+    { "id": "E11", "from": "UE07_CHAT_AND_COMPOSER", "to": "UE11_PLAN_REVIEW", "trigger": "Tap Implementation Plan artifact card" },
+    { "id": "E12", "from": "UE07_CHAT_AND_COMPOSER", "to": "UE12_TURN_DIFF_REVIEW", "trigger": "Tap +128 -14 diff badge in top bar" },
+    { "id": "E13", "from": "UE07_CHAT_AND_COMPOSER", "to": "UE13_LIVE_ACTIVITY_SPEC", "trigger": "Background app while trajectory is Running or Waiting" }
   ],
   "claims": [
-    {
-      "id": "CLAIM-01",
-      "category": "Remote Control Pairing",
-      "state": "S01_PAIRING_QR",
-      "behavior": "QR Scanner & Host Pairing screen displays camera viewfinder for Antigravity Desktop QR code, parsed device badge 'lt74xt6l0m-golden-star (v2.30.0)', and Dual-Channel connection selector (Cloud Relay vs Direct LAN/Tailscale) with >=44pt buttons.",
-      "requiredSelectors": ["#qr-viewfinder", "#detected-host-card", "#btn-connect-relay", "#btn-connect-direct"],
-      "minTouchTargetSelectors": ["#btn-connect-relay", "#btn-connect-direct"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    },
-    {
-      "id": "CLAIM-02",
-      "category": "Workspace & Jetbox Sync",
-      "state": "S02_WORKSPACE_HOME",
-      "behavior": "Home screen shows connected host pill 'lt74xt6l0m-golden-star', Git worktree filter bar, Pinned & Recent cascades synced via JetboxSubscribeToSummaries, live status badges (RUNNING / WAITING / DONE), and quick New Cascade action.",
-      "requiredSelectors": ["#host-status-pill", "#worktree-filter-bar", "#session-row-waiting", "#session-row-running", "#btn-new-cascade"],
-      "minTouchTargetSelectors": ["#host-status-pill", "#session-row-waiting", "#session-row-running", "#btn-new-cascade"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    },
-    {
-      "id": "CLAIM-03",
-      "category": "Cascade Streaming & Native Step Cards",
-      "state": "S03_CASCADE_STREAMING",
-      "behavior": "Cascade chat screen renders TaskBoundary progress bar, collapsible Thinking block, grouped file modification evidence block, native RunCommand terminal card with exit code 0, and Liquid Glass Composer with model/effort pill (Claude Sonnet 4.5 · High).",
-      "requiredSelectors": ["#task-boundary-banner", "#step-thinking-capsule", "#step-file-evidence-group", "#step-terminal-card", "#liquid-glass-composer", "#composer-send-btn"],
-      "minTouchTargetSelectors": ["#step-thinking-capsule", "#step-file-evidence-group", "#composer-model-pill", "#composer-send-btn"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    },
-    {
-      "id": "CLAIM-04",
-      "category": "Permission Gate & TurnGrants",
-      "state": "S04_PERMISSION_GATE",
-      "behavior": "Waiting step triggers native glass Permission Gate sheet displaying command/resource details, risk badge, Safe Auto-Accept toggle, and three distinct >=44pt action buttons (Allow Once, Always Allow in Turn, Reject).",
-      "requiredSelectors": ["#permission-gate-sheet", "#permission-resource-box", "#toggle-safe-auto-accept", "#btn-allow-once", "#btn-allow-turn-grant", "#btn-reject-permission"],
-      "minTouchTargetSelectors": ["#toggle-safe-auto-accept", "#btn-allow-once", "#btn-allow-turn-grant", "#btn-reject-permission"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    },
-    {
-      "id": "CLAIM-05",
-      "category": "AskQuestion Interactive Elicitation",
-      "state": "S05_ASK_QUESTION_MODAL",
-      "behavior": "Agent ask_question tool call renders native interactive choice sheet with '(Recommended)' badge, selectable option cards (>=44pt), custom write-in field, and Submit Answer button.",
-      "requiredSelectors": ["#ask-question-sheet", "#option-card-0", "#option-card-1", "#option-card-2", "#btn-submit-answer"],
-      "minTouchTargetSelectors": ["#option-card-0", "#option-card-1", "#option-card-2", "#btn-submit-answer"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    },
-    {
-      "id": "CLAIM-06",
-      "category": "Artifact Implementation Plan Review",
-      "state": "S06_ARTIFACT_PLAN_REVIEW",
-      "behavior": "Artifact viewer renders implementation_plan.md with IMPORTANT alert callout, architecture flow diagram, clickable file symbol badges, and bottom RequestFeedback approval bar ('Proceed with Plan' & 'Request Changes').",
-      "requiredSelectors": ["#artifact-header", "#artifact-alert-important", "#artifact-mermaid-diagram", "#btn-proceed-plan", "#btn-edit-plan"],
-      "minTouchTargetSelectors": ["#btn-proceed-plan", "#btn-edit-plan"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    },
-    {
-      "id": "CLAIM-07",
-      "category": "Word-Level Turn Diff Inspector",
-      "state": "S07_TURN_DIFF_INSPECTOR",
-      "behavior": "Turn Diff inspector displays file switcher tabs, addition/deletion counters (+184 -22), line-numbered unified diff with word-level green/red highlights, and Accept/Revert Hunk controls.",
-      "requiredSelectors": ["#diff-file-tabs", "#diff-code-surface", "#btn-accept-patch", "#btn-revert-patch"],
-      "minTouchTargetSelectors": ["#diff-file-tabs", "#btn-accept-patch", "#btn-revert-patch"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    },
-    {
-      "id": "CLAIM-08",
-      "category": "Dynamic Island & Lock Screen Live Activity",
-      "state": "S08_LIVE_ACTIVITY_LOCKSCREEN",
-      "behavior": "iOS 18 Lock Screen & Dynamic Island showcase compact island, expanded island with step progress & timer, and Lock Screen Live Activity notification with one-tap interactive 'Approve Command' AppIntent button.",
-      "requiredSelectors": ["#dynamic-island-expanded", "#lockscreen-live-activity-card", "#btn-live-activity-approve", "#btn-live-activity-open"],
-      "minTouchTargetSelectors": ["#btn-live-activity-approve", "#btn-live-activity-open"],
-      "requiredEvidence": ["screenshot", "ax_tree"]
-    }
+    { "id": "CLAIM-01", "state": "UE01_AGENTS_HOME", "description": "Agents Home renders Host pill, Search, Filter pills, Pinned & Project-grouped conversations, Liquid Glass Tab Bar, and Compose FAB" },
+    { "id": "CLAIM-02", "state": "UE02_DISPLAY_OPTIONS", "description": "Display Options sheet renders Group By, Sort Conversations popover menu, Auto Pin / Archived Only toggles, and Mark All as Read" },
+    { "id": "CLAIM-03", "state": "UE03_CONTEXT_MENU_PIN", "description": "Context Menu renders rich Plan preview card, Pin/Unread/Rename/Move/Archive/Delete actions, and Swipe Pin/Archive shortcuts" },
+    { "id": "CLAIM-04", "state": "UE04_PROJECT_DETAIL", "description": "Project Detail renders ledger-svc metadata pills, New Conversation CTA, Active/Archived/Automations tabs, and This Project tools" },
+    { "id": "CLAIM-05", "state": "UE05_CREATE_PROJECT", "description": "New Project sheet supports MacBook Pro vs Cloud runtime, GitHub vs Drive source, repo search, worktree config, and Create Project CTA" },
+    { "id": "CLAIM-06", "state": "UE06_AUTOMATIONS", "description": "Automations hub renders NL quick-create bar, Scheduled cards with Next/Last Run stats, Always On PR triage, and Paused Resume action" },
+    { "id": "CLAIM-07", "state": "UE07_CHAT_AND_COMPOSER", "description": "Chat screen renders +128 -14 badge, Thought for 14s, Plan card, 7-segment Task card, Face ID Allow/Deny command card, and Composer with @chip, Mode, Model, Mic, and Send" },
+    { "id": "CLAIM-08", "state": "UE08_ADD_CONTEXT", "description": "Add Context sheet renders 5 category tiles (Files, Folder, Mentions, Actions, Skills), multi-select rows, and Add to message CTA" },
+    { "id": "CLAIM-09", "state": "UE09_MODEL_AND_MODE", "description": "Model & Mode sheet renders Planning/Fast cards, Gemini 3.1 Pro / 3.8 Flash / Claude Opus 5.5 / Sonnet 5.5 rows, and Agent persona pills" },
+    { "id": "CLAIM-10", "state": "UE10_STRUCTURED_QUESTION", "description": "Structured Question card renders 3-step stepper pills, multi-select checkboxes, Something else write-in, Back/Next buttons, and freeform composer" },
+    { "id": "CLAIM-11", "state": "UE11_PLAN_REVIEW", "description": "Implementation Plan review renders paused amber banner, MODIFY/NEW badges, pending comment card, text selection Comment/Copy callout, and Proceed / Send 2 comments bar" },
+    { "id": "CLAIM-12", "state": "UE12_TURN_DIFF_REVIEW", "description": "Turn Diff review renders Turn 1..3/All pills, File 1 of 4 pager, Revert hunk, syntax diff lines, Line 29 comment composer, and Viewed / Revert file / Accept file bar" },
+    { "id": "CLAIM-13", "state": "UE13_LIVE_ACTIVITY_SPEC", "description": "Live Activity & Dynamic Island renders all 7 variants: Compact Running/Waiting/Done, Minimal Ring, Expanded Running/Waiting (Face ID), and Lock Screen Multi-Agent card" }
   ]
 }

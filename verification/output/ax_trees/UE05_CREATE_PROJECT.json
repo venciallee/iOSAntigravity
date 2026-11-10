@@ -1,0 +1,74 @@
+{
+  "stateId": "UE05_CREATE_PROJECT",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='btn-cancel-project']": {
+      "exists": true,
+      "x": 16,
+      "y": 75.5,
+      "width": 64,
+      "height": 44,
+      "text": "Cancel"
+    },
+    "[data-testid='seg-runs-on-mac']": {
+      "exists": true,
+      "x": 20,
+      "y": 157.5,
+      "width": 174.5,
+      "height": 40,
+      "text": "MacBook Pro"
+    },
+    "[data-testid='seg-runs-on-cloud']": {
+      "exists": true,
+      "x": 198.5,
+      "y": 157.5,
+      "width": 174.5,
+      "height": 40,
+      "text": "Cloud"
+    },
+    "[data-testid='source-card-github']": {
+      "exists": true,
+      "x": 16,
+      "y": 283.5,
+      "width": 175.5,
+      "height": 76,
+      "text": "GitHub repository"
+    },
+    "[data-testid='source-card-drive']": {
+      "exists": true,
+      "x": 201.5,
+      "y": 283.5,
+      "width": 175.5,
+      "height": 76,
+      "text": "Drive folder"
+    },
+    "[data-testid='repo-search-input']": {
+      "exists": true,
+      "x": 52,
+      "y": 371.5,
+      "width": 313,
+      "height": 44,
+      "text": ""
+    },
+    "[data-testid='repo-row-ledger-svc']": {
+      "exists": true,
+      "x": 16,
+      "y": 425.5,
+      "width": 361,
+      "height": 56,
+      "text": "acme/ledger-svc\nPrivate \u00b7 Go \u00b7 updated 2h ago"
+    },
+    "[data-testid='btn-submit-create-project']": {
+      "exists": true,
+      "x": 16,
+      "y": 772,
+      "width": 361,
+      "height": 54,
+      "text": "Create Project"
+    }
+  }
+}

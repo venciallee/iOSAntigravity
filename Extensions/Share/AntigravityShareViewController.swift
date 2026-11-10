@@ -11,8 +11,8 @@ public struct AntigravityShareSheetView: View {
 
     public init(
         sharedText: String,
-        targetHostName: String = "lt74xt6l0m-golden-star",
-        targetWorkspaceName: String = "venciallee/iOSAntigravity"
+        targetHostName: String = "MacBook Pro",
+        targetWorkspaceName: String = "ledger-svc"
     ) {
         self.sharedText = sharedText
         self.targetHostName = targetHostName
@@ -21,20 +21,23 @@ public struct AntigravityShareSheetView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Send to Antigravity")
-                .font(AntigravityTheme.TypographyTier.evidence.font)
-                .foregroundStyle(AntigravityTheme.inkReading)
-
-            Text("\(targetHostName) · \(targetWorkspaceName)")
-                .font(AntigravityTheme.TypographyTier.metadata.font)
-                .foregroundStyle(AntigravityTheme.inkSecondary)
+            HStack {
+                Text("Send to Antigravity")
+                    .font(AntigravityTheme.TypographyTier.evidence.font)
+                    .foregroundStyle(AntigravityTheme.inkReading)
+                Spacer()
+                Text("\(targetWorkspaceName) · \(targetHostName)")
+                    .font(AntigravityTheme.TypographyTier.metadata.font)
+                    .foregroundStyle(AntigravityTheme.inkSecondary)
+            }
 
             Text(sharedText)
                 .font(AntigravityTheme.TypographyTier.reading.font)
                 .foregroundStyle(AntigravityTheme.inkLabel)
-                .padding(12)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(AntigravityTheme.surfaceElevated)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .padding(20)
         .background(AntigravityTheme.canvasObsidian)

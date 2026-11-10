@@ -6,6 +6,9 @@ public struct OutboxEntry: Codable, Sendable, Equatable, Identifiable {
     public enum PayloadKind: String, Codable, Sendable {
         case userMessage
         case interactionApproval
+        case planComments
+        case diffComments
+        case automationTrigger
     }
 
     public var id: UUID
@@ -30,11 +33,15 @@ public struct OutboxEntry: Codable, Sendable, Equatable, Identifiable {
 }
 
 /// Manages local display projections for `<10ms` instant cold start and offline browsing,
-/// plus the Durable Outbox queue.
+/// plus persisted `AgentDisplayOptions`, `ProjectWorkspace` records, `AutomationItem` records,
+/// and the Durable Outbox queue.
 public actor LocalProjectionStore {
     private let storageDirectory: URL
     private var cachedSummaries: [CascadeSummary] = []
     private var cachedStepsByCascade: [String: [CascadeStep]] = [:]
+    private var cachedProjects: [ProjectWorkspace] = []
+    private var cachedAutomations: [AutomationItem] = []
+    private var cachedDisplayOptions: AgentDisplayOptions?
     private var outboxQueue: [OutboxEntry] = []
 
     public init(storageDirectory: URL? = nil) {
@@ -79,6 +86,63 @@ public actor LocalProjectionStore {
         cachedStepsByCascade[cascadeId] = steps
         let file = storageDirectory.appendingPathComponent("steps_\(cascadeId).json")
         if let data = try? JSONEncoder().encode(steps) {
+            try? data.write(to: file, options: .atomic)
+        }
+    }
+
+    public func loadDisplayOptions() -> AgentDisplayOptions? {
+        if let cachedDisplayOptions { return cachedDisplayOptions }
+        let file = storageDirectory.appendingPathComponent("display_options.json")
+        guard let data = try? Data(contentsOf: file),
+              let decoded = try? JSONDecoder().decode(AgentDisplayOptions.self, from: data) else {
+            return nil
+        }
+        cachedDisplayOptions = decoded
+        return decoded
+    }
+
+    public func saveDisplayOptions(_ options: AgentDisplayOptions) {
+        cachedDisplayOptions = options
+        let file = storageDirectory.appendingPathComponent("display_options.json")
+        if let data = try? JSONEncoder().encode(options) {
+            try? data.write(to: file, options: .atomic)
+        }
+    }
+
+    public func loadProjects() -> [ProjectWorkspace] {
+        if !cachedProjects.isEmpty { return cachedProjects }
+        let file = storageDirectory.appendingPathComponent("projects_projection.json")
+        guard let data = try? Data(contentsOf: file),
+              let decoded = try? JSONDecoder().decode([ProjectWorkspace].self, from: data) else {
+            return []
+        }
+        cachedProjects = decoded
+        return decoded
+    }
+
+    public func saveProjects(_ projects: [ProjectWorkspace]) {
+        cachedProjects = projects
+        let file = storageDirectory.appendingPathComponent("projects_projection.json")
+        if let data = try? JSONEncoder().encode(projects) {
+            try? data.write(to: file, options: .atomic)
+        }
+    }
+
+    public func loadAutomations() -> [AutomationItem] {
+        if !cachedAutomations.isEmpty { return cachedAutomations }
+        let file = storageDirectory.appendingPathComponent("automations_projection.json")
+        guard let data = try? Data(contentsOf: file),
+              let decoded = try? JSONDecoder().decode([AutomationItem].self, from: data) else {
+            return []
+        }
+        cachedAutomations = decoded
+        return decoded
+    }
+
+    public func saveAutomations(_ automations: [AutomationItem]) {
+        cachedAutomations = automations
+        let file = storageDirectory.appendingPathComponent("automations_projection.json")
+        if let data = try? JSONEncoder().encode(automations) {
             try? data.write(to: file, options: .atomic)
         }
     }

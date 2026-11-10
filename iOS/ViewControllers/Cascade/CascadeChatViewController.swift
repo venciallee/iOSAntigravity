@@ -1,17 +1,28 @@
 import SwiftUI
 import AntigravityData
 
-/// State `S03_CASCADE_STREAMING`: Complete Message List (消息列表) view controller.
+/// State `UE07_CHAT_AND_COMPOSER`: Official Message List, 7-Segment Task Card, Face ID Command Gate & Composer (`iOS · 消息列表与输入框`).
 /// Features:
-/// - Top navigation bar with Back to Session List, conversation title, branch badge, Artifacts button, and Turn Diff button
-/// - Sticky `TaskBoundary` progress banner with completion bar (`4/5 · 80%`)
-/// - Grouped & virtualized `ScrollViewReader` message list supporting `CascadeDisplayItem`
-///   (`.single(CascadeStep)` and collapsible `.evidenceGroup(id:steps:)`)
-/// - Floating quick-jump pill for `WAITING` permission gates or latest streaming delta
-/// - Pinned Liquid Glass `ChatComposerView` input bar at the bottom.
+/// - Top navigation bar: `<` back button, `Add rate limiter to /tran...` + `ledger-svc · main · MacBook Pro`,
+///   `+128 -14` diff pill (`chat-diff-pill` -> `.turnDiffReview`), and `•••` menu
+/// - Message stream:
+///   - Previous user message context chips `[@transfers.go]` `[Skill · go-testing]`
+///   - Collapsible `👁 Thought for 14s ›` row (`row-thought-14s`)
+///   - Assistant prose (`Plan approved with your 2 comments. Tests pass — next is a load test, which needs your OK.`)
+///   - Embedded **Implementation Plan** card (`Approved · 2 comments addressed ›`, `card-artifact-plan` -> `.planReview`)
+///   - **7-Segment `Task · 4 of 7 done` (`2m 41s`) Progress Card** (`card-task-progress-7seg`)
+///   - **Inline `Run this command?` Amber Approval Card** (`card-command-approval`, `btn-command-deny`, `btn-command-allow-faceid`)
+/// - Above-composer status strip: `🟠 Waiting for your approval · Step 5 of 7` + `[⏹ Stop]` pill (`btn-stop-turn`)
+/// - Bottom `ChatComposerView`.
 public struct CascadeChatViewController: View {
     @Bindable public var store: AntigravitySessionStore
-    @State private var isTaskBoundarySummaryExpanded: Bool = false
+    @State private var isTurnStopped: Bool = false
+
+    private static let periwinkle = Color(red: 0x8E / 255.0, green: 0xB4 / 255.0, blue: 0xFF / 255.0) // #8EB4FF
+    private static let warmAmber = Color(red: 0xEB / 255.0, green: 0xB3 / 255.0, blue: 0x65 / 255.0) // #EBB365
+    private static let emeraldDone = Color(red: 0x57 / 255.0, green: 0xC8 / 255.0, blue: 0x8A / 255.0) // #57C88A
+    private static let coralError = Color(red: 0xF0 / 255.0, green: 0x71 / 255.0, blue: 0x67 / 255.0) // #F07167
+    private static let pillBg = Color(red: 0x1A / 255.0, green: 0x1C / 255.0, blue: 0x23 / 255.0)
 
     public init(store: AntigravitySessionStore) {
         self.store = store
@@ -21,250 +32,181 @@ public struct CascadeChatViewController: View {
         VStack(spacing: 0) {
             chatTopNavigationBar
 
-            if let tb = store.activeTaskBoundary {
-                taskBoundaryHeaderBanner(tb)
+            Divider()
+                .overlay(Color.white.opacity(0.06))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 9) {
+                    // 1. Previous user message context chips bubble
+                    UserPromptContextBubbleView(
+                        promptText: nil,
+                        contextChips: ["@transfers.go", "Skill · go-testing"]
+                    )
+
+                    // 2. Collapsible `👁 Thought for 14s ›` row
+                    CollapsibleThoughtRowView(durationSeconds: 14)
+
+                    // 3. Assistant prose
+                    Text("Plan approved with your 2 comments. Tests pass — next is a load test, which needs your OK.")
+                        .font(.system(size: 15))
+                        .foregroundStyle(AntigravityTheme.inkReading)
+                        .lineSpacing(2.5)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    // 4. Embedded Implementation Plan artifact card
+                    EmbeddedImplementationPlanCardView(
+                        title: "Implementation Plan",
+                        statusSubtitle: "Approved · 2 comments addressed"
+                    ) {
+                        store.currentRoute = .planReview
+                    }
+
+                    // 5. 7-Segment Task · 4 of 7 done Progress Card
+                    SevenSegmentTaskProgressCardView(
+                        completedCount: 4,
+                        totalCount: 7,
+                        elapsedLabel: "2m 41s"
+                    )
+
+                    // 6. Inline `Run this command?` Amber Approval Card with Face ID Allow
+                    InlineCommandApprovalCardView(store: store)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
             }
 
-            ZStack(alignment: .bottom) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 14) {
-                            ForEach(store.displayItems) { item in
-                                switch item {
-                                case .single(let step):
-                                    CascadeStepCellView(store: store, step: step)
-                                        .id(step.id)
-                                case .evidenceGroup(let groupId, let groupedSteps):
-                                    CascadeEvidenceGroupCardView(
-                                        store: store,
-                                        groupId: groupId,
-                                        steps: groupedSteps
-                                    )
-                                    .id(groupId)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-                    }
-                    .onChange(of: store.activeSteps.count) { _, _ in
-                        if store.isAutoScrollPinnedToBottom, let lastId = store.displayItems.last?.id {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(lastId, anchor: .bottom)
-                            }
-                        } else {
-                            store.unreadStreamingStepCount += 1
-                        }
-                    }
-                }
+            // Above-Composer Status Strip
+            waitingStatusStrip
+                .padding(.horizontal, 14)
+                .padding(.top, 4)
 
-                // Floating Jump Pill when a step is WAITING or user scrolled up during streaming
-                if let waitingStep = store.pendingWaitingStep {
-                    floatingWaitingGatePill(waitingStep: waitingStep)
-                        .padding(.bottom, 10)
-                } else if store.unreadStreamingStepCount > 0 {
-                    floatingUnreadStepsPill
-                        .padding(.bottom, 10)
-                }
-            }
-
+            // Pinned Composer Card
             ChatComposerView(store: store)
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
+                .padding(.bottom, 6)
         }
         .background(AntigravityTheme.canvasObsidian)
     }
 
-    // MARK: - 1. Top Navigation Bar
+    // MARK: - Top Navigation Bar
 
     private var chatTopNavigationBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Button {
-                store.currentRoute = .workspaceHome
+                store.currentRoute = .agentsHome
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text("Cascades")
-                        .font(AntigravityTheme.TypographyTier.chrome.font)
-                }
-                .foregroundStyle(AntigravityTheme.inkLabel)
-                .padding(.horizontal, 10)
-                .frame(minHeight: AntigravityTheme.minTouchTargetPt)
-                .background(AntigravityTheme.surfaceCard)
-                .clipShape(Capsule())
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Self.periwinkle)
+                    .frame(width: AntigravityTheme.minTouchTargetPt, height: AntigravityTheme.minTouchTargetPt)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("btn-back-sessions")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(store.activeSummary?.title ?? "Active Cascade")
-                    .font(AntigravityTheme.TypographyTier.evidence.font)
+                Text("Add rate limiter to /transfers")
+                    .font(.system(size: 15.5, weight: .bold))
                     .foregroundStyle(AntigravityTheme.inkReading)
                     .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text("⎇ \(store.activeSummary?.branchName ?? "main")")
-                        .font(AntigravityTheme.TypographyTier.metadata.font)
-                        .foregroundStyle(AntigravityTheme.accentSecondary)
-                    Text("· \(store.activeSteps.count) steps")
-                        .font(AntigravityTheme.TypographyTier.metadata.font)
-                        .foregroundStyle(AntigravityTheme.inkSecondary)
-                }
+                    .truncationMode(.tail)
+
+                Text("ledger-svc · main · MacBook Pro")
+                    .font(.system(size: 12))
+                    .foregroundStyle(AntigravityTheme.inkSecondary)
+                    .lineLimit(1)
             }
 
-            Spacer()
+            Spacer(minLength: 4)
 
-            // Artifact Review Inspector Button
+            // `+128 -14` Diff Pill -> `.turnDiffReview`
             Button {
-                store.currentRoute = .artifactInspector
+                store.currentRoute = .turnDiffReview
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "doc.text.fill")
-                        .font(.system(size: 13))
-                    Text("\(store.activeArtifacts.count)")
-                        .font(AntigravityTheme.TypographyTier.metadata.font)
+                HStack(spacing: 5) {
+                    Text("+128")
+                        .foregroundStyle(Self.emeraldDone)
+                    Text("-14")
+                        .foregroundStyle(Self.coralError)
                 }
-                .foregroundStyle(AntigravityTheme.inkLabel)
-                .padding(.horizontal, 10)
+                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 11)
                 .frame(minWidth: AntigravityTheme.minTouchTargetPt, minHeight: AntigravityTheme.minTouchTargetPt)
-                .background(AntigravityTheme.surfaceCard)
+                .background(Self.pillBg)
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("btn-open-artifacts")
+            .accessibilityIdentifier("chat-diff-pill")
 
-            // Turn Diff Inspector Button
-            Button {
-                store.currentRoute = .turnDiffInspector
+            // `•••` Overflow Menu
+            Menu {
+                Button("Open Implementation Plan") {
+                    store.currentRoute = .planReview
+                }
+                Button("Review Turn Changes") {
+                    store.currentRoute = .turnDiffReview
+                }
+                Button("Structured Question Demo") {
+                    store.currentRoute = .structuredQuestion
+                }
             } label: {
-                let totalAdd = store.activeTurnDiffs.reduce(0) { $0 + $1.additions }
-                let totalDel = store.activeTurnDiffs.reduce(0) { $0 + $1.deletions }
-                Text("+\(totalAdd) -\(totalDel)")
-                    .font(AntigravityTheme.TypographyTier.metadata.font)
-                    .foregroundStyle(AntigravityTheme.statusDone)
-                    .padding(.horizontal, 10)
-                    .frame(minWidth: AntigravityTheme.minTouchTargetPt, minHeight: AntigravityTheme.minTouchTargetPt)
-                    .background(AntigravityTheme.surfaceCard)
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("btn-open-turn-diff")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(AntigravityTheme.surfaceObsidian)
-    }
-
-    // MARK: - 2. Sticky TaskBoundary Progress Banner
-
-    private func taskBoundaryHeaderBanner(_ tb: TaskBoundaryPayload) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                isTaskBoundarySummaryExpanded.toggle()
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(AntigravityTheme.statusRunning)
-                            .frame(width: 7, height: 7)
-                        Text(tb.taskName)
-                            .font(AntigravityTheme.TypographyTier.evidence.font)
-                            .foregroundStyle(AntigravityTheme.inkReading)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Text("\(tb.completedItems)/\(tb.totalItems) · \(Int(tb.progressFraction * 100))%")
-                        .font(AntigravityTheme.TypographyTier.metadata.font)
-                        .foregroundStyle(AntigravityTheme.accentSecondary)
-                }
-
-                // Progress Bar
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(AntigravityTheme.surfaceCard)
-                            .frame(height: 5)
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [AntigravityTheme.accentPrimary, AntigravityTheme.accentSecondary],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(width: max(12, geo.size.width * tb.progressFraction), height: 5)
-                    }
-                }
-                .frame(height: 5)
-
-                Text(tb.taskStatus)
-                    .font(AntigravityTheme.TypographyTier.process.font)
-                    .foregroundStyle(AntigravityTheme.statusRunning)
-                    .lineLimit(1)
-
-                if isTaskBoundarySummaryExpanded {
-                    Text(tb.taskSummary)
-                        .font(AntigravityTheme.TypographyTier.process.font)
-                        .foregroundStyle(AntigravityTheme.inkSecondary)
-                        .padding(.top, 2)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(AntigravityTheme.surfaceElevated)
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("task-boundary-banner")
-    }
-
-    // MARK: - 3. Floating Waiting Gate & Unread Pills
-
-    private func floatingWaitingGatePill(waitingStep: CascadeStep) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(AntigravityTheme.statusWaiting)
-            Text("Step #\(waitingStep.stepIndex) waiting for approval")
-                .font(AntigravityTheme.TypographyTier.chrome.font)
-                .foregroundStyle(AntigravityTheme.inkReading)
-            Button {
-                store.resolveWaitingStep(stepIndex: waitingStep.stepIndex, decision: .allowOnce)
-            } label: {
-                Text("Approve Now")
-                    .font(AntigravityTheme.TypographyTier.chrome.font)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AntigravityTheme.inkReading)
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: AntigravityTheme.minTouchTargetPt)
-                    .background(AntigravityTheme.accentPrimary)
-                    .clipShape(Capsule())
+                    .frame(width: AntigravityTheme.minTouchTargetPt, height: AntigravityTheme.minTouchTargetPt)
             }
-            .buttonStyle(.plain)
+            .accessibilityIdentifier("btn-chat-more")
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 6)
-        .padding(.vertical, 4)
-        .antigravityGlass(cornerRadius: 24, isHighlighted: true)
-        .accessibilityIdentifier("floating-waiting-gate-pill")
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
     }
 
-    private var floatingUnreadStepsPill: some View {
-        Button {
-            store.unreadStreamingStepCount = 0
-            store.isAutoScrollPinnedToBottom = true
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.down.circle.fill")
-                Text("\(store.unreadStreamingStepCount) new streaming steps")
-                    .font(AntigravityTheme.TypographyTier.chrome.font)
+    // MARK: - Above-Composer Status Strip
+
+    private var waitingStatusStrip: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(isTurnStopped ? AntigravityTheme.inkSecondary : Self.warmAmber)
+                .frame(width: 8, height: 8)
+
+            Text(
+                isTurnStopped
+                    ? "Turn stopped · Step 5 of 7"
+                    : "Waiting for your approval · Step 5 of 7"
+            )
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(isTurnStopped ? AntigravityTheme.inkSecondary : Self.warmAmber)
+            .lineLimit(1)
+
+            Spacer()
+
+            Button {
+                isTurnStopped = true
+                store.stopActiveCascadeStreaming()
+            } label: {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                        .fill(Color.white)
+                        .frame(width: 9, height: 9)
+                    Text("Stop")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(AntigravityTheme.inkReading)
+                }
+                .padding(.horizontal, 14)
+                .frame(minWidth: AntigravityTheme.minTouchTargetPt, minHeight: AntigravityTheme.minTouchTargetPt)
+                .background(Self.pillBg)
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+                .clipShape(Capsule())
             }
-            .foregroundStyle(AntigravityTheme.inkReading)
-            .padding(.horizontal, 14)
-            .frame(minHeight: AntigravityTheme.minTouchTargetPt)
-            .antigravityGlass(cornerRadius: 22, isHighlighted: true)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("btn-stop-turn")
         }
-        .buttonStyle(.plain)
     }
 }

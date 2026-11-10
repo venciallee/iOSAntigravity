@@ -1,0 +1,114 @@
+{
+  "stateId": "UE07_CHAT_AND_COMPOSER",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='chat-diff-pill']": {
+      "exists": true,
+      "x": 269,
+      "y": 56,
+      "width": 82,
+      "height": 32,
+      "text": "+128 -14"
+    },
+    "[data-testid='row-thought-14s']": {
+      "exists": true,
+      "x": 16,
+      "y": 135,
+      "width": 138.9,
+      "height": 30,
+      "text": "Thought for 14s"
+    },
+    "[data-testid='card-artifact-plan']": {
+      "exists": true,
+      "x": 16,
+      "y": 228,
+      "width": 361,
+      "height": 60,
+      "text": "Implementation Plan\nApproved \u00b7 2 comments addressed"
+    },
+    "[data-testid='card-task-progress-7seg']": {
+      "exists": true,
+      "x": 16,
+      "y": 298,
+      "width": 361,
+      "height": 138,
+      "text": "Task \u00b7 4 of 7 done\n2m 41s\n\u2713\nWire limiter into router\n\u2713\ngo test ./internal/...\n42 passed\nLoad test with vegeta"
+    },
+    "[data-testid='card-command-approval']": {
+      "exists": true,
+      "x": 16,
+      "y": 446,
+      "width": 361,
+      "height": 181.5,
+      "text": "Run this command?\nvegeta attack -rate=2000/s -duration=30s \\\n\u00a0\u00a0-targets=load/transfers.txt | vegeta\nreport\nDeny\nAllow"
+    },
+    "[data-testid='btn-command-deny']": {
+      "exists": true,
+      "x": 31,
+      "y": 569.5,
+      "width": 149.3,
+      "height": 44,
+      "text": "Deny"
+    },
+    "[data-testid='btn-command-allow-faceid']": {
+      "exists": true,
+      "x": 190.3,
+      "y": 569.5,
+      "width": 171.7,
+      "height": 44,
+      "text": "Allow"
+    },
+    "[data-testid='btn-stop-turn']": {
+      "exists": true,
+      "x": 313.2,
+      "y": 637.5,
+      "width": 63.8,
+      "height": 32,
+      "text": "Stop"
+    },
+    "[data-testid='composer-chip-ratelimit']": {
+      "exists": true,
+      "x": 29,
+      "y": 695,
+      "width": 126.8,
+      "height": 28,
+      "text": "@ratelimit.go\n\u00d7"
+    },
+    "[data-testid='composer-btn-add-context']": {
+      "exists": true,
+      "x": 29,
+      "y": 783,
+      "width": 36,
+      "height": 36,
+      "text": ""
+    },
+    "[data-testid='composer-pill-mode']": {
+      "exists": true,
+      "x": 72,
+      "y": 784,
+      "width": 92.5,
+      "height": 34,
+      "text": "Planning"
+    },
+    "[data-testid='composer-pill-model']": {
+      "exists": true,
+      "x": 171.5,
+      "y": 784,
+      "width": 127,
+      "height": 34,
+      "text": "Gemini 3.1 Pro"
+    },
+    "[data-testid='composer-btn-send']": {
+      "exists": true,
+      "x": 326,
+      "y": 782,
+      "width": 38,
+      "height": 38,
+      "text": ""
+    }
+  }
+}

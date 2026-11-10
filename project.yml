@@ -17,6 +17,9 @@ targets:
     sources:
       - path: iOS
       - path: Shared
+      - path: Extensions/LiveActivity
+        excludes:
+          - "**/*Bundle*"
     dependencies:
       - package: AntigravityData
       - target: AntigravityLiveActivity
@@ -30,6 +33,7 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "Scan the Remote Control QR code from Antigravity Desktop to pair your device."
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Dictate prompts to Antigravity using real-time voice transcription."
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "Authorize agent terminal commands and external permissions with Face ID."
         INFOPLIST_KEY_NSSupportsLiveActivities: YES
         SWIFT_VERSION: "6.0"
 

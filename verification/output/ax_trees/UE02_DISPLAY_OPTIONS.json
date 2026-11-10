@@ -1,0 +1,74 @@
+{
+  "stateId": "UE02_DISPLAY_OPTIONS",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='sheet-reset-btn']": {
+      "exists": true,
+      "x": 16,
+      "y": 192.5,
+      "width": 56,
+      "height": 44,
+      "text": "Reset"
+    },
+    "[data-testid='sheet-done-btn']": {
+      "exists": true,
+      "x": 321,
+      "y": 192.5,
+      "width": 56,
+      "height": 44,
+      "text": "Done"
+    },
+    "[data-testid='row-group-by']": {
+      "exists": true,
+      "x": 16,
+      "y": 249.5,
+      "width": 361,
+      "height": 50,
+      "text": "Group By\nProject"
+    },
+    "[data-testid='row-sort-conversations']": {
+      "exists": true,
+      "x": 16,
+      "y": 300.5,
+      "width": 361,
+      "height": 50,
+      "text": "Sort Conversations\nLast Updated"
+    },
+    "[data-testid='sort-popover-menu']": {
+      "exists": true,
+      "x": 124,
+      "y": 360,
+      "width": 238,
+      "height": 240,
+      "text": "Last Updated\nDate Created\nTitle\nNewest First\nOldest First"
+    },
+    "[data-testid='toggle-auto-pin']": {
+      "exists": true,
+      "x": 16,
+      "y": 526.5,
+      "width": 361,
+      "height": 64,
+      "text": "Auto Pin\nPin a conversation when you message it"
+    },
+    "[data-testid='toggle-archived-only']": {
+      "exists": true,
+      "x": 16,
+      "y": 591.5,
+      "width": 361,
+      "height": 64,
+      "text": "Archived Only\nShow only archived conversations"
+    },
+    "[data-testid='btn-mark-all-read']": {
+      "exists": true,
+      "x": 16,
+      "y": 669.5,
+      "width": 361,
+      "height": 50,
+      "text": "Mark All as Read\n3 unread"
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "stateId": "UE01_AGENTS_HOME",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='host-switcher-pill']": {
+      "exists": true,
+      "x": 16,
+      "y": 56,
+      "width": 154.2,
+      "height": 44,
+      "text": "MacBook Pro"
+    },
+    "[data-testid='btn-display-options']": {
+      "exists": true,
+      "x": 279,
+      "y": 56,
+      "width": 44,
+      "height": 44,
+      "text": ""
+    },
+    "[data-testid='btn-new-project']": {
+      "exists": true,
+      "x": 333,
+      "y": 56,
+      "width": 44,
+      "height": 44,
+      "text": ""
+    },
+    "[data-testid='agents-search-input']": {
+      "exists": true,
+      "x": 54,
+      "y": 166,
+      "width": 310,
+      "height": 44,
+      "text": ""
+    },
+    "[data-testid='filter-pill-all']": {
+      "exists": true,
+      "x": 16,
+      "y": 222,
+      "width": 46,
+      "height": 36,
+      "text": "All"
+    },
+    "[data-testid='filter-pill-needs-you']": {
+      "exists": true,
+      "x": 173.6,
+      "y": 222,
+      "width": 111.8,
+      "height": 36,
+      "text": "Needs you 1"
+    },
+    "[data-testid='pinned-section-card']": {
+      "exists": true,
+      "x": 16,
+      "y": 296,
+      "width": 361,
+      "height": 163,
+      "text": "Add rate limiter to /transfers\nnow\nRunning \u00b7 Step 4 of 7 \u00b7 go test ./internal/...\nledger-svc\nRelease checklist v2.3\n1h\nDone \u00b7 Walkthrough re"
+    },
+    "[data-testid='project-group-ledger-svc']": {
+      "exists": true,
+      "x": 16,
+      "y": 477,
+      "width": 361,
+      "height": 236,
+      "text": "ledger-svc\nLocal \u00b7 MacBook Pro \u00b7 main\nFix flaky TestSettlementBatch\n8m\nNeeds review \u00b7 Implementation plan ready\nUpgrade to Go 1.25\n1h\nDone \u00b7"
+    },
+    "[data-testid='floating-tab-bar']": {
+      "exists": true,
+      "x": 16,
+      "y": 768,
+      "width": 287,
+      "height": 62,
+      "text": "Agents\nAutomations\nSettings"
+    },
+    "[data-testid='fab-compose']": {
+      "exists": true,
+      "x": 315,
+      "y": 768,
+      "width": 62,
+      "height": 62,
+      "text": ""
+    }
+  }
+}

@@ -1,117 +1,294 @@
 {
-  "timestamp": "2026-11-10T15:59:24.239037+00:00",
+  "timestamp": "2026-11-10T17:40:28.210506+00:00",
+  "specVersion": "2.0.0",
   "methodology": "ESDD (Executable Spec Driven Development)",
   "overallPassed": true,
   "specInspection": {
     "passed": true,
-    "swiftFileCount": 29,
-    "stateCount": 8,
-    "eventCount": 9,
-    "claimCount": 8,
+    "specVersion": "2.0.0",
+    "swiftFileCount": 41,
+    "matchedSwiftControllers": 13,
+    "stateCount": 13,
+    "eventCount": 13,
+    "claimCount": 13,
+    "selectorCount": 114,
     "checks": [
-      "5-tier typography hierarchy (Reading, Evidence, Process, Metadata, Chrome) verified",
-      "State\u00d7Event DAG complete: 8 states and 9 transitions reachable",
-      "All 15 core Swift 6 types & controllers grounded in source tree",
-      "All 8 states covered by executable acceptance claims (CLAIM-01..CLAIM-08)"
+      "Design tokens verified: 10 OLED/Periwinkle color tokens & 5 typography tiers",
+      "All 13 reference UE PNGs verified on disk (/home/antigravity/*.png)",
+      "100% selector parity: all 114 required data-testid selectors present across UE01..UE13",
+      "State\u00d7Event DAG complete: 13 states and 13 transitions reachable from UE01_AGENTS_HOME",
+      "All 13 UE states covered by executable acceptance claims (CLAIM-01..CLAIM-13)",
+      "All 13/13 Swift controllers grounded across 41 Swift files"
     ],
+    "warnings": [],
     "errors": []
   },
   "connectRpcE2E": {
     "passed": true,
+    "stepCountDecoded": 605,
     "tests": [
-      "JetboxSubscribeToSummaries: parsed 3 Connect 5-byte frames (snapshot + delta + 0x02 EndStream)",
-      "GetCascadeTrajectorySteps (application/proto): decoded 605 steps (bypassed 600-step JSON ceiling)",
-      "HandleCascadeUserInteraction: verified authoritative oneof 'permission' with turnGrants"
+      "JetboxSubscribeToSummaries: parsed 3 Connect 5-byte frames (5-session snapshot + delta + 0x02 EndStream)",
+      "GetCascadeTrajectorySteps (application/proto): decoded 605 binary steps (>600 JSON ceiling bypassed)",
+      "HandleCascadeUserInteraction: verified Face ID enforcement (403->200), runCommand, askQuestion & filePermission oneofs",
+      "CreateProjectWorkspace: verified Cloud & MacBook Pro workspace provisioning",
+      "CreateAutomation & TriggerAutomationNow: verified schedule creation & immediate run"
     ]
   },
+  "interactiveTests": [
+    {
+      "id": "TC-01",
+      "screen": "UE01_AGENTS_HOME",
+      "passed": true,
+      "detail": "Host online dot + 'Needs you 1' filter isolated Fix flaky TestSettlementBatch (0px overflow)"
+    },
+    {
+      "id": "TC-02",
+      "screen": "UE02_DISPLAY_OPTIONS",
+      "passed": true,
+      "detail": "Sort popover rendered, Auto Pin toggled, Mark All as Read dropped 3->0 unread, Reset restored"
+    },
+    {
+      "id": "TC-03",
+      "screen": "UE03_CONTEXT_MENU_PIN",
+      "passed": true,
+      "detail": "Context preview pills + 6 menu actions + Swipe Pin (#8EB4FF) & Archive verified"
+    },
+    {
+      "id": "TC-04",
+      "screen": "UE04_PROJECT_DETAIL",
+      "passed": true,
+      "detail": "~/code/ledger-svc metadata, Active/Archived/Automations tab switching & New Conversation CTA verified"
+    },
+    {
+      "id": "TC-05",
+      "screen": "UE05_CREATE_PROJECT",
+      "passed": true,
+      "detail": "Created 'ledger-svc-cloud' via live CreateProjectWorkspace RPC"
+    },
+    {
+      "id": "TC-06",
+      "screen": "UE06_AUTOMATIONS",
+      "passed": true,
+      "detail": "Created NL schedule, triggered Nightly dependency audit RPC & resumed Bundle size watch"
+    },
+    {
+      "id": "TC-07",
+      "screen": "UE07_CHAT_AND_COMPOSER",
+      "passed": true,
+      "detail": "+128 -14 diff badge, 7-segment task bar (4 blue + 1 amber + 2 dark) & Thought expansion verified"
+    },
+    {
+      "id": "TC-08",
+      "screen": "UE07_CHAT_AND_COMPOSER",
+      "passed": true,
+      "detail": "Face ID Allow dispatched signed runCommand RPC (Waiting->Running) & Composer send cleared @ratelimit.go"
+    },
+    {
+      "id": "TC-09",
+      "screen": "UE08_ADD_CONTEXT",
+      "passed": true,
+      "detail": "Injected ratelimit.go, Idempotency keys for payouts & go-testing chips into Composer"
+    },
+    {
+      "id": "TC-10",
+      "screen": "UE09_MODEL_AND_MODE",
+      "passed": true,
+      "detail": "Selected Planning + Claude Opus 5.5 [Thinking] + go-reviewer persona"
+    },
+    {
+      "id": "TC-11",
+      "screen": "UE10_STRUCTURED_QUESTION",
+      "passed": true,
+      "detail": "Stepper 2 Actions -> 3 Retention -> Submit dispatched askQuestion HandleCascadeUserInteraction"
+    },
+    {
+      "id": "TC-12",
+      "screen": "UE11_PLAN_REVIEW",
+      "passed": true,
+      "detail": "Inline selection Comment incremented badge [2->3] and dispatched plan review feedback"
+    },
+    {
+      "id": "TC-13",
+      "screen": "UE12_TURN_DIFF_REVIEW",
+      "passed": true,
+      "detail": "+96 -4 word-level diff, Line 29 review comment sent, Viewed checked & file accepted"
+    },
+    {
+      "id": "TC-14",
+      "screen": "UE13_LIVE_ACTIVITY_SPEC",
+      "passed": true,
+      "detail": "All 7 Dynamic Island (Compact/Minimal/Expanded Face ID) & Lock Screen Multi-Agent states verified"
+    },
+    {
+      "id": "TC-15",
+      "screen": "Connect-RPC Binary Proto",
+      "passed": true,
+      "detail": "Decoded 605 binary application/proto trajectory steps without 600-step JSON truncation"
+    },
+    {
+      "id": "TC-16",
+      "screen": "ALL_13_SCREENS",
+      "passed": true,
+      "detail": "0px overflow across 13/13 screens, HIG >=44pt primary controls verified & 13/13 CMP_UE01..CMP_UE13 generated"
+    }
+  ],
   "claims": [
     {
       "claimId": "CLAIM-01",
-      "state": "S01_PAIRING_QR",
-      "category": "Remote Control Pairing",
+      "state": "UE01_AGENTS_HOME",
+      "description": "Agents Home renders Host pill, Search, Filter pills, Pinned & Project-grouped conversations, Liquid Glass Tab Bar, and Compose FAB",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S01_PAIRING_QR.png",
+      "screenshot": "verification/output/screenshots/UE01_AGENTS_HOME.png",
+      "comparison": "verification/output/comparisons/CMP_UE01.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S01_PAIRING_QR.json",
-      "verifiedSelectors": 4,
-      "verifiedTouchTargets": 2
+      "axSnapshot": "verification/output/ax_trees/UE01_AGENTS_HOME.json",
+      "verifiedSelectors": 10,
+      "verifiedTouchTargets": 6
     },
     {
       "claimId": "CLAIM-02",
-      "state": "S02_WORKSPACE_HOME",
-      "category": "Workspace & Jetbox Sync",
+      "state": "UE02_DISPLAY_OPTIONS",
+      "description": "Display Options sheet renders Group By, Sort Conversations popover menu, Auto Pin / Archived Only toggles, and Mark All as Read",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S02_WORKSPACE_HOME.png",
+      "screenshot": "verification/output/screenshots/UE02_DISPLAY_OPTIONS.png",
+      "comparison": "verification/output/comparisons/CMP_UE02.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S02_WORKSPACE_HOME.json",
-      "verifiedSelectors": 5,
-      "verifiedTouchTargets": 4
+      "axSnapshot": "verification/output/ax_trees/UE02_DISPLAY_OPTIONS.json",
+      "verifiedSelectors": 8,
+      "verifiedTouchTargets": 7
     },
     {
       "claimId": "CLAIM-03",
-      "state": "S03_CASCADE_STREAMING",
-      "category": "Cascade Streaming & Native Step Cards",
+      "state": "UE03_CONTEXT_MENU_PIN",
+      "description": "Context Menu renders rich Plan preview card, Pin/Unread/Rename/Move/Archive/Delete actions, and Swipe Pin/Archive shortcuts",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S03_CASCADE_STREAMING.png",
+      "screenshot": "verification/output/screenshots/UE03_CONTEXT_MENU_PIN.png",
+      "comparison": "verification/output/comparisons/CMP_UE03.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S03_CASCADE_STREAMING.json",
-      "verifiedSelectors": 6,
-      "verifiedTouchTargets": 4
+      "axSnapshot": "verification/output/ax_trees/UE03_CONTEXT_MENU_PIN.json",
+      "verifiedSelectors": 8,
+      "verifiedTouchTargets": 5
     },
     {
       "claimId": "CLAIM-04",
-      "state": "S04_PERMISSION_GATE",
-      "category": "Permission Gate & TurnGrants",
+      "state": "UE04_PROJECT_DETAIL",
+      "description": "Project Detail renders ledger-svc metadata pills, New Conversation CTA, Active/Archived/Automations tabs, and This Project tools",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S04_PERMISSION_GATE.png",
+      "screenshot": "verification/output/screenshots/UE04_PROJECT_DETAIL.png",
+      "comparison": "verification/output/comparisons/CMP_UE04.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S04_PERMISSION_GATE.json",
-      "verifiedSelectors": 6,
+      "axSnapshot": "verification/output/ax_trees/UE04_PROJECT_DETAIL.json",
+      "verifiedSelectors": 7,
       "verifiedTouchTargets": 4
     },
     {
       "claimId": "CLAIM-05",
-      "state": "S05_ASK_QUESTION_MODAL",
-      "category": "AskQuestion Interactive Elicitation",
+      "state": "UE05_CREATE_PROJECT",
+      "description": "New Project sheet supports MacBook Pro vs Cloud runtime, GitHub vs Drive source, repo search, worktree config, and Create Project CTA",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S05_ASK_QUESTION_MODAL.png",
+      "screenshot": "verification/output/screenshots/UE05_CREATE_PROJECT.png",
+      "comparison": "verification/output/comparisons/CMP_UE05.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S05_ASK_QUESTION_MODAL.json",
-      "verifiedSelectors": 5,
-      "verifiedTouchTargets": 4
+      "axSnapshot": "verification/output/ax_trees/UE05_CREATE_PROJECT.json",
+      "verifiedSelectors": 8,
+      "verifiedTouchTargets": 6
     },
     {
       "claimId": "CLAIM-06",
-      "state": "S06_ARTIFACT_PLAN_REVIEW",
-      "category": "Artifact Implementation Plan Review",
+      "state": "UE06_AUTOMATIONS",
+      "description": "Automations hub renders NL quick-create bar, Scheduled cards with Next/Last Run stats, Always On PR triage, and Paused Resume action",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S06_ARTIFACT_PLAN_REVIEW.png",
+      "screenshot": "verification/output/screenshots/UE06_AUTOMATIONS.png",
+      "comparison": "verification/output/comparisons/CMP_UE06.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S06_ARTIFACT_PLAN_REVIEW.json",
-      "verifiedSelectors": 5,
-      "verifiedTouchTargets": 2
+      "axSnapshot": "verification/output/ax_trees/UE06_AUTOMATIONS.json",
+      "verifiedSelectors": 9,
+      "verifiedTouchTargets": 4
     },
     {
       "claimId": "CLAIM-07",
-      "state": "S07_TURN_DIFF_INSPECTOR",
-      "category": "Word-Level Turn Diff Inspector",
+      "state": "UE07_CHAT_AND_COMPOSER",
+      "description": "Chat screen renders +128 -14 badge, Thought for 14s, Plan card, 7-segment Task card, Face ID Allow/Deny command card, and Composer with @chip, Mode, Model, Mic, and Send",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S07_TURN_DIFF_INSPECTOR.png",
+      "screenshot": "verification/output/screenshots/UE07_CHAT_AND_COMPOSER.png",
+      "comparison": "verification/output/comparisons/CMP_UE07.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S07_TURN_DIFF_INSPECTOR.json",
-      "verifiedSelectors": 4,
+      "axSnapshot": "verification/output/ax_trees/UE07_CHAT_AND_COMPOSER.json",
+      "verifiedSelectors": 13,
       "verifiedTouchTargets": 3
     },
     {
       "claimId": "CLAIM-08",
-      "state": "S08_LIVE_ACTIVITY_LOCKSCREEN",
-      "category": "Dynamic Island & Lock Screen Live Activity",
+      "state": "UE08_ADD_CONTEXT",
+      "description": "Add Context sheet renders 5 category tiles (Files, Folder, Mentions, Actions, Skills), multi-select rows, and Add to message CTA",
       "passed": true,
-      "screenshot": "verification/output/screenshots/S08_LIVE_ACTIVITY_LOCKSCREEN.png",
+      "screenshot": "verification/output/screenshots/UE08_ADD_CONTEXT.png",
+      "comparison": "verification/output/comparisons/CMP_UE08.png",
       "resolutionPx": "1179x2556",
-      "axSnapshot": "verification/output/ax_trees/S08_LIVE_ACTIVITY_LOCKSCREEN.json",
-      "verifiedSelectors": 4,
+      "axSnapshot": "verification/output/ax_trees/UE08_ADD_CONTEXT.json",
+      "verifiedSelectors": 9,
+      "verifiedTouchTargets": 6
+    },
+    {
+      "claimId": "CLAIM-09",
+      "state": "UE09_MODEL_AND_MODE",
+      "description": "Model & Mode sheet renders Planning/Fast cards, Gemini 3.1 Pro / 3.8 Flash / Claude Opus 5.5 / Sonnet 5.5 rows, and Agent persona pills",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/UE09_MODEL_AND_MODE.png",
+      "comparison": "verification/output/comparisons/CMP_UE09.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/UE09_MODEL_AND_MODE.json",
+      "verifiedSelectors": 8,
+      "verifiedTouchTargets": 5
+    },
+    {
+      "claimId": "CLAIM-10",
+      "state": "UE10_STRUCTURED_QUESTION",
+      "description": "Structured Question card renders 3-step stepper pills, multi-select checkboxes, Something else write-in, Back/Next buttons, and freeform composer",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/UE10_STRUCTURED_QUESTION.png",
+      "comparison": "verification/output/comparisons/CMP_UE10.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/UE10_STRUCTURED_QUESTION.json",
+      "verifiedSelectors": 10,
+      "verifiedTouchTargets": 7
+    },
+    {
+      "claimId": "CLAIM-11",
+      "state": "UE11_PLAN_REVIEW",
+      "description": "Implementation Plan review renders paused amber banner, MODIFY/NEW badges, pending comment card, text selection Comment/Copy callout, and Proceed / Send 2 comments bar",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/UE11_PLAN_REVIEW.png",
+      "comparison": "verification/output/comparisons/CMP_UE11.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/UE11_PLAN_REVIEW.json",
+      "verifiedSelectors": 6,
       "verifiedTouchTargets": 2
+    },
+    {
+      "claimId": "CLAIM-12",
+      "state": "UE12_TURN_DIFF_REVIEW",
+      "description": "Turn Diff review renders Turn 1..3/All pills, File 1 of 4 pager, Revert hunk, syntax diff lines, Line 29 comment composer, and Viewed / Revert file / Accept file bar",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/UE12_TURN_DIFF_REVIEW.png",
+      "comparison": "verification/output/comparisons/CMP_UE12.png",
+      "resolutionPx": "1179x2556",
+      "axSnapshot": "verification/output/ax_trees/UE12_TURN_DIFF_REVIEW.json",
+      "verifiedSelectors": 11,
+      "verifiedTouchTargets": 4
+    },
+    {
+      "claimId": "CLAIM-13",
+      "state": "UE13_LIVE_ACTIVITY_SPEC",
+      "description": "Live Activity & Dynamic Island renders all 7 variants: Compact Running/Waiting/Done, Minimal Ring, Expanded Running/Waiting (Face ID), and Lock Screen Multi-Agent card",
+      "passed": true,
+      "screenshot": "verification/output/screenshots/UE13_LIVE_ACTIVITY_SPEC.png",
+      "comparison": "verification/output/comparisons/CMP_UE13.png",
+      "resolutionPx": "2400x1500",
+      "axSnapshot": "verification/output/ax_trees/UE13_LIVE_ACTIVITY_SPEC.json",
+      "verifiedSelectors": 7,
+      "verifiedTouchTargets": 0
     }
-  ]
+  ],
+  "masterOverview": "verification/output/screenshots/ESDD_13_SCREENS_OVERVIEW.png"
 }

@@ -1,0 +1,82 @@
+{
+  "stateId": "UE08_ADD_CONTEXT",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='context-search-input']": {
+      "exists": true,
+      "x": 54,
+      "y": 139.5,
+      "width": 310,
+      "height": 44,
+      "text": ""
+    },
+    "[data-testid='tile-files']": {
+      "exists": true,
+      "x": 16,
+      "y": 197.5,
+      "width": 65.8,
+      "height": 68,
+      "text": "Files"
+    },
+    "[data-testid='tile-folder']": {
+      "exists": true,
+      "x": 89.8,
+      "y": 197.5,
+      "width": 65.8,
+      "height": 68,
+      "text": "Folder"
+    },
+    "[data-testid='tile-mentions']": {
+      "exists": true,
+      "x": 163.6,
+      "y": 197.5,
+      "width": 65.8,
+      "height": 68,
+      "text": "Mentions"
+    },
+    "[data-testid='tile-actions']": {
+      "exists": true,
+      "x": 237.4,
+      "y": 197.5,
+      "width": 65.8,
+      "height": 68,
+      "text": "Actions"
+    },
+    "[data-testid='tile-skills']": {
+      "exists": true,
+      "x": 311.2,
+      "y": 197.5,
+      "width": 65.8,
+      "height": 68,
+      "text": "Skills"
+    },
+    "[data-testid='ctx-row-ratelimit']": {
+      "exists": true,
+      "x": 16,
+      "y": 302.5,
+      "width": 361,
+      "height": 56,
+      "text": "ratelimit.go\ninternal/middleware \u00b7 changed this turn"
+    },
+    "[data-testid='ctx-row-go-testing']": {
+      "exists": true,
+      "x": 16,
+      "y": 647.5,
+      "width": 361,
+      "height": 54,
+      "text": "go-testing\nSkill \u00b7 table-driven tests, -race, golden files"
+    },
+    "[data-testid='btn-add-to-message']": {
+      "exists": true,
+      "x": 220.3,
+      "y": 782,
+      "width": 156.7,
+      "height": 46,
+      "text": "Add to message"
+    }
+  }
+}

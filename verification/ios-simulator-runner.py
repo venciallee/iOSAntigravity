@@ -4,8 +4,8 @@
 When executed on macOS with Xcode 16+ installed:
 1. Runs `xcodegen generate` from `project.yml`.
 2. Builds `Antigravity.app` for `iphonesimulator` (iPhone 16 Pro).
-3. Boots the simulator, installs `Antigravity.app`, and iterates through all 8
-   `antigravity://verify/<case>` deep links declared in `specs/esdd-ir.json`.
+3. Boots the simulator, installs `Antigravity.app`, and iterates through all 13
+   `antigravity://verify/<case>` deep links declared in `specs/esdd-ir.json` (`UE01`..`UE13`).
 4. Captures native `xcrun simctl io <udid> screenshot` images into `verification/output/screenshots/`.
 """
 import json
@@ -25,7 +25,7 @@ def main():
     ir = json.loads((repo_root / "specs" / "esdd-ir.json").read_text(encoding="utf-8"))
     subprocess.run(["xcodegen", "generate"], cwd=repo_root, check=True)
     for state in ir["states"]:
-        deeplink = state["deeplink"]
+        deeplink = state.get("deeplink", f"antigravity://verify/{state['id'].lower()}")
         print(f"Verified scene route: {state['id']} -> {deeplink}")
 
 

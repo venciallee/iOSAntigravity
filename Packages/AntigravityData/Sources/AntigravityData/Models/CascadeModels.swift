@@ -109,32 +109,83 @@ public enum CortexStepType: Int, Codable, Sendable, CaseIterable {
     }
 }
 
+// MARK: - 7-Segment Task Progress & Checklist (UE07, UE13)
+
+/// Status of an individual checklist item inside a `TaskBoundaryPayload` (`UE07`).
+public enum TaskChecklistStatus: String, Codable, Sendable, CaseIterable {
+    case done
+    case inProgress
+    case waiting
+    case pending
+}
+
+/// Checklist row rendered beneath the segmented progress bar in `CascadeChatViewController` (`UE07`).
+public struct TaskChecklistItem: Codable, Sendable, Equatable, Identifiable {
+    public typealias Status = TaskChecklistStatus
+
+    public var id: String
+    public var title: String
+    public var status: TaskChecklistStatus
+    public var trailingBadge: String?
+
+    public init(
+        id: String,
+        title: String,
+        status: TaskChecklistStatus,
+        trailingBadge: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.status = status
+        self.trailingBadge = trailingBadge
+    }
+}
+
+/// Segmented task progress card payload (`Task · 4 of 7 done · 2m 41s` in `UE07`).
 public struct TaskBoundaryPayload: Codable, Sendable, Equatable {
     public var taskName: String
     public var taskStatus: String
     public var taskSummary: String
-    public var completedItems: Int
-    public var totalItems: Int
+    public var completedCount: Int
+    public var totalCount: Int
+    public var elapsedLabel: String
+    public var checklist: [TaskChecklistItem]
 
     public init(
         taskName: String,
         taskStatus: String,
         taskSummary: String,
-        completedItems: Int = 4,
-        totalItems: Int = 5
+        completedCount: Int = 4,
+        totalCount: Int = 7,
+        elapsedLabel: String = "2m 41s",
+        checklist: [TaskChecklistItem] = []
     ) {
         self.taskName = taskName
         self.taskStatus = taskStatus
         self.taskSummary = taskSummary
-        self.completedItems = completedItems
-        self.totalItems = totalItems
+        self.completedCount = completedCount
+        self.totalCount = totalCount
+        self.elapsedLabel = elapsedLabel
+        self.checklist = checklist
+    }
+
+    public var completedItems: Int {
+        get { completedCount }
+        set { completedCount = newValue }
+    }
+
+    public var totalItems: Int {
+        get { totalCount }
+        set { totalCount = newValue }
     }
 
     public var progressFraction: Double {
-        guard totalItems > 0 else { return 0 }
-        return min(1.0, max(0.0, Double(completedItems) / Double(totalItems)))
+        guard totalCount > 0 else { return 0 }
+        return min(1.0, max(0.0, Double(completedCount) / Double(totalCount)))
     }
 }
+
+// MARK: - Step Payloads
 
 public struct PlannerResponsePayload: Codable, Sendable, Equatable {
     public var response: String
@@ -339,7 +390,6 @@ public enum CascadeDisplayItem: Identifiable, Sendable, Equatable {
 
         for step in steps {
             if step.type == .taskBoundary {
-                // Rendered in sticky header banner AND inline timeline milestone
                 flushBuffer()
                 result.append(.single(step))
             } else if step.type.isGroupableEvidenceStep && step.status != .waiting {
@@ -354,18 +404,25 @@ public enum CascadeDisplayItem: Identifiable, Sendable, Equatable {
     }
 }
 
-/// Summary item emitted by `JetboxSubscribeToSummaries` and `GetAllCascadeTrajectories`.
+/// Summary item emitted by `JetboxSubscribeToSummaries` and `GetAllCascadeTrajectories` (`UE01`, `UE03`, `UE04`, `UE13`).
 public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
     public var id: String { cascadeId }
     public var cascadeId: String
     public var title: String
+    public var projectSlug: String
     public var workspaceUri: String
     public var branchName: String
     public var status: CortexStepStatus
     public var stepCount: Int
+    public var currentStepIndex: Int
+    public var totalSteps: Int
     public var updatedAt: Date
+    public var relativeTimeLabel: String
+    public var statusSubtitle: String
     public var isPinned: Bool
     public var isArchived: Bool
+    public var isUnread: Bool
+    public var modelLabel: String
     public var pendingInteractionTitle: String?
     public var lastMessagePreview: String?
     public var totalAdditions: Int
@@ -374,13 +431,20 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
     public init(
         cascadeId: String,
         title: String,
+        projectSlug: String = "ledger-svc",
         workspaceUri: String,
-        branchName: String,
+        branchName: String = "main",
         status: CortexStepStatus,
         stepCount: Int,
+        currentStepIndex: Int = 1,
+        totalSteps: Int = 7,
         updatedAt: Date = Date(),
+        relativeTimeLabel: String = "now",
+        statusSubtitle: String = "",
         isPinned: Bool = false,
         isArchived: Bool = false,
+        isUnread: Bool = false,
+        modelLabel: String = "Gemini 3.1 Pro",
         pendingInteractionTitle: String? = nil,
         lastMessagePreview: String? = nil,
         totalAdditions: Int = 0,
@@ -388,13 +452,20 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
     ) {
         self.cascadeId = cascadeId
         self.title = title
+        self.projectSlug = projectSlug
         self.workspaceUri = workspaceUri
         self.branchName = branchName
         self.status = status
         self.stepCount = stepCount
+        self.currentStepIndex = currentStepIndex
+        self.totalSteps = totalSteps
         self.updatedAt = updatedAt
+        self.relativeTimeLabel = relativeTimeLabel
+        self.statusSubtitle = statusSubtitle.isEmpty ? status.displayBadgeText : statusSubtitle
         self.isPinned = isPinned
         self.isArchived = isArchived
+        self.isUnread = isUnread
+        self.modelLabel = modelLabel
         self.pendingInteractionTitle = pendingInteractionTitle
         self.lastMessagePreview = lastMessagePreview
         self.totalAdditions = totalAdditions

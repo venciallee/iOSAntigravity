@@ -1,0 +1,58 @@
+{
+  "stateId": "UE11_PLAN_REVIEW",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='plan-comments-badge']": {
+      "exists": true,
+      "x": 297.3,
+      "y": 56,
+      "width": 51.8,
+      "height": 34,
+      "text": "2"
+    },
+    "[data-testid='plan-paused-banner']": {
+      "exists": true,
+      "x": 16,
+      "y": 104,
+      "width": 361,
+      "height": 61,
+      "text": "Agent is paused until you review. Long-press any text to comment."
+    },
+    "[data-testid='plan-pending-comment-card']": {
+      "exists": true,
+      "x": 26,
+      "y": 441.5,
+      "width": 351,
+      "height": 94,
+      "text": "WL\nYou\nPending\n\nDefault to the real clock when Clock is nil, so existing callers don't break."
+    },
+    "[data-testid='selection-callout-comment']": {
+      "exists": true,
+      "x": 112,
+      "y": 527.5,
+      "width": 105.3,
+      "height": 38,
+      "text": "Comment"
+    },
+    "[data-testid='btn-plan-proceed']": {
+      "exists": true,
+      "x": 16,
+      "y": 780,
+      "width": 153.1,
+      "height": 50,
+      "text": "Proceed"
+    },
+    "[data-testid='btn-plan-send-comments']": {
+      "exists": true,
+      "x": 181.1,
+      "y": 780,
+      "width": 195.9,
+      "height": 50,
+      "text": "Send 2 comments"
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "stateId": "UE03_CONTEXT_MENU_PIN",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='context-preview-card']": {
+      "exists": true,
+      "x": 16,
+      "y": 198,
+      "width": 361,
+      "height": 219,
+      "text": "Fix flaky TestSettlementBatch\nledger-svc \u00b7 Gemini 3.1 Pro \u00b7 8m\n\nThe flake comes from a shared fake clock across parallel subtests in settlem"
+    },
+    "[data-testid='chip-implementation-plan']": {
+      "exists": true,
+      "x": 35,
+      "y": 366,
+      "width": 165.9,
+      "height": 32,
+      "text": "Implementation Plan"
+    },
+    "[data-testid='chip-awaiting-review']": {
+      "exists": true,
+      "x": 208.9,
+      "y": 366,
+      "width": 116.5,
+      "height": 32,
+      "text": "Awaiting review"
+    },
+    "[data-testid='menu-action-pin']": {
+      "exists": true,
+      "x": 17,
+      "y": 421,
+      "width": 258,
+      "height": 46,
+      "text": "Pin"
+    },
+    "[data-testid='menu-action-unread']": {
+      "exists": true,
+      "x": 17,
+      "y": 468,
+      "width": 258,
+      "height": 46,
+      "text": "Mark as Unread"
+    },
+    "[data-testid='menu-action-delete']": {
+      "exists": true,
+      "x": 17,
+      "y": 662,
+      "width": 258,
+      "height": 46,
+      "text": "Delete"
+    },
+    "[data-testid='swipe-action-pin']": {
+      "exists": true,
+      "x": 224,
+      "y": 749,
+      "width": 76,
+      "height": 62,
+      "text": "Pin"
+    },
+    "[data-testid='swipe-action-archive']": {
+      "exists": true,
+      "x": 300,
+      "y": 749,
+      "width": 76,
+      "height": 62,
+      "text": "Archive"
+    }
+  }
+}

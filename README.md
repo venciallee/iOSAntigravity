@@ -1,70 +1,38 @@
-# iOSAntigravity — Native Swift 6 iOS Client for Antigravity Remote Control
+# iOSAntigravity — Native Swift 6 iOS App for Antigravity (v2.0 UE Complete)
 
-`iOSAntigravity` is a native **Swift 6 + UIKit / SwiftUI** iOS client that connects directly to Google DeepMind's **Antigravity IDE & CLI Remote Control (`exa.language_server_pb.LanguageServerService`)**, delivering 100% real-time conversation & trajectory synchronization with a pure iOS Human Interface Guidelines (HIG) experience.
-
----
-
-## 1. Architecture Overview (Path A: Direct Connect-RPC)
-
-Unlike generic ACP wrappers that spawn an isolated headless agent and lose desktop IDE session continuity, `iOSAntigravity` connects directly to the active Antigravity Hub `language_server --standalone --subclient_type hub` process:
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ iOSAntigravity App (Swift 6 · iOS 18+ · iPhone 16 Pro & iPad Adaptive Split) │
-│                                                                              │
-│  ├─ Extensions/LiveActivity : Dynamic Island, Lock Screen & AppIntent Approve│
-│  ├─ Extensions/Share        : Credential-free App Group Share Sheet          │
-│  ├─ iOS/Views & Controllers : 120fps CoreText Streaming, Diff & Plan Review  │
-│  └─ Packages/AntigravityData:                                                │
-│       ├─ AntigravityRPCClient (Connect-RPC + /connect-websocket)             │
-│       ├─ ConnectEnvelope      (5-byte [flags:1B][length:4B BE] parser)       │
-│       ├─ ProtobufStepCodec    (Binary application/proto >600 step decoder)   │
-│       ├─ InteractionBuilder   (Field 56 RequestedInteraction oneof matcher)  │
-│       └─ LocalProjectionStore (<10ms SQLite cold start + Durable Outbox)     │
-└──────────────────────┬───────────────────────────────────────┬───────────────┘
-                       │ Channel A: QR Zero-Config             │ Channel B: Direct
-                       ▼                                       ▼
-        ┌──────────────────────────────┐        ┌──────────────────────────────┐
-        │ Google Cloud Relay           │        │ LAN / Tailscale / Sidecar    │
-        │ antigravity.google.com/r/<id>│        │ Zstd Compression + APNs Push │
-        └──────────────┬───────────────┘        └──────────────┬───────────────┘
-                       └───────────────────┬───────────────────┘
-                                           ▼
-        ┌──────────────────────────────────────────────────────────────────────┐
-        │ Host Machine: language_server --standalone --subclient_type hub      │
-        │ Jetbox SQLite (conversation_summaries.db) & Cortex/Cascade Engine    │
-        └──────────────────────────────────────────────────────────────────────┘
-```
+`iOSAntigravity` is a native **Swift 6 + UIKit / SwiftUI** iOS 18 application connecting directly to **Antigravity Desktop Remote Control (`exa.language_server_pb.LanguageServerService`)** and **Antigravity Cloud VMs**, implementing all **13 official UE screens (`UE01` .. `UE13`)** and verified end-to-end via **ESDD (`TC-01` .. `TC-16`)**.
 
 ---
 
-## 2. Antigravity Obsidian & Liquid Glass Design System
+## 1. Architecture & 13 Official UE Screens
 
-Defined normatively in [`specs/01-antigravity-design-system.md`](file:///home/antigravity/venciallee/iOSAntigravity/specs/01-antigravity-design-system.md) and [`AntigravityTheme.swift`](file:///home/antigravity/venciallee/iOSAntigravity/Shared/DesignSystem/AntigravityTheme.swift):
-
-- **Surface Hierarchy**:
-  - **Obsidian Canvas (`#090B10`)**: True deep-space background blending into the iPhone 16 Pro Dynamic Island.
-  - **Elevated Surface (`#111520`)** & **Interactive Card (`#161B29`)** with `1px` specular hairline borders (`rgba(255,255,255,0.08)`).
-  - **Liquid Glass Chrome**: `UIBlurEffect.Style.systemChromeMaterialDark` for navigation headers and the floating `ChatComposerView`.
-- **5-Tier Semantic Typography Hierarchy**:
-  1. **Reading (`16pt / 400 / #F8FAFC`)**: User prompts and Agent prose answers.
-  2. **Evidence (`14pt / 500 / #E2E8F0`)**: Modified filenames, Artifacts (`implementation_plan.md`), and diff stats.
-  3. **Process (`13pt / 400 / #94A3B8`)**: Collapsible Thinking capsules, tool calls, and terminal logs.
-  4. **Metadata (`11pt / 400 / #64748B`)**: Step indices, RTT latency, and Git worktree badges.
-  5. **Chrome (`13pt / 500 / #94A3B8`)**: Navigation pills, model/effort selectors, and action buttons.
+- **Design System (`Shared/DesignSystem/`)**:
+  - Pure OLED Matte Obsidian (`#090A0D`), Grouped Cards (`#141519`), Periwinkle Soft Blue Primary CTA (`#8EB4FF` with `#0A0E17` dark ink), Active White Filter Pills (`#FFFFFF`), Running Blue (`#7DA7FF`), Face ID Warm Amber (`#EBB365`), Emerald Diff `+` (`#57C88A`), and Coral Diff `-` (`#F07167`).
+  - Signature **Floating Liquid Glass 3-Tab Capsule (`Agents` | `Automations` | `Settings`) + Detached `56×56pt` Periwinkle FAB**.
+- **Native View Hierarchy (`iOS/` & `Extensions/`)**:
+  1. **`UE01` [`AgentsHomeViewController.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Home/AgentsHomeViewController.swift)**: Host switcher (`MacBook Pro` / `Cloud`), search, filter pills (`All`, `Running 2`, `Needs you 1`, `Unread 3`), `PINNED` card, collapsible project groups (`ledger-svc`, `web-console`).
+  2. **`UE02` [`DisplayOptionsSheetView.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Home/DisplayOptionsSheetView.swift)**: `Group By`, `Sort Conversations` popover menu, `Auto Pin`, `Archived Only`, and `Mark All as Read`.
+  3. **`UE03` [`ConversationContextPreviewMenu.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Home/ConversationContextPreviewMenu.swift)**: Long-press rich preview card (`Implementation Plan` + `Awaiting review` chips), 6-action menu, and left-swipe `Pin` + `Archive`.
+  4. **`UE04` [`ProjectDetailViewController.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Projects/ProjectDetailViewController.swift)**: `ledger-svc` hero header, `New Conversation in Project` CTA, `Active / Archived / Automations` tabs, and `THIS PROJECT` tools.
+  5. **`UE05` [`CreateProjectSheetView.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Projects/CreateProjectSheetView.swift)**: `MacBook Pro` vs `Cloud` VM runtime, `GitHub repository` vs `Drive folder` source, repo search, and worktree setup.
+  6. **`UE06` [`AutomationsViewController.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Automations/AutomationsViewController.swift)**: Natural-language automation creator, `SCHEDULED` (`Next Run` / `Last Run` + `▶`), `ALWAYS ON`, and `PAUSED` (`Resume`).
+  7. **`UE07` [`CascadeChatViewController.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Cascade/CascadeChatViewController.swift) + [`ChatComposerView.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/Views/Composer/ChatComposerView.swift)**: `+128 -14` diff pill, `Thought for 14s ›`, embedded Plan card, 7-segment `Task · 4 of 7 done` progress card, Face ID (`LAContext`) `Allow` / `Deny` command approval card, and Liquid Glass Composer (`@ratelimit.go ×`, `+`, `Planning ⌄`, `Gemini 3.1 Pro ⌄`, `🎤`, `↑`).
+  8. **`UE08` [`AddContextSheetView.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/Views/Composer/AddContextSheetView.swift)**: 5 category tiles (`Files`, `Folder`, `Mentions`, `Actions`, `Skills`), multi-select list, and `Add to message`.
+  9. **`UE09` [`ModelAndModeSheetView.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/Views/Composer/ModelAndModeSheetView.swift)**: `Planning` / `Fast` cards, `Gemini 3.1 Pro` / `Gemini 3.8 Flash` / `Claude Opus 5.5` / `Claude Sonnet 5.5`, and `Default` / `go-reviewer` / `release-captain` agent personas.
+  10. **`UE10` [`StructuredQuestionCardView.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Cascade/StructuredQuestionCardView.swift)**: 3-step stepper (`1 Storage` / `2 Actions` / `3 Retention`), multi-select checkboxes, `Something else...`, `Back` / `Next`, and freeform reply bar.
+  11. **`UE11` [`ImplementationPlanReviewViewController.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Inspector/ImplementationPlanReviewViewController.swift)**: Paused amber banner, `MODIFY` / `NEW` file badges, inline pending comment card, text-selection `[Comment | Copy]` callout, and `Proceed` / `Send 2 comments`.
+  12. **`UE12` [`TurnDiffReviewViewController.swift`](file:///home/antigravity/venciallee/iOSAntigravity/iOS/ViewControllers/Inspector/TurnDiffReviewViewController.swift)**: `Turn 1..3 / All` selector, `File 1 of 4` pager, `Revert hunk`, word-level diff, Line 29 inline comment composer (`Add to review` / `Send to agent`), and `Viewed` + `Revert file` + `Accept file`.
+  13. **`UE13` [`AntigravityLiveActivityWidget.swift`](file:///home/antigravity/venciallee/iOSAntigravity/Extensions/LiveActivity/AntigravityLiveActivityWidget.swift)**: All 7 Dynamic Island (Compact Running/Waiting/Done, Minimal Ring, Expanded Running/Waiting with Face ID) & Lock Screen Multi-Agent states.
 
 ---
 
-## 3. ESDD (Executable Spec Driven Development) End-to-End Verification
-
-Every feature and UE requirement is governed by our **ESDD** pipeline in [`specs/esdd-ir.json`](file:///home/antigravity/venciallee/iOSAntigravity/specs/esdd-ir.json) and [`verification/esdd-verify.py`](file:///home/antigravity/venciallee/iOSAntigravity/verification/esdd-verify.py):
+## 2. Running End-to-End ESDD Verification
 
 ```bash
+# Run all 4 ESDD E2E verification gates + 13-screen @3x Side-by-Side UE comparison
 python3 verification/esdd-verify.py
-```
 
-The runner executes 4 automated verification stages:
-1. **Spec-DAG & Swift Contract Inspection ([`esdd_inspector.py`](file:///home/antigravity/venciallee/iOSAntigravity/verification/esdd_inspector.py))**: Verifies complete reachability across all 8 states (`S01`..`S08`) and 9 events (`E01`..`E09`), and checks that all 15 Swift 6 protocol/UI symbols exist in the codebase.
-2. **Live Connect-RPC E2E Tests ([`mock_language_server.py`](file:///home/antigravity/venciallee/iOSAntigravity/verification/mock_language_server.py))**: Tests real 5-byte Connect streaming envelopes (`JetboxSubscribeToSummaries`), 605-step binary Protobuf decoding (`GetCascadeTrajectorySteps`), and authoritative oneof matching (`HandleCascadeUserInteraction`).
-3. **Pixel-Accurate `@3x` (`1179×2556px`) iPhone 16 Pro Rendering & HIG Audit ([`ui_renderer.py`](file:///home/antigravity/venciallee/iOSAntigravity/verification/ui_renderer.py))**: Renders all 8 states and asserts `>= 44pt` touch targets, safe area clearance, and zero horizontal overflow.
-4. **Evidence Packaging**: Outputs [`verification/output/report.md`](file:///home/antigravity/venciallee/iOSAntigravity/verification/output/report.md), [`verification/output/results.json`](file:///home/antigravity/venciallee/iOSAntigravity/verification/output/results.json), and `@3x` screenshots in `verification/output/screenshots/`.
+# On macOS with Xcode 16+: run XCTest suite & native iOS Simulator capture
+cd Packages/AntigravityData && swift test
+cd ../.. && python3 verification/ios-simulator-runner.py
+```

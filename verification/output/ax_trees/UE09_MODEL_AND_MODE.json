@@ -1,0 +1,74 @@
+{
+  "stateId": "UE09_MODEL_AND_MODE",
+  "viewportWidth": 393,
+  "viewportHeight": 852,
+  "scrollWidth": 393,
+  "scrollHeight": 852,
+  "overflowPx": 0,
+  "elements": {
+    "[data-testid='btn-model-done']": {
+      "exists": true,
+      "x": 323,
+      "y": 197.5,
+      "width": 54,
+      "height": 44,
+      "text": "Done"
+    },
+    "[data-testid='mode-card-planning']": {
+      "exists": true,
+      "x": 16,
+      "y": 253.5,
+      "width": 175.5,
+      "height": 92,
+      "text": "Planning\n\nPlans first and writes artifacts for you to review"
+    },
+    "[data-testid='mode-card-fast']": {
+      "exists": true,
+      "x": 201.5,
+      "y": 253.5,
+      "width": 175.5,
+      "height": 92,
+      "text": "Fast\n\nActs directly \u2014 best for small, local edits"
+    },
+    "[data-testid='model-row-gemini-pro']": {
+      "exists": true,
+      "x": 16,
+      "y": 385.5,
+      "width": 361,
+      "height": 58,
+      "text": "Gemini 3.1 Pro\nDeep reasoning for long, multi-step tasks"
+    },
+    "[data-testid='model-row-gemini-flash']": {
+      "exists": true,
+      "x": 16,
+      "y": 444.5,
+      "width": 361,
+      "height": 58,
+      "text": "Gemini 3.8 Flash\nFastest responses, lowest cost"
+    },
+    "[data-testid='model-row-claude-opus']": {
+      "exists": true,
+      "x": 16,
+      "y": 503.5,
+      "width": 361,
+      "height": 58,
+      "text": "Claude Opus 5.5\nThinking\nRequires Google AI Pro or Ultra"
+    },
+    "[data-testid='agent-pill-default']": {
+      "exists": true,
+      "x": 16,
+      "y": 683.5,
+      "width": 77.5,
+      "height": 38,
+      "text": "Default"
+    },
+    "[data-testid='agent-pill-go-reviewer']": {
+      "exists": true,
+      "x": 101.5,
+      "y": 683.5,
+      "width": 121.1,
+      "height": 38,
+      "text": "go-reviewer"
+    }
+  }
+}
