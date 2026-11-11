@@ -473,6 +473,7 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(store.summaries.first(where: { $0.cascadeId == "cas-upgrade-go" })?.isUnread, false)
     }
 
+    @MainActor
     func testCloudVMWorkspaceDetectionAndProjectReconciliation() throws {
         let refNow = try XCTUnwrap(
             AntigravityRPCClient.parseProtoTimestamp(.string("2026-11-11T09:00:00Z"))
