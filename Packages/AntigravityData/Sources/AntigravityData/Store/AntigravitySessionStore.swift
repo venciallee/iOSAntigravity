@@ -777,7 +777,7 @@ public final class AntigravitySessionStore {
                 return true
             case .httpError(let statusCode, _):
                 return statusCode == -1 || statusCode == 502 || statusCode == 503 || statusCode == 504
-            case .decodingError, .protocolError, .interactionRejected:
+            case .decodingError, .interactionRejected:
                 return false
             }
         }
