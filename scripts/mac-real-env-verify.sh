@@ -171,7 +171,7 @@ echo "[PASS] Antigravity.app compiled for ${SIM_NAME}"
 echo ""
 echo "=== [4/4] Booting Simulator, Installing Antigravity.app & Connecting Live ==="
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
-open -a Simulator || true
+open "$(xcode-select -p)/Applications/Simulator.app" >/dev/null 2>&1 || open -b com.apple.iphonesimulator >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$SIM_UDID" -b
 
 APP_PATH="$(find "$DERIVED_DATA/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name "Antigravity.app" | head -n 1)"
