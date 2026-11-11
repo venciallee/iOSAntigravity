@@ -227,6 +227,25 @@ public struct AntigravityRootContainerView: View {
 
     @ViewBuilder
     private var interactiveNavigationView: some View {
+        if !store.isVerificationMode && !store.hasPairedBackend && !store.isLiveBackendConnected {
+            AntigravityWelcomeView(
+                store: store,
+                onConnected: {
+                    if case .cascadeChat(let cid) = store.activeRoute, !cid.isEmpty {
+                        selectedTab = .agents
+                    } else {
+                        store.activeRoute = .tabRoot
+                        selectedTab = .agents
+                    }
+                }
+            )
+        } else {
+            pairedShellView
+        }
+    }
+
+    @ViewBuilder
+    private var pairedShellView: some View {
         ZStack {
             switch store.activeRoute {
             case .planReview:

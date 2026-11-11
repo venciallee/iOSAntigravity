@@ -217,6 +217,9 @@ public struct AgentsHomeViewController: View {
                     ForEach(filteredProjectSections) { project in
                         projectSectionView(project)
                     }
+                    if usesLiveStoreData && filteredPinnedItems.isEmpty && filteredProjectSections.isEmpty {
+                        liveEmptyConversationsCard
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
@@ -456,7 +459,7 @@ public struct AgentsHomeViewController: View {
     // MARK: - 3. Filter Pills Strip
 
     private var filterPillStrip: some View {
-        let usesPairedCounts = store.hasPairedBackend || store.isLiveBackendConnected
+        let usesPairedCounts = usesLiveStoreData
         let runningBadge = usesPairedCounts ? store.runningCount : 2
         let needsYouBadge = usesPairedCounts ? store.needsYouCount : 1
         let unreadBadge = usesPairedCounts ? store.unreadCount : 3
@@ -636,7 +639,7 @@ public struct AgentsHomeViewController: View {
 
             if !isCollapsed {
                 VStack(spacing: 0) {
-                    if project.conversations.isEmpty && (store.hasPairedBackend || store.isLiveBackendConnected) {
+                    if project.conversations.isEmpty && usesLiveStoreData {
                         Button {
                             triggerOpenConversation("new-\(project.id)")
                         } label: {
@@ -848,8 +851,52 @@ public struct AgentsHomeViewController: View {
 
     // MARK: - Filtering & Live Store Binding
 
+    private var liveEmptyConversationsCard: some View {
+        VStack(spacing: 10) {
+            if store.isRefreshingSummaries {
+                ProgressView()
+                    .tint(AntigravityTheme.accentPeriwinkle)
+                Text("Syncing conversations from \(store.activeHost.hostname)...")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(UEChromePalette.textSecondary)
+            } else {
+                Image(systemName: searchText.isEmpty && selectedFilter == .all ? "bubble.left.and.bubble.right" : "magnifyingglass")
+                    .font(.system(size: 28, weight: .light))
+                    .foregroundStyle(UEChromePalette.textMuted)
+                Text(
+                    searchText.isEmpty && selectedFilter == .all
+                        ? "No conversations yet"
+                        : "No matching conversations"
+                )
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.white)
+                Text(
+                    searchText.isEmpty && selectedFilter == .all
+                        ? "Tap the compose button below to start a new session on \(store.activeHost.hostname)."
+                        : "Try clearing your search or switching filters."
+                )
+                .font(.system(size: 13.5, weight: .regular))
+                .foregroundStyle(UEChromePalette.textSecondary)
+                .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 32)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(AntigravityTheme.surfaceCard)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+        )
+        .padding(.top, 8)
+        .accessibilityIdentifier("agents-empty-state")
+    }
+
     private var usesLiveStoreData: Bool {
-        store.hasPairedBackend || store.isLiveBackendConnected || store.summaries.contains(where: { summary in
+        !store.isVerificationMode || store.hasPairedBackend || store.isLiveBackendConnected || store.summaries.contains(where: { summary in
             ![
                 "cas-rate-limiter",
                 "cas-release-checklist",

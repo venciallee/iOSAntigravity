@@ -33,11 +33,11 @@ public struct CreateProjectSheetView: View {
     @State private var runsOn: RuntimeTarget = .cloud
     @State private var sourceKind: SourceKind = .github
     @State private var repoSearchQuery: String = ""
-    @State private var selectedRepoId: String = "acme/ledger-svc"
+    @State private var selectedRepoId: String
     @State private var branchWorktreeLabel: String = "main · New worktree"
-    @State private var projectName: String = "ledger-svc-cloud"
+    @State private var projectName: String
 
-    private let repositories: [GitHubRepoRowModel] = [
+    private let verificationRepositories: [GitHubRepoRowModel] = [
         GitHubRepoRowModel(
             id: "acme/ledger-svc",
             fullName: "acme/ledger-svc",
@@ -64,12 +64,35 @@ public struct CreateProjectSheetView: View {
         )
     ]
 
+    private var repositories: [GitHubRepoRowModel] {
+        guard !store.isVerificationMode else { return verificationRepositories }
+        return store.availableGitHubRepos.map { repo in
+            let slug = repo.fullName.split(separator: "/").last.map(String.init) ?? repo.fullName
+            return GitHubRepoRowModel(
+                id: repo.id,
+                fullName: repo.fullName,
+                metadata: "\(repo.isPrivate ? "Private" : "Public") · \(repo.primaryLanguage) · \(repo.updatedRelative)",
+                defaultProjectNameCloud: "\(slug)-cloud",
+                defaultProjectNameMac: slug,
+                accessibilityId: "repo-row-\(slug)"
+            )
+        }
+    }
+
     public init(
         store: AntigravitySessionStore,
         onDismiss: (() -> Void)? = nil
     ) {
         self.store = store
         self.onDismiss = onDismiss
+        if store.isVerificationMode {
+            self._selectedRepoId = State(initialValue: "acme/ledger-svc")
+            self._projectName = State(initialValue: "ledger-svc-cloud")
+        } else {
+            let firstRepo = store.availableGitHubRepos.first?.id ?? ""
+            self._selectedRepoId = State(initialValue: firstRepo)
+            self._projectName = State(initialValue: "")
+        }
     }
 
     public var body: some View {
@@ -326,38 +349,46 @@ public struct CreateProjectSheetView: View {
         }
 
         return VStack(spacing: 0) {
-            ForEach(Array(visibleRepos.enumerated()), id: \.element.id) { index, repo in
-                let isSelected = (selectedRepoId == repo.id)
-                Button {
-                    selectedRepoId = repo.id
-                    projectName = (runsOn == .cloud) ? repo.defaultProjectNameCloud : repo.defaultProjectNameMac
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(repo.fullName)
-                                .font(.system(size: 14.5, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Color.white)
-                            Text(repo.metadata)
-                                .font(.system(size: 12.5, weight: .regular))
-                                .foregroundStyle(UEChromePalette.textSecondary)
-                        }
-                        Spacer()
-                        if isSelected {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 13.5, weight: .bold))
-                                .foregroundStyle(AntigravityTheme.accentPeriwinkle)
-                        }
-                    }
+            if visibleRepos.isEmpty {
+                Text("No repositories synced yet — enter a project name below.")
+                    .font(.system(size: 13.5, weight: .regular))
+                    .foregroundStyle(UEChromePalette.textSecondary)
                     .padding(.horizontal, 14)
-                    .frame(minHeight: 50)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier(repo.accessibilityId)
+                    .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+            } else {
+                ForEach(Array(visibleRepos.enumerated()), id: \.element.id) { index, repo in
+                    let isSelected = (selectedRepoId == repo.id)
+                    Button {
+                        selectedRepoId = repo.id
+                        projectName = (runsOn == .cloud) ? repo.defaultProjectNameCloud : repo.defaultProjectNameMac
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(repo.fullName)
+                                    .font(.system(size: 14.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(Color.white)
+                                Text(repo.metadata)
+                                    .font(.system(size: 12.5, weight: .regular))
+                                    .foregroundStyle(UEChromePalette.textSecondary)
+                            }
+                            Spacer()
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 13.5, weight: .bold))
+                                    .foregroundStyle(AntigravityTheme.accentPeriwinkle)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 50)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(repo.accessibilityId)
 
-                if index < visibleRepos.count - 1 {
-                    Divider()
-                        .overlay(UEChromePalette.subtleDivider)
+                    if index < visibleRepos.count - 1 {
+                        Divider()
+                            .overlay(UEChromePalette.subtleDivider)
+                    }
                 }
             }
         }

@@ -670,4 +670,26 @@ final class AntigravityProtocolTests: XCTestCase {
         )
         XCTAssertEqual(String(data: decodedWrapped.payload, encoding: .utf8), "{}")
     }
+
+    @MainActor
+    func testMakeLiveStoreStartsEmptyWithZeroMockFixtures() {
+        let liveStore = AntigravitySessionStore.makeLiveStore()
+        XCTAssertFalse(liveStore.isVerificationMode)
+        XCTAssertFalse(liveStore.hasPairedBackend)
+        XCTAssertFalse(liveStore.isLiveBackendConnected)
+        XCTAssertTrue(liveStore.projects.isEmpty)
+        XCTAssertTrue(liveStore.workspaces.isEmpty)
+        XCTAssertTrue(liveStore.summaries.isEmpty)
+        XCTAssertTrue(liveStore.automations.isEmpty)
+        XCTAssertTrue(liveStore.contextCandidates.isEmpty)
+        XCTAssertTrue(liveStore.availableGitHubRepos.isEmpty)
+        XCTAssertTrue(liveStore.composerAttachments.isEmpty)
+        XCTAssertEqual(liveStore.composerDraftText, "")
+        XCTAssertEqual(liveStore.activeCascadeId, "")
+        XCTAssertEqual(liveStore.selectedProjectId, "")
+
+        let verifyStore = AntigravitySessionStore.makeESDDVerificationStore()
+        XCTAssertTrue(verifyStore.isVerificationMode)
+        XCTAssertFalse(verifyStore.summaries.isEmpty)
+    }
 }

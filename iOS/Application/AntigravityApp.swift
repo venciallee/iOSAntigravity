@@ -8,10 +8,13 @@ public struct AntigravityApp: App {
     @State private var activeVerifyCase: ESDDVerifySceneCase?
 
     public init() {
-        let initialStore = AntigravitySessionStore.makeESDDVerificationStore()
         let launchCase = DebugSceneFactory.launchVerifyCase()
+        let initialStore: AntigravitySessionStore
         if let launchCase {
+            initialStore = AntigravitySessionStore.makeESDDVerificationStore()
             initialStore.configureForVerifyScene(launchCase)
+        } else {
+            initialStore = AntigravitySessionStore.makeLiveStore()
         }
         self._store = State(initialValue: initialStore)
         self._activeVerifyCase = State(initialValue: launchCase)
@@ -22,7 +25,13 @@ public struct AntigravityApp: App {
             AntigravityRootContainerView(store: store, activeVerifyCase: $activeVerifyCase)
                 .preferredColorScheme(activeVerifyCase == .liveActivitySpec ? .light : .dark)
                 .task {
-                    guard activeVerifyCase == nil else { return }
+                    guard activeVerifyCase == nil else {
+                        store.isInitialSessionCheckComplete = true
+                        return
+                    }
+                    defer {
+                        store.isInitialSessionCheckComplete = true
+                    }
                     let env = ProcessInfo.processInfo.environment
                     if let relayURL = env["ANTIGRAVITY_RELAY_URL"], !relayURL.isEmpty {
                         let cookie = env["ANTIGRAVITY_RELAY_COOKIE"] ?? ""
@@ -54,7 +63,13 @@ public struct AntigravityApp: App {
                 }
                 .onOpenURL { url in
                     if let sceneCase = DebugSceneFactory.resolveDeepLink(url) {
-                        store.configureForVerifyScene(sceneCase)
+                        if !store.isVerificationMode {
+                            let verifyStore = AntigravitySessionStore.makeESDDVerificationStore()
+                            verifyStore.configureForVerifyScene(sceneCase)
+                            store = verifyStore
+                        } else {
+                            store.configureForVerifyScene(sceneCase)
+                        }
                         activeVerifyCase = sceneCase
                         return
                     }
@@ -62,6 +77,11 @@ public struct AntigravityApp: App {
                     if (url.scheme?.lowercased() == "antigravity" && url.host?.lowercased() == "pair")
                         || RemoteHostInstance.parseRemoteControlQR(urlString: rawURL) != nil {
                         activeVerifyCase = nil
+                        if store.isVerificationMode {
+                            let liveStore = AntigravitySessionStore.makeLiveStore()
+                            liveStore.isInitialSessionCheckComplete = true
+                            store = liveStore
+                        }
                         Task {
                             let webCookie = await CloudRelayCookieExtractor.readGoogleCookieHeader() ?? ""
                             let ok = await store.connectWithPairingURI(rawURL, fallbackCookie: webCookie)

@@ -67,7 +67,7 @@ public struct AutomationsViewController: View {
 
                     quickCreateCapsuleBar
 
-                    if store.isLiveBackendConnected {
+                    if !store.isVerificationMode || store.isLiveBackendConnected {
                         liveAutomationsBody
                     } else {
                         scheduledSection
@@ -437,11 +437,12 @@ public struct AutomationsViewController: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 8) {
+                    let hostOnline = store.isLiveBackendConnected && store.activeHost.isOnline
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(AntigravityTheme.statusDone)
+                            .fill(hostOnline ? AntigravityTheme.statusDone : AntigravityTheme.statusError)
                             .frame(width: 8, height: 8)
-                        Text("Connected to \(store.activeHost.hostname)")
+                        Text(hostOnline ? "Connected to \(store.activeHost.hostname)" : "Offline · \(store.activeHost.hostname)")
                             .font(.system(size: 15.5, weight: .semibold))
                             .foregroundStyle(Color.white)
                     }
@@ -618,7 +619,7 @@ public struct AutomationsViewController: View {
     private func createInlineAutomation() {
         let trimmed = quickPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
         let title = trimmed.isEmpty ? "Weekday morning summary" : trimmed
-        if store.isLiveBackendConnected {
+        if !store.isVerificationMode || store.isLiveBackendConnected {
             _ = store.createAutomationFromPrompt(title)
             quickPromptText = ""
             return

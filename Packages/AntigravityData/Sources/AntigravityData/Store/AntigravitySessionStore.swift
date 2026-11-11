@@ -140,10 +140,12 @@ public final class AntigravitySessionStore {
     public var lastDispatchedInteraction: CascadeUserInteractionPayload? = nil
 
     // MARK: - Live Backend Connectivity & Auth State
+    public var isVerificationMode: Bool = false
+    public var isInitialSessionCheckComplete: Bool = false
     public var hasPairedBackend: Bool = false
     public var isLiveBackendConnected: Bool = false
     public var isConnectingToBackend: Bool = false
-    public var connectionStatusText: String = "Demo Sandbox · Offline ESDD Fixtures"
+    public var connectionStatusText: String = "Not Connected"
     public var connectionErrorText: String? = nil
     public var lastPingLatencyMs: Int? = nil
     public var availableRelayInstances: [RelayInstanceInfo] = []
@@ -495,6 +497,12 @@ public final class AntigravitySessionStore {
         "cas-audit-csp-headers",
         "cas-audit-log-admin"
     ]
+    private static let esddFixtureAutomationIds: Set<String> = [
+        "auto-nightly-audit",
+        "auto-weekly-flaky",
+        "auto-pr-triage",
+        "auto-bundle-size"
+    ]
 
     /// Restores saved Keychain credentials on launch and connects to the live backend if available.
     /// If the saved host is temporarily offline on launch, retains paired mode (`hasPairedBackend = true`),
@@ -840,7 +848,24 @@ public final class AntigravitySessionStore {
         lastPingLatencyMs = nil
         availableRelayInstances = []
         connectionErrorText = nil
-        connectionStatusText = "Disconnected · Demo Sandbox Mode"
+        connectionStatusText = "Not Connected"
+        if !isVerificationMode {
+            projects = []
+            workspaces = []
+            summaries = []
+            automations = []
+            stepsByCascadeId = [:]
+            activeArtifacts = []
+            activeTurnDiffs = []
+            planChanges = []
+            planComments = []
+            composerAttachments = []
+            composerDraftText = ""
+            selectedProjectId = ""
+            selectedWorkspaceUri = ""
+            activeCascadeId = ""
+            activeRoute = .tabRoot
+        }
         await KeychainStore.shared.clearCredentials()
     }
 
@@ -868,8 +893,12 @@ public final class AntigravitySessionStore {
         connectionStatusText = statusText
 
         if wasInESDDDemoState {
-            let cachedProjects = await projectionStore.loadProjects()
-            let cachedSummaries = await projectionStore.loadProjectedSummaries()
+            let cachedProjects = (await projectionStore.loadProjects()).filter {
+                !Self.esddFixtureProjectIds.contains($0.id)
+            }
+            let cachedSummaries = (await projectionStore.loadProjectedSummaries()).filter {
+                !Self.esddFixtureCascadeIds.contains($0.cascadeId)
+            }
             var hydratedSummaries = cachedSummaries
             if !cachedProjects.isEmpty || !hydratedSummaries.isEmpty {
                 projects = Self.reconcileLiveProjects(
@@ -885,7 +914,9 @@ public final class AntigravitySessionStore {
             }
             workspaces = []
             stepsByCascadeId = [:]
-            automations = await projectionStore.loadAutomations()
+            automations = (await projectionStore.loadAutomations()).filter {
+                !Self.esddFixtureAutomationIds.contains($0.id)
+            }
             selectedProjectId = projects.first?.id ?? ""
             selectedWorkspaceUri = projects.first?.workspaceUri ?? ""
             activeCascadeId = summaries.first?.cascadeId ?? ""
@@ -2074,7 +2105,9 @@ public final class AntigravitySessionStore {
         let storeRef = projectionStore
         let clientRef = rpcClient
         let liveConnected = isLiveBackendConnected
-        let workspaceUri = selectedWorkspaceUri.isEmpty ? "file:///Users/wl/code/ledger-svc" : selectedWorkspaceUri
+        let workspaceUri = selectedWorkspaceUri.isEmpty
+            ? (isVerificationMode ? "file:///Users/wl/code/ledger-svc" : (workspaces.first?.workspaceUri ?? ""))
+            : selectedWorkspaceUri
 
         Task { [weak self] in
             await storeRef.enqueueOutbox(
@@ -2499,6 +2532,8 @@ public final class AntigravitySessionStore {
     // MARK: - Deterministic Scene Routing Helper (`UE01` .. `UE13`)
 
     public func configureForVerifyScene(_ scene: ESDDVerifySceneCase) {
+        isVerificationMode = true
+        isInitialSessionCheckComplete = true
         presentedSheet = nil
         switch scene {
         case .agentsHome:
@@ -3350,6 +3385,9 @@ public final class AntigravitySessionStore {
             activeLineCommentDraft: "Use l.clock.Now() — the plan says to inject the clock so tests can control time.",
             selectedModelConfig: CascadeModelConfig.catalog[0]
         )
+        store.isVerificationMode = true
+        store.isInitialSessionCheckComplete = true
+        store.connectionStatusText = "Demo Sandbox · Offline ESDD Fixtures"
         store.composerAttachments = [
             ComposerAttachmentChip(
                 id: "chip-ratelimit",
@@ -3359,6 +3397,54 @@ public final class AntigravitySessionStore {
             )
         ]
         store.composerDraftText = "Use 1000/s instead — staging is smaller than prod."
+        return store
+    }
+
+    /// Clean, empty production store used on real devices (`launchVerifyCase() == nil`).
+    /// Contains zero mock/demo conversations, projects, automations, or context chips.
+    public static func makeLiveStore() -> AntigravitySessionStore {
+        let placeholderHost = RemoteHostInstance(
+            instanceId: "unpaired",
+            hostname: "Antigravity Desktop",
+            version: "",
+            channel: .cloudRelay,
+            endpointURL: URL(string: SAPISIDHashGenerator.defaultOrigin)!,
+            isOnline: false,
+            latencyMs: 0
+        )
+        let store = AntigravitySessionStore(
+            hosts: [],
+            activeHost: placeholderHost,
+            projects: [],
+            workspaces: [],
+            selectedWorkspaceUri: "",
+            summaries: [],
+            automations: [],
+            contextCandidates: [],
+            questionSteps: [],
+            activeQuestionStepIndex: 1,
+            planChanges: [],
+            planComments: [],
+            activeCascadeId: "",
+            stepsByCascadeId: [:],
+            activeArtifacts: [],
+            activeTurnDiffs: [],
+            selectedDiffTurn: 1,
+            selectedDiffFileIndex: 0,
+            activeLineCommentDraft: "",
+            selectedModelConfig: CascadeModelConfig.catalog[0]
+        )
+        store.isVerificationMode = false
+        store.isInitialSessionCheckComplete = false
+        store.selectedProjectId = ""
+        store.contextMenuTargetCascadeId = ""
+        store.swipePreviewCascadeId = ""
+        store.selectedArtifactPath = ""
+        store.selectedDiffLineNumber = nil
+        store.availableGitHubRepos = []
+        store.composerAttachments = []
+        store.composerDraftText = ""
+        store.connectionStatusText = "Not Connected"
         return store
     }
 }
