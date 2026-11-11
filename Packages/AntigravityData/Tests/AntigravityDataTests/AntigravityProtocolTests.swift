@@ -304,7 +304,7 @@ final class AntigravityProtocolTests: XCTestCase {
             "summary": .string("Slardar Tag Code Review"),
             "stepCount": .int(18),
             "status": .string("CASCADE_RUN_STATUS_DONE"),
-            "lastModifiedTime": .string("2026-11-11T08:48:00.839201442Z"),
+            "lastModifiedTime": .string("2026-11-11T08:47:30.839201442Z"),
             "annotations": .object([
                 "lastUserViewTime": .string("2026-11-11T08:30:00.100000Z")
             ]),
@@ -331,7 +331,7 @@ final class AntigravityProtocolTests: XCTestCase {
             "summary": .string("Slardar App AI 埋点梳理"),
             "stepCount": .int(11),
             "status": .string("CASCADE_RUN_STATUS_IDLE"),
-            "lastModifiedTime": .string("2026-11-11T07:00:00Z"),
+            "lastModifiedTime": .string("2026-11-11T06:55:00Z"),
             "annotations": .object([
                 "lastUserViewTime": .string("2026-11-11T07:05:00Z")
             ]),
