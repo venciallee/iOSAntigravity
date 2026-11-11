@@ -152,6 +152,7 @@ public final class AntigravitySessionStore {
     private let projectionStore: LocalProjectionStore
     private var rpcClient: AntigravityRPCClient?
     private var summaryStreamTask: Task<Void, Never>? = nil
+    private var summaryPollingTask: Task<Void, Never>? = nil
     private var stepPollingTask: Task<Void, Never>? = nil
     private var locallyViewedAtByCascadeId: [String: Date] = [:]
 
@@ -654,6 +655,7 @@ public final class AntigravitySessionStore {
 
     public func disconnectBackendAndClearKeychain() async {
         summaryStreamTask?.cancel()
+        summaryPollingTask?.cancel()
         stepPollingTask?.cancel()
         isLiveBackendConnected = false
         lastPingLatencyMs = nil
@@ -759,30 +761,28 @@ public final class AntigravitySessionStore {
     /// reflect automatically on iOS in real time.
     public func startSummarySubscriptionStream() {
         summaryStreamTask?.cancel()
+        summaryPollingTask?.cancel()
         guard let client = rpcClient else { return }
-        summaryStreamTask = Task { [weak self] in
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { @MainActor [weak self] in
-                    guard let stream = try? await client.subscribeEnvelopeStream(method: "JetboxSubscribeToSummaries") else {
-                        return
-                    }
-                    do {
-                        for try await event in stream {
-                            guard let self, !Task.isCancelled else { break }
-                            self.applyJetboxSummaryEvent(event)
-                        }
-                    } catch {
-                        // Stream ended or closed; concurrent polling task keeps state synchronized.
-                    }
-                }
 
-                group.addTask { @MainActor [weak self] in
-                    while !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 1_500_000_000)
-                        guard let self, !Task.isCancelled, self.isLiveBackendConnected else { break }
-                        await self.refreshWorkspacesAndSummaries()
-                    }
+        summaryStreamTask = Task { [weak self] in
+            guard let stream = try? await client.subscribeEnvelopeStream(method: "JetboxSubscribeToSummaries") else {
+                return
+            }
+            do {
+                for try await event in stream {
+                    guard let self, !Task.isCancelled else { break }
+                    self.applyJetboxSummaryEvent(event)
                 }
+            } catch {
+                // Stream ended or closed; concurrent polling task keeps state synchronized.
+            }
+        }
+
+        summaryPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self, !Task.isCancelled, self.isLiveBackendConnected else { break }
+                await self.refreshWorkspacesAndSummaries()
             }
         }
     }
