@@ -281,7 +281,7 @@ public struct AgentsHomeViewController: View {
                     Circle()
                         .fill(selectedHost == .cloud ? AntigravityTheme.accentPeriwinkle : AntigravityTheme.statusDone)
                         .frame(width: 8, height: 8)
-                    Text(store.isLiveBackendConnected ? (store.activeHost?.name ?? selectedHost.rawValue) : selectedHost.rawValue)
+                    Text(store.isLiveBackendConnected ? store.activeHost.hostname : selectedHost.rawValue)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(UEChromePalette.textPrimary)
                         .lineLimit(1)
