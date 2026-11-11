@@ -1,6 +1,9 @@
 import Foundation
 import SwiftUI
 import AntigravityData
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Credential-free Share Extension (`AntigravityShare`) that writes shared URLs, screenshots,
 /// or stack traces into the App Group durable outbox and wakes the main app via `antigravity://share/<id>`.
@@ -43,3 +46,19 @@ public struct AntigravityShareSheetView: View {
         .background(AntigravityTheme.canvasObsidian)
     }
 }
+
+#if canImport(UIKit)
+public final class AntigravityShareExtensionViewController: UIViewController {
+    public override func viewDidLoad() {
+        super.viewDidLoad()
+        let host = UIHostingController(
+            rootView: AntigravityShareSheetView(sharedText: "Shared snippet queued for Antigravity.")
+        )
+        addChild(host)
+        host.view.frame = view.bounds
+        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(host.view)
+        host.didMove(toParent: self)
+    }
+}
+#endif

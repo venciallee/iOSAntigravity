@@ -26,16 +26,28 @@ targets:
         embed: true
       - target: AntigravityShare
         embed: true
+    info:
+      path: iOS/Support/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSCameraUsageDescription: "Scan the Remote Control QR code from Antigravity Desktop to pair your device."
+        NSMicrophoneUsageDescription: "Dictate prompts to Antigravity using real-time voice transcription."
+        NSFaceIDUsageDescription: "Authorize agent terminal commands and external permissions with Face ID."
+        NSLocalNetworkUsageDescription: "Connect directly to Antigravity Desktop or Mac Companion Bridge over LAN and Tailscale."
+        NSSupportsLiveActivities: true
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.antigravity.ios.deeplink
+            CFBundleURLSchemes:
+              - antigravity
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_NSCameraUsageDescription: "Scan the Remote Control QR code from Antigravity Desktop to pair your device."
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Dictate prompts to Antigravity using real-time voice transcription."
-        INFOPLIST_KEY_NSFaceIDUsageDescription: "Authorize agent terminal commands and external permissions with Face ID."
-        INFOPLIST_KEY_NSSupportsLiveActivities: YES
         SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
 
   AntigravityLiveActivity:
     type: app-extension
@@ -46,10 +58,16 @@ targets:
       - path: Shared/DesignSystem
     dependencies:
       - package: AntigravityData
+    info:
+      path: Extensions/LiveActivity/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app.LiveActivity
         SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
 
   AntigravityShare:
     type: app-extension
@@ -59,8 +77,18 @@ targets:
       - path: Shared/DesignSystem
     dependencies:
       - package: AntigravityData
+    info:
+      path: Extensions/Share/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).AntigravityShareExtensionViewController"
+          NSExtensionAttributes:
+            NSExtensionActivationSupportsText: true
+            NSExtensionActivationSupportsWebURLWithMaxCount: 1
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app.Share
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) ANTIGRAVITY_SHARE_EXTENSION"
         SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
