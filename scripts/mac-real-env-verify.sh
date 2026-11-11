@@ -25,6 +25,8 @@ swift test --package-path Packages/AntigravityData
 
 echo ""
 echo "=== [2/5] Live Antigravity Desktop Companion Bridge & Connect-RPC Handshake ==="
+pkill -f "scripts/mac-companion-bridge.py" >/dev/null 2>&1 || true
+sleep 0.3
 BRIDGE_CSRF="agy-mac-verify-$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -d'-' -f1)"
 BRIDGE_PORT="$(python3 -c '
 import socket

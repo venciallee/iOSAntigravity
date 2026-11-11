@@ -789,13 +789,12 @@ public final class AntigravitySessionStore {
 
     /// Handles both Antigravity 2.0.11+ `{"updates": {"<cascadeId>": {...}}, "deletes": [...]}` frames
     /// and single-cascade `{"cascadeId": "...", "status": "..."}` frames.
-    private func applyJetboxSummaryEvent(_ event: JSONValue) {
+    private func applyJetboxSummaryEvent(_ event: [String: JSONValue]) {
         var changedIds = Set<String>()
 
         if let updatesMap = event["updates"]?.objectValue {
             for (cid, rawValue) in updatesMap {
-                guard let entry = rawValue.objectValue,
-                      let decoded = AntigravityRPCClient.decodeTrajectorySummaryEntry(cascadeId: cid, entry: entry) else {
+                guard let decoded = AntigravityRPCClient.decodeTrajectorySummaryEntry(cascadeId: cid, value: rawValue) else {
                     continue
                 }
                 changedIds.insert(cid)
@@ -833,7 +832,7 @@ public final class AntigravitySessionStore {
         }
 
         if let deletes = event["deletes"]?.arrayValue {
-            let deletedIds = Set(deletes.compactMap(\.stringValue))
+            let deletedIds = Set(deletes.compactMap { $0.stringValue })
             if !deletedIds.isEmpty {
                 summaries.removeAll { deletedIds.contains($0.cascadeId) }
             }
