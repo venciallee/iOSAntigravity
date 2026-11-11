@@ -171,8 +171,18 @@ echo "[PASS] Antigravity.app compiled for ${SIM_NAME}"
 echo ""
 echo "=== [4/4] Booting Simulator, Installing Antigravity.app & Connecting Live ==="
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
-open "$(xcode-select -p)/Applications/Simulator.app" >/dev/null 2>&1 || open -b com.apple.iphonesimulator >/dev/null 2>&1 || true
+DEV_DIR="$(xcode-select -p)"
+DEVICE_HUB_APP="$(dirname "$DEV_DIR")/Applications/DeviceHub.app"
+LEGACY_SIM_APP="$DEV_DIR/Applications/Simulator.app"
+if [[ -d "$DEVICE_HUB_APP" ]]; then
+  open "$DEVICE_HUB_APP" >/dev/null 2>&1 || open -b com.apple.dt.Devices >/dev/null 2>&1 || true
+elif [[ -d "$LEGACY_SIM_APP" ]]; then
+  open "$LEGACY_SIM_APP" --args -CurrentDeviceUDID "$SIM_UDID" >/dev/null 2>&1 || open -b com.apple.iphonesimulator >/dev/null 2>&1 || true
+fi
 xcrun simctl bootstatus "$SIM_UDID" -b
+if [[ -d "$DEVICE_HUB_APP" ]]; then
+  open "devices://device/open?id=${SIM_UDID}" >/dev/null 2>&1 || true
+fi
 
 APP_PATH="$(find "$DERIVED_DATA/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name "Antigravity.app" | head -n 1)"
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
