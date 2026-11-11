@@ -18,7 +18,6 @@ fi
 
 xcodegen generate
 
-# 1. Auto-detect Apple Development Team ID from local macOS Keychain if not set
 WITH_BRIDGE=0
 for arg in "$@"; do
   if [[ "$arg" == "--with-bridge" ]]; then
@@ -26,37 +25,13 @@ for arg in "$@"; do
   fi
 done
 
-TEAM_ID="${TEAM_ID:-}"
-if [[ -z "$TEAM_ID" ]]; then
-  TEAM_ID="$(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*(\([A-Z0-9]\{10\}\)).*/\1/p' \
-    | head -n 1 || true)"
-fi
-
-# Derive a unique per-Mac bundle prefix by default so Personal Team signing never hits global App ID collisions
-USER_SLUG="$(id -un | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
-BUNDLE_PREFIX="${BUNDLE_PREFIX:-com.${USER_SLUG:-local}.antigravity.ios}"
-
-if [[ -z "$TEAM_ID" ]]; then
-  echo "[!] No Apple Development signing certificate found in Keychain yet."
-  echo "    Opening iOSAntigravity.xcodeproj in Xcode — sign in under Settings > Accounts,"
-  echo "    select your Team on the 'Antigravity' target, pick your iPhone, and press Cmd+R!"
-  open iOSAntigravity.xcodeproj
-  if [[ "$WITH_BRIDGE" -eq 1 ]]; then
-    exec python3 -u scripts/mac-companion-bridge.py
-  fi
-  exit 0
-fi
-
-echo "[*] Signing Team ID   : ${TEAM_ID}"
-echo "[*] Bundle Prefix     : ${BUNDLE_PREFIX} (${BUNDLE_PREFIX}.app)"
-
-# 2. Detect connected physical iPhone (excluding Xcode 26/27 DeviceHub Simulators!)
+# 1. Detect connected physical iPhone FIRST (excluding Xcode 26/27 DeviceHub Simulators!)
 IPHONE_INFO_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-iphone.XXXXXX")"
 SIM_LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-sims.XXXXXX")"
 DEST_INFO_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-dests.XXXXXX")"
+SIGN_PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-signplan.XXXXXX")"
 SETTINGS_JSON_FILE=""
-trap 'rm -f "$IPHONE_INFO_FILE" "$SIM_LIST_FILE" "$DEST_INFO_FILE" ${SETTINGS_JSON_FILE:+"$SETTINGS_JSON_FILE"}' EXIT
+trap 'rm -f "$IPHONE_INFO_FILE" "$SIM_LIST_FILE" "$DEST_INFO_FILE" "$SIGN_PLAN_FILE" ${SETTINGS_JSON_FILE:+"$SETTINGS_JSON_FILE"}' EXIT
 
 xcrun devicectl list devices --json-output "$IPHONE_INFO_FILE" >/dev/null 2>&1 || true
 xcrun simctl list devices -j >"$SIM_LIST_FILE" 2>/dev/null || true
@@ -142,6 +117,219 @@ if [[ "$DEVICE_REPORT" == READY\|* ]]; then
   DEVICE_LINE="${DEVICE_REPORT#READY|}"
 fi
 
+# 2. Build ordered list of Signing Plans: (TEAM_ID, BUNDLE_PREFIX, REASON)
+#    - Avoids shared corporate username collisions (e.g. `id -un == bytedance` -> `com.bytedance.*` rejected by Personal Team)
+#    - Reuses cached unexpired wildcard/exact `.mobileprovision` profiles covering DEVICE_UDID (works even offline!)
+#    - Tries all unlocked `Apple Development` / `iPhone Developer` identities in Keychain (active teams with valid profiles first)
+PROBE_UDID=""
+if [[ -n "$DEVICE_LINE" ]]; then
+  IFS='|' read -r PROBE_UDID _ _ _ <<< "$DEVICE_LINE"
+fi
+
+python3 - "$PROBE_UDID" "${TEAM_ID:-}" "${BUNDLE_PREFIX:-}" >"$SIGN_PLAN_FILE" <<'PY'
+from datetime import datetime, timezone
+import hashlib
+import os
+import plistlib
+import re
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+device_udid, env_team, env_prefix = sys.argv[1].strip(), sys.argv[2].strip(), sys.argv[3].strip()
+
+# Derive a deterministic per-Mac unique prefix (`io.agy.dev<8hex>`) that never collides with corporate namespaces
+hw_seed = ""
+try:
+    ioreg_out = subprocess.check_output(
+        ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+    m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', ioreg_out)
+    if m:
+        hw_seed = m.group(1)
+except Exception:
+    pass
+if not hw_seed:
+    hw_seed = f"{socket.gethostname()}:{os.path.expanduser('~')}"
+
+mac_hash = hashlib.sha256(hw_seed.encode("utf-8")).hexdigest()[:8]
+default_prefix = env_prefix or f"io.agy.dev{mac_hash}"
+
+if env_team and env_prefix:
+    print(f"{env_team}|{env_prefix}|explicit TEAM_ID & BUNDLE_PREFIX")
+    sys.exit(0)
+
+# Enumerate unlocked codesigning Team IDs from Keychain (Apple Development / iPhone Developer first)
+dev_teams = []
+other_teams = []
+try:
+    sec_out = subprocess.check_output(
+        ["security", "find-identity", "-v", "-p", "codesigning"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+    for line in sec_out.splitlines():
+        m = re.search(r'"([^"]*\(([A-Z0-9]{10})\))"', line)
+        if not m:
+            continue
+        label, tid = m.group(1), m.group(2)
+        if env_team and tid != env_team:
+            continue
+        is_dev = ("Apple Development" in label) or ("iPhone Developer" in label)
+        target_list = dev_teams if is_dev else other_teams
+        if tid not in dev_teams and tid not in other_teams:
+            target_list.append(tid)
+except Exception:
+    pass
+
+all_teams = [env_team] if (env_team and env_team not in dev_teams + other_teams) else (dev_teams + other_teams)
+if not all_teams:
+    sys.exit(0)
+
+# Inspect local cached Provisioning Profiles (Xcode 16/26/27 UserData + Legacy MobileDevice)
+profile_dirs = [
+    Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles",
+    Path.home() / "Library/MobileDevice/Provisioning Profiles",
+]
+now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+team_active_profile_count = {t: 0 for t in all_teams}
+exact_prefixes_by_team = {}  # (team, prefix) -> set of matched suffixes (.app, .app.LiveActivity, .app.Share)
+wildcard_plans = []
+
+for pdir in profile_dirs:
+    if not pdir.is_dir():
+        continue
+    for mp in list(pdir.glob("*.mobileprovision")) + list(pdir.glob("*.provisionprofile")):
+        try:
+            raw = mp.read_bytes()
+            s = raw.find(b"<?xml")
+            e = raw.find(b"</plist>")
+            if s < 0 or e <= s:
+                continue
+            pl = plistlib.loads(raw[s : e + len(b"</plist>")])
+        except Exception:
+            continue
+
+        exp = pl.get("ExpirationDate")
+        if isinstance(exp, datetime):
+            exp_naive = exp.astimezone(timezone.utc).replace(tzinfo=None) if exp.tzinfo else exp
+            if exp_naive <= now_utc:
+                continue
+
+        tids = pl.get("TeamIdentifier") or []
+        tid = str(tids[0]).strip() if tids else ""
+        if tid not in all_teams:
+            continue
+
+        ent = pl.get("Entitlements") or {}
+        # Only Development profiles (`get-task-allow == True`) can sign Debug iphoneos builds
+        if ent.get("get-task-allow") is not True:
+            continue
+
+        team_active_profile_count[tid] = team_active_profile_count.get(tid, 0) + 1
+
+        prov_devs = [str(d).strip().lower() for d in (pl.get("ProvisionedDevices") or [])]
+        if device_udid and device_udid.lower() not in prov_devs:
+            continue
+
+        app_id = str(ent.get("application-identifier") or "")
+        if not app_id.startswith(f"{tid}."):
+            continue
+        pattern = app_id[len(tid) + 1 :]
+
+        if pattern == "*":
+            cand_prefix = env_prefix or default_prefix
+            wildcard_plans.append((0, tid, cand_prefix, "cached '*' wildcard profile"))
+        elif pattern.endswith(".*"):
+            ns = pattern[:-2]
+            if not env_prefix:
+                cand_prefix = f"{ns}.agy{mac_hash[:6]}"
+                wildcard_plans.append((1, tid, cand_prefix, f"cached '{ns}.*' wildcard profile"))
+            elif env_prefix.startswith(ns + "."):
+                wildcard_plans.append((1, tid, env_prefix, f"cached '{ns}.*' wildcard profile"))
+        else:
+            for suffix in (".app.LiveActivity", ".app.Share", ".app"):
+                if pattern.endswith(suffix):
+                    base_p = pattern[: -len(suffix)]
+                    if not env_prefix or env_prefix == base_p:
+                        exact_prefixes_by_team.setdefault((tid, base_p), set()).add(suffix)
+                    break
+
+plans = []
+seen = set()
+
+def add_plan(t: str, p: str, reason: str):
+    if (t, p) not in seen:
+        seen.add((t, p))
+        plans.append((t, p, reason))
+
+# 1. Exact cached profile triples covering all 3 targets (.app + .LiveActivity + .Share)
+for (tid, base_p), suffixes in exact_prefixes_by_team.items():
+    if {".app", ".app.LiveActivity", ".app.Share"}.issubset(suffixes):
+        add_plan(tid, base_p, "cached exact provisioning profiles")
+
+# 2. Cached wildcard profiles covering DEVICE_UDID (works 100% offline without Xcode account login!)
+wildcard_plans.sort(key=lambda item: item[0])
+for _, tid, cand_p, reason in wildcard_plans:
+    add_plan(tid, cand_p, reason)
+
+# 3. Automatic signing across all unlocked Development teams (prioritize teams with active local profiles)
+sorted_teams = sorted(
+    all_teams,
+    key=lambda t: (0 if t in dev_teams else 1, -team_active_profile_count.get(t, 0)),
+)
+for tid in sorted_teams:
+    add_plan(tid, default_prefix, "Xcode Automatic Signing")
+
+for tid, cand_p, reason in plans:
+    print(f"{tid}|{cand_p}|{reason}")
+PY
+
+apply_xcodeproj_signing_defaults() {
+  local target_team="$1"
+  local target_prefix="$2"
+  python3 - "$ROOT_DIR/iOSAntigravity.xcodeproj/project.pbxproj" "$target_team" "$target_prefix" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+pbx_path, team_id, bundle_prefix = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+if not pbx_path.is_file():
+    sys.exit(0)
+
+txt = pbx_path.read_text(encoding="utf-8")
+if bundle_prefix:
+    txt = re.sub(r"ANTIGRAVITY_BUNDLE_PREFIX = [^;]+;", f"ANTIGRAVITY_BUNDLE_PREFIX = {bundle_prefix};", txt)
+if team_id:
+    if "DEVELOPMENT_TEAM =" in txt:
+        txt = re.sub(r"DEVELOPMENT_TEAM = [^;]*;", f"DEVELOPMENT_TEAM = {team_id};", txt)
+    else:
+        txt = txt.replace(
+            "CODE_SIGN_STYLE = Automatic;",
+            f"CODE_SIGN_STYLE = Automatic;\n\t\t\t\tDEVELOPMENT_TEAM = {team_id};",
+        )
+pbx_path.write_text(txt, encoding="utf-8")
+PY
+}
+
+FIRST_PLAN="$(head -n 1 "$SIGN_PLAN_FILE" || true)"
+if [[ -z "$FIRST_PLAN" ]]; then
+  echo "[!] No Apple Development signing certificate found in Keychain yet."
+  echo "    Opening iOSAntigravity.xcodeproj in Xcode — sign in under Xcode > Settings (Cmd+,) > Accounts,"
+  echo "    select your Team on the 'Antigravity' target, pick your iPhone, and press Cmd+R!"
+  open iOSAntigravity.xcodeproj
+  if [[ "$WITH_BRIDGE" -eq 1 ]]; then
+    exec python3 -u scripts/mac-companion-bridge.py
+  fi
+  exit 0
+fi
+
+IFS='|' read -r TEAM_ID BUNDLE_PREFIX _ <<< "$FIRST_PLAN"
+apply_xcodeproj_signing_defaults "$TEAM_ID" "$BUNDLE_PREFIX"
+
 if [[ -z "$DEVICE_LINE" ]]; then
   echo "[!] No reachable paired physical iPhone detected."
   if [[ "$DEVICE_REPORT" == UNAVAILABLE\|* ]]; then
@@ -166,18 +354,46 @@ mkdir -p "$ROOT_DIR/.build"
 DERIVED_DATA="$ROOT_DIR/.build/DerivedDataDevice"
 BUILD_LOG="$ROOT_DIR/.build/xcodebuild-device.log"
 
-echo "[*] Building & signing Antigravity.app for ${DEVICE_NAME} (iphoneos)..."
-if ! xcodebuild \
-  -project iOSAntigravity.xcodeproj \
-  -scheme Antigravity \
-  -configuration Debug \
-  -sdk iphoneos \
-  -destination "platform=iOS,id=${DEVICE_UDID}" \
-  -derivedDataPath "$DERIVED_DATA" \
-  -allowProvisioningUpdates \
-  DEVELOPMENT_TEAM="$TEAM_ID" \
-  ANTIGRAVITY_BUNDLE_PREFIX="$BUNDLE_PREFIX" \
-  build >"$BUILD_LOG" 2>&1; then
+: >"$BUILD_LOG"
+BUILD_SUCCEEDED=0
+while IFS='|' read -r -u 3 CAND_TEAM CAND_PREFIX CAND_REASON; do
+  [[ -z "$CAND_TEAM" ]] && continue
+  TEAM_ID="$CAND_TEAM"
+  BUNDLE_PREFIX="$CAND_PREFIX"
+  apply_xcodeproj_signing_defaults "$TEAM_ID" "$BUNDLE_PREFIX"
+  echo "[*] Trying Team ${TEAM_ID} · Bundle ${BUNDLE_PREFIX}.app (${CAND_REASON})..."
+
+  if xcodebuild \
+    -project iOSAntigravity.xcodeproj \
+    -scheme Antigravity \
+    -configuration Debug \
+    -sdk iphoneos \
+    -destination "platform=iOS,id=${DEVICE_UDID}" \
+    -derivedDataPath "$DERIVED_DATA" \
+    -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$TEAM_ID" \
+    ANTIGRAVITY_BUNDLE_PREFIX="$BUNDLE_PREFIX" \
+    build </dev/null >>"$BUILD_LOG" 2>&1; then
+    BUILD_SUCCEEDED=1
+    break
+  else
+    echo "    [x] Signing/build attempt with Team ${TEAM_ID} (${BUNDLE_PREFIX}.app) did not succeed."
+  fi
+done 3< "$SIGN_PLAN_FILE"
+
+if [[ "$BUILD_SUCCEEDED" -ne 1 ]]; then
+  echo ""
+  EXPIRED_ACCOUNT="$(sed -n "s/.*Unable to log in with account '\([^']*\)'.*/\1/p" "$BUILD_LOG" | head -n 1 || true)"
+  if [[ -n "$EXPIRED_ACCOUNT" ]]; then
+    echo "[!] Xcode Apple ID 登录会话已过期 (${EXPIRED_ACCOUNT})，无法自动向 Apple 申请真机描述文件。"
+    echo "    工程已自动预填唯一 Bundle ID (${BUNDLE_PREFIX}.app) 与 Team (${TEAM_ID})，只需两步即可恢复："
+    echo "      1. 在即将弹出的 Xcode 中按 Cmd + , 打开 Settings -> Accounts"
+    echo "      2. 选中 '${EXPIRED_ACCOUNT}'，点击 'Sign In Again' 重新输入 Apple ID 密码完成登录"
+    echo "      3. 重新执行: bash scripts/install-on-iphone.sh （或直接在 Xcode 顶部选中 ${DEVICE_NAME} 按 Cmd + R）"
+    open iOSAntigravity.xcodeproj
+    exit 1
+  fi
+
   echo "[!] xcodebuild failed for physical iPhone (${DEVICE_NAME}). Key errors:"
   grep -E "error:|warning:.*Provisioning|No profiles|Developer Mode" "$BUILD_LOG" | tail -n 30 || true
   echo "    --- Tail of $BUILD_LOG ---"
