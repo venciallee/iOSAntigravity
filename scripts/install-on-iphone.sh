@@ -51,49 +51,107 @@ fi
 echo "[*] Signing Team ID   : ${TEAM_ID}"
 echo "[*] Bundle Prefix     : ${BUNDLE_PREFIX} (${BUNDLE_PREFIX}.app)"
 
-# 2. Detect connected physical iPhone via xcrun devicectl / xctrace
+# 2. Detect connected physical iPhone (excluding Xcode 26/27 DeviceHub Simulators!)
 IPHONE_INFO_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-iphone.XXXXXX")"
-trap 'rm -f "$IPHONE_INFO_FILE"' EXIT
+SIM_LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-sims.XXXXXX")"
+DEST_INFO_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-dests.XXXXXX")"
+SETTINGS_JSON_FILE=""
+trap 'rm -f "$IPHONE_INFO_FILE" "$SIM_LIST_FILE" "$DEST_INFO_FILE" ${SETTINGS_JSON_FILE:+"$SETTINGS_JSON_FILE"}' EXIT
 
 xcrun devicectl list devices --json-output "$IPHONE_INFO_FILE" >/dev/null 2>&1 || true
+xcrun simctl list devices -j >"$SIM_LIST_FILE" 2>/dev/null || true
 
-DEVICE_LINE="$(python3 - "$IPHONE_INFO_FILE" <<'PY'
+DEVICE_REPORT="$(python3 - "$IPHONE_INFO_FILE" "$SIM_LIST_FILE" <<'PY'
 import json
 import sys
 
+devicectl_path, simctl_path = sys.argv[1], sys.argv[2]
+
+sim_udids = set()
 try:
-    data = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+    sim_data = json.load(open(simctl_path, "r", encoding="utf-8"))
+    for runtime_devs in (sim_data.get("devices") or {}).values():
+        for sdev in runtime_devs or []:
+            u = str(sdev.get("udid") or "").strip().lower()
+            if u:
+                sim_udids.add(u)
+except Exception:
+    pass
+
+try:
+    data = json.load(open(devicectl_path, "r", encoding="utf-8"))
 except Exception:
     sys.exit(0)
 
 candidates = []
+unavailable_notes = []
+
 for dev in data.get("result", {}).get("devices", []):
-    hw = dev.get("hardwareProperties", {}) or {}
-    conn = dev.get("connectionProperties", {}) or {}
-    props = dev.get("deviceProperties", {}) or {}
-    platform = hw.get("platform", "")
-    pairing = conn.get("pairingState", "")
-    tunnel = conn.get("tunnelState", "")
-    if platform == "iOS" and pairing == "paired" and tunnel not in ("unavailable", "disconnected"):
-        udid = hw.get("udid") or dev.get("identifier") or ""
-        core_id = dev.get("identifier") or udid
-        name = props.get("name") or "iPhone"
-        dev_type = hw.get("deviceType", "") or hw.get("productType", "")
-        is_iphone = ("iphone" in dev_type.lower()) or ("iphone" in name.lower())
-        if udid:
-            candidates.append((0 if is_iphone else 1, udid, core_id, name))
+    hw = dev.get("hardwareProperties") or {}
+    conn = dev.get("connectionProperties") or {}
+    props = dev.get("deviceProperties") or {}
+
+    platform = str(hw.get("platform") or "")
+    reality = str(hw.get("reality") or "").strip().lower()
+    udid = str(hw.get("udid") or dev.get("identifier") or "").strip()
+    core_id = str(dev.get("identifier") or udid).strip()
+    transport = str(conn.get("transportType") or "").strip().lower()
+    pairing = str(conn.get("pairingState") or "").strip().lower()
+    tunnel = str(conn.get("tunnelState") or "").strip().lower()
+    name = str(props.get("name") or "iPhone").strip()
+
+    # Strictly exclude Xcode 26/27 DeviceHub Simulators (`reality == "simulated"` or present in `simctl`)
+    if reality and reality != "physical":
+        continue
+    if udid.lower() in sim_udids or core_id.lower() in sim_udids:
+        continue
+    if transport in ("local", "simulated", "simulator"):
+        continue
+    if platform != "iOS" or not udid:
+        continue
+
+    dev_type = str(hw.get("deviceType") or hw.get("productType") or "")
+    is_iphone = ("iphone" in dev_type.lower()) or ("iphone" in name.lower())
+
+    # Note: In CoreDevice (`devicectl`), an idle USB/Wi-Fi connected physical iPhone (`available (paired)`)
+    # reports `tunnelState == "disconnected"` until devicectl/xcodebuild opens the DDI tunnel on demand.
+    # Only `tunnelState == "unavailable"` means the device is offline / unplugged.
+    is_reachable = (pairing == "paired" and tunnel not in ("unavailable", ""))
+    if is_reachable:
+        is_wired = transport in ("wired", "usb")
+        prio = (
+            0 if is_iphone else 1,
+            0 if is_wired else 1,
+            0 if tunnel == "connected" else 1,
+        )
+        candidates.append((prio, udid, core_id, name, transport or tunnel))
+    else:
+        unavailable_notes.append(f"{name} (pairing={pairing or 'unknown'}, tunnel={tunnel or 'unknown'}, transport={transport or 'none'})")
 
 if candidates:
     candidates.sort(key=lambda item: item[0])
-    _, udid, core_id, name = candidates[0]
-    print("|".join([udid, core_id, name]))
+    _, udid, core_id, name, via = candidates[0]
+    print(f"READY|{udid}|{core_id}|{name}|{via}")
+elif unavailable_notes:
+    print("UNAVAILABLE|" + "; ".join(unavailable_notes))
 PY
 )"
 
+DEVICE_LINE=""
+if [[ "$DEVICE_REPORT" == READY\|* ]]; then
+  DEVICE_LINE="${DEVICE_REPORT#READY|}"
+fi
+
 if [[ -z "$DEVICE_LINE" ]]; then
-  echo "[!] No unlocked/paired physical iPhone detected via devicectl."
-  echo "    Connect & unlock your iPhone (enable Settings > Privacy & Security > Developer Mode),"
-  echo "    or build directly in Xcode (opening project now)..."
+  echo "[!] No reachable paired physical iPhone detected."
+  if [[ "$DEVICE_REPORT" == UNAVAILABLE\|* ]]; then
+    echo "    Seen offline/unpaired iOS hardware: ${DEVICE_REPORT#UNAVAILABLE|}"
+  fi
+  xcodebuild -project iOSAntigravity.xcodeproj -scheme Antigravity -showdestinations >"$DEST_INFO_FILE" 2>&1 || true
+  grep -E "platform:iOS[, }]" "$DEST_INFO_FILE" | grep -v "DVTiPhonePlaceholder" | sed 's/^/    Xcode destination: /' || true
+  echo ""
+  echo "    Please plug in & unlock your physical iPhone (trust this Mac + enable Settings > Privacy & Security > Developer Mode),"
+  echo "    then re-run 'bash scripts/install-on-iphone.sh', or select your iPhone in Xcode (opening project now)..."
   open iOSAntigravity.xcodeproj
   if [[ "$WITH_BRIDGE" -eq 1 ]]; then
     exec python3 -u scripts/mac-companion-bridge.py
@@ -101,28 +159,29 @@ if [[ -z "$DEVICE_LINE" ]]; then
   exit 0
 fi
 
-IFS='|' read -r DEVICE_UDID CORE_DEVICE_ID DEVICE_NAME <<< "$DEVICE_LINE"
-echo "[+] Detected Physical iPhone: ${DEVICE_NAME} (UDID=${DEVICE_UDID})"
+IFS='|' read -r DEVICE_UDID CORE_DEVICE_ID DEVICE_NAME DEVICE_VIA <<< "$DEVICE_LINE"
+echo "[+] Detected Physical iPhone: ${DEVICE_NAME} (UDID=${DEVICE_UDID}, via=${DEVICE_VIA})"
 
 mkdir -p "$ROOT_DIR/.build"
 DERIVED_DATA="$ROOT_DIR/.build/DerivedDataDevice"
 BUILD_LOG="$ROOT_DIR/.build/xcodebuild-device.log"
 
-echo "[*] Building & signing Antigravity.app for ${DEVICE_NAME}..."
+echo "[*] Building & signing Antigravity.app for ${DEVICE_NAME} (iphoneos)..."
 if ! xcodebuild \
   -project iOSAntigravity.xcodeproj \
   -scheme Antigravity \
   -configuration Debug \
   -sdk iphoneos \
-  -destination "id=${DEVICE_UDID}" \
+  -destination "platform=iOS,id=${DEVICE_UDID}" \
   -derivedDataPath "$DERIVED_DATA" \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$TEAM_ID" \
   ANTIGRAVITY_BUNDLE_PREFIX="$BUNDLE_PREFIX" \
-  -quiet \
   build >"$BUILD_LOG" 2>&1; then
-  echo "[!] xcodebuild failed. Build output:"
-  tail -n 80 "$BUILD_LOG" || true
+  echo "[!] xcodebuild failed for physical iPhone (${DEVICE_NAME}). Key errors:"
+  grep -E "error:|warning:.*Provisioning|No profiles|Developer Mode" "$BUILD_LOG" | tail -n 30 || true
+  echo "    --- Tail of $BUILD_LOG ---"
+  tail -n 50 "$BUILD_LOG" || true
   exit 1
 fi
 
@@ -133,6 +192,7 @@ if ! xcodebuild \
   -scheme Antigravity \
   -configuration Debug \
   -sdk iphoneos \
+  -destination "platform=iOS,id=${DEVICE_UDID}" \
   -derivedDataPath "$DERIVED_DATA" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
   ANTIGRAVITY_BUNDLE_PREFIX="$BUNDLE_PREFIX" \
@@ -143,7 +203,7 @@ if ! xcodebuild \
     -scheme Antigravity \
     -configuration Debug \
     -sdk iphoneos \
-    -destination "id=${DEVICE_UDID}" \
+    -destination "generic/platform=iOS" \
     -derivedDataPath "$DERIVED_DATA" \
     DEVELOPMENT_TEAM="$TEAM_ID" \
     ANTIGRAVITY_BUNDLE_PREFIX="$BUNDLE_PREFIX" \
@@ -256,14 +316,18 @@ if found:
     print(found[0][1])
 PY
 )"
-rm -f "$SETTINGS_JSON_FILE"
-
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  echo "[!] Could not locate built Antigravity.app bundle after xcodebuild succeeded."
+  echo "[!] Could not locate built iphoneos Antigravity.app bundle after xcodebuild succeeded."
+  grep -E '"(CODESIGNING_FOLDER_PATH|TARGET_BUILD_DIR|EFFECTIVE_PLATFORM_NAME)"' "$SETTINGS_JSON_FILE" | head -n 12 || true
+  if [[ -d "$DERIVED_DATA" ]]; then
+    echo "    App bundles currently inside $DERIVED_DATA:"
+    find "$DERIVED_DATA" -maxdepth 5 -name "*.app" 2>/dev/null || true
+  fi
   echo "    Last lines of $BUILD_LOG:"
-  tail -n 40 "$BUILD_LOG" || true
+  tail -n 50 "$BUILD_LOG" || true
   exit 1
 fi
+rm -f "$SETTINGS_JSON_FILE"
 
 ACTUAL_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist" 2>/dev/null || echo "${BUNDLE_PREFIX}.app")"
 echo "[+] Built app bundle  : ${APP_PATH} (${ACTUAL_BUNDLE_ID})"
