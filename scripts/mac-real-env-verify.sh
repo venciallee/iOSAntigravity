@@ -220,9 +220,122 @@ elif [[ -d "$LEGACY_SIM_APP" ]]; then
   open "$LEGACY_SIM_APP" --args -CurrentDeviceUDID "$SIM_UDID" >/dev/null 2>&1 || open -b com.apple.iphonesimulator >/dev/null 2>&1 || true
 fi
 
-APP_PATH="$(find "$DERIVED_DATA/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name "Antigravity.app" | head -n 1)"
+SIM_SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-sim-buildsettings.XXXXXX")"
+xcodebuild \
+  -project iOSAntigravity.xcodeproj \
+  -scheme Antigravity \
+  -configuration Debug \
+  -sdk iphonesimulator \
+  -derivedDataPath "$DERIVED_DATA" \
+  -showBuildSettings \
+  -json >"$SIM_SETTINGS_FILE" 2>/dev/null || true
+
+APP_PATH="$(python3 - "$SIM_SETTINGS_FILE" "$DERIVED_DATA" "$ROOT_DIR" <<'PY'
+import json
+import os
+import plistlib
+import sys
+from pathlib import Path
+
+settings_path, derived_data, root_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def is_sim_app(app_dir: str) -> bool:
+    if not app_dir or not os.path.isdir(app_dir):
+        return False
+    info_plist = os.path.join(app_dir, "Info.plist")
+    if not os.path.isfile(info_plist):
+        return False
+    try:
+        with open(info_plist, "rb") as fp:
+            pl = plistlib.load(fp)
+        platform_name = str(pl.get("DTPlatformName", "")).lower()
+        if platform_name and platform_name != "iphonesimulator":
+            return False
+        return True
+    except Exception:
+        return True
+
+try:
+    raw = Path(settings_path).read_text(encoding="utf-8", errors="ignore")
+    bracket_idx = raw.find("[")
+    if bracket_idx >= 0:
+        for entry in json.loads(raw[bracket_idx:]):
+            bs = entry.get("buildSettings") or {}
+            target = entry.get("target", "")
+            wrapper = bs.get("WRAPPER_NAME") or bs.get("FULL_PRODUCT_NAME") or "Antigravity.app"
+            product_type = bs.get("PRODUCT_TYPE", "")
+            if target == "Antigravity" or (product_type == "com.apple.product-type.application" and wrapper == "Antigravity.app"):
+                for cand in (
+                    bs.get("CODESIGNING_FOLDER_PATH"),
+                    os.path.join(bs.get("TARGET_BUILD_DIR", ""), wrapper) if bs.get("TARGET_BUILD_DIR") else None,
+                    os.path.join(bs.get("BUILT_PRODUCTS_DIR", ""), wrapper) if bs.get("BUILT_PRODUCTS_DIR") else None,
+                ):
+                    if cand and cand.endswith(".app") and is_sim_app(cand):
+                        print(cand)
+                        sys.exit(0)
+except Exception:
+    pass
+
+search_roots = [
+    (os.path.join(derived_data, "Build", "Products"), False),
+    (derived_data, False),
+    (os.path.join(root_dir, "Build", "Products"), False),
+    (os.path.join(root_dir, "build"), False),
+]
+xcode_prefs = os.path.expanduser("~/Library/Preferences/com.apple.dt.Xcode.plist")
+if os.path.isfile(xcode_prefs):
+    try:
+        with open(xcode_prefs, "rb") as fp:
+            prefs = plistlib.load(fp)
+        for key in ("IDECustomBuildProductsPath", "IDECustomDerivedDataLocation"):
+            val = prefs.get(key)
+            if isinstance(val, str) and val.strip():
+                expanded = os.path.expanduser(val.strip())
+                if not os.path.isabs(expanded):
+                    expanded = os.path.join(root_dir, expanded)
+                search_roots.append((expanded, key == "IDECustomDerivedDataLocation"))
+    except Exception:
+        pass
+search_roots.append((os.path.expanduser("~/Library/Developer/Xcode/DerivedData"), True))
+
+found = []
+seen = set()
+for root, filter_project_prefix in search_roots:
+    if not os.path.isdir(root):
+        continue
+    direct = os.path.join(root, "Debug-iphonesimulator", "Antigravity.app")
+    if direct not in seen and is_sim_app(direct):
+        seen.add(direct)
+        found.append((os.path.getmtime(direct), direct))
+    for dirpath, dirnames, _ in os.walk(root):
+        if filter_project_prefix and os.path.abspath(dirpath) == os.path.abspath(root):
+            dirnames[:] = [
+                d for d in dirnames
+                if d.lower().startswith("iosantigravity") or d in ("Build", "Products", "Debug-iphonesimulator")
+            ]
+        else:
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in ("Intermediates.noindex", "Index.noindex", "SourcePackages", "Logs", ".git")
+                and not d.endswith(".xctest")
+                and not d.endswith(".appex")
+            ]
+        if "Antigravity.app" in dirnames:
+            cand = os.path.join(dirpath, "Antigravity.app")
+            dirnames.remove("Antigravity.app")
+            if cand not in seen and is_sim_app(cand):
+                seen.add(cand)
+                found.append((os.path.getmtime(cand), cand))
+
+if found:
+    found.sort(key=lambda item: item[0], reverse=True)
+    print(found[0][1])
+PY
+)"
+rm -f "$SIM_SETTINGS_FILE"
+
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  echo "[!] Built Antigravity.app bundle not found under $DERIVED_DATA/Build/Products/Debug-iphonesimulator"
+  echo "[!] Built Antigravity.app bundle not found after xcodebuild."
   exit 1
 fi
 xcrun simctl install "$SIM_UDID" "$APP_PATH"
