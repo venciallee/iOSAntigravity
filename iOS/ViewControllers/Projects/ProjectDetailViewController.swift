@@ -463,6 +463,7 @@ public struct ProjectDetailViewController: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
             )
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("project-conv-list")
         } else if store.isLiveBackendConnected && rows.isEmpty {
             Text(selectedTab == .archived ? "No archived conversations in \(projectSlug)." : "No active conversations in \(projectSlug).")
@@ -478,6 +479,7 @@ public struct ProjectDetailViewController: View {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                 )
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("project-conv-list")
         } else {
             VStack(spacing: 0) {
@@ -547,6 +549,7 @@ public struct ProjectDetailViewController: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
             )
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("project-conv-list")
         }
     }

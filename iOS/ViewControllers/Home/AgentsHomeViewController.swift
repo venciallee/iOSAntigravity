@@ -417,6 +417,7 @@ public struct AgentsHomeViewController: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
             )
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("agents-search-input")
         }
     }
@@ -526,6 +527,7 @@ public struct AgentsHomeViewController: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
             )
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pinned-section-card")
         }
     }
@@ -640,6 +642,7 @@ public struct AgentsHomeViewController: View {
             }
         }
         .padding(.top, 2)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(
             project.slug == "ledger-svc" ? "project-group-ledger-svc" : "project-group-\(project.slug)"
         )
@@ -727,7 +730,6 @@ public struct AgentsHomeViewController: View {
             .frame(minHeight: 58)
         }
         .buttonStyle(AntigravityInteractiveRowButtonStyle())
-        .accessibilityIdentifier("conv-row-\(item.id)")
         .contextMenu {
             Button {
                 togglePinConversation(id: item.id)
@@ -765,6 +767,7 @@ public struct AgentsHomeViewController: View {
                 Label("Delete", systemImage: "trash")
             }
         }
+        .accessibilityIdentifier("conv-row-\(item.id)")
     }
 
     @ViewBuilder

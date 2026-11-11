@@ -258,6 +258,7 @@ public struct SevenSegmentTaskProgressCardView: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("card-task-progress-7seg")
     }
 
@@ -355,6 +356,7 @@ public struct InlineCommandApprovalCardView: View {
                 .stroke(StepCardPalette.warmAmber.opacity(0.30), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("card-command-approval")
     }
 
@@ -542,6 +544,7 @@ public struct CascadeStepCellView: View {
                 promptText: step.userInput,
                 contextChips: step.attachedMentions
             )
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("step-user-\(step.stepIndex)")
         case .plannerResponse, .notifyUser:
             VStack(alignment: .leading, spacing: 8) {

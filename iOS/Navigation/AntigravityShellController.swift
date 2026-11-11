@@ -137,6 +137,7 @@ public struct AntigravityFloatingTabBar: View {
                     .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.45), radius: 18, x: 0, y: 8)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier(tabBarAccessibilityId)
 
             // Right: Detached 56x56pt Periwinkle Circular FAB

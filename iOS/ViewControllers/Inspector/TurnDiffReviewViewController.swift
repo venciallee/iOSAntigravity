@@ -321,6 +321,7 @@ public struct TurnDiffReviewViewController: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("file-pager-card")
     }
 
@@ -480,6 +481,7 @@ public struct TurnDiffReviewViewController: View {
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("line-comment-composer")
     }
 

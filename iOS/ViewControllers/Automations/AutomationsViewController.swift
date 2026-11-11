@@ -146,6 +146,7 @@ public struct AutomationsViewController: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: AntigravityTheme.minTouchTargetPt, alignment: .leading)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("automation-prompt-input")
 
             Button {
@@ -303,6 +304,7 @@ public struct AutomationsViewController: View {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                 )
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(item.cardAccessibilityId)
             }
         }
