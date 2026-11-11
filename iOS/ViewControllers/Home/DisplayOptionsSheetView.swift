@@ -310,7 +310,7 @@ public struct DisplayOptionsSheetView: View {
                             .foregroundStyle(UEChromePalette.textSecondary)
                             .lineLimit(1)
                     }
-                    .frame(width: 96, minHeight: 54, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
