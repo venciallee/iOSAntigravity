@@ -67,7 +67,12 @@ if [[ "$BRIDGE_READY" -ne 1 ]]; then
   exit 1
 fi
 
-python3 verification/verify-live-rpc-flow.py --url "http://127.0.0.1:${BRIDGE_PORT}" --csrf "$BRIDGE_CSRF"
+HEALTH_JSON="$(curl -fsS --noproxy '*' --max-time 2 "http://127.0.0.1:${BRIDGE_PORT}/health" 2>/dev/null || echo '{}')"
+if echo "$HEALTH_JSON" | grep -q '"upstream_proxy"'; then
+  python3 verification/verify-live-rpc-flow.py --url "http://127.0.0.1:${BRIDGE_PORT}" --csrf "$BRIDGE_CSRF" --read-only
+else
+  python3 verification/verify-live-rpc-flow.py --url "http://127.0.0.1:${BRIDGE_PORT}" --csrf "$BRIDGE_CSRF"
+fi
 
 echo ""
 echo "=== [3/4] Generating Xcode Project & Building Antigravity.app (Simulator) ==="

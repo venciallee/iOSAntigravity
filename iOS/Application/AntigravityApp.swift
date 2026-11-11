@@ -44,7 +44,10 @@ public struct AntigravityApp: App {
                     }
                     if url.scheme?.lowercased() == "antigravity" && url.host?.lowercased() == "pair" {
                         Task {
-                            _ = await store.connectWithPairingURI(url.absoluteString)
+                            let ok = await store.connectWithPairingURI(url.absoluteString)
+                            if ok {
+                                store.activeRoute = .tabRoot
+                            }
                         }
                     }
                 }

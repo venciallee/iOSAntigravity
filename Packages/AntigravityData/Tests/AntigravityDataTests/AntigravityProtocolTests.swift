@@ -270,4 +270,85 @@ final class AntigravityProtocolTests: XCTestCase {
             XCTAssertNotNil(fresh.activeHost)
         }
     }
+
+    func testDesktopLiveTrajectoryStatusUnreadTimestampAndEmptyFilter() throws {
+        // 1. Verify all Antigravity Desktop `CASCADE_RUN_STATUS_*` enum strings map accurately
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CASCADE_RUN_STATUS_RUNNING"), .inProgress)
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CASCADE_RUN_STATUS_WAITING_FOR_USER"), .waiting)
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CASCADE_RUN_STATUS_DONE"), .done)
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CASCADE_RUN_STATUS_IDLE"), .unspecified)
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CASCADE_RUN_STATUS_CANCELLED"), .cancelled)
+
+        let refNow = try XCTUnwrap(
+            AntigravityRPCClient.parseProtoTimestamp(.string("2026-11-11T09:00:00.000000000Z"))
+        )
+
+        // 2. Unused 0-step blank New Chat placeholder -> filtered out (`nil`)
+        let blankPlaceholder: JSONValue = .object([
+            "stepCount": .int(0),
+            "status": .string("CASCADE_RUN_STATUS_IDLE"),
+            "workspaces": .array([
+                .object(["workspaceFolderAbsoluteUri": .string("file:///Users/dev/slardar_app_ai")])
+            ])
+        ])
+        XCTAssertNil(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "empty-0-step-tab",
+                value: blankPlaceholder,
+                now: refNow
+            )
+        )
+
+        // 3. Completed turn with `CASCADE_RUN_STATUS_DONE` & nanosecond RFC3339 timestamp -> Unread = true
+        let unreadDoneEntry: JSONValue = .object([
+            "summary": .string("Slardar Tag Code Review"),
+            "stepCount": .int(18),
+            "status": .string("CASCADE_RUN_STATUS_DONE"),
+            "lastModifiedTime": .string("2026-11-11T08:48:00.839201442Z"),
+            "annotations": .object([
+                "lastUserViewTime": .string("2026-11-11T08:30:00.100000Z")
+            ]),
+            "workspaces": .array([
+                .object(["workspaceFolderAbsoluteUri": .string("file:///Users/dev/slardar_app_ai")])
+            ])
+        ])
+        let decodedUnread = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "cid-slardar-code-review",
+                value: unreadDoneEntry,
+                now: refNow
+            )
+        )
+        XCTAssertEqual(decodedUnread.title, "Slardar Tag Code Review")
+        XCTAssertEqual(decodedUnread.projectSlug, "slardar_app_ai")
+        XCTAssertEqual(decodedUnread.status, .done)
+        XCTAssertTrue(decodedUnread.isUnread)
+        XCTAssertEqual(decodedUnread.relativeTimeLabel, "12m")
+        XCTAssertEqual(decodedUnread.statusSubtitle, "Done · New reply · 18 steps")
+
+        // 4. Viewed idle session (`CASCADE_RUN_STATUS_IDLE`, `lastModifiedTime <= lastUserViewTime`) -> Unread = false
+        let viewedIdleEntry: JSONValue = .object([
+            "summary": .string("Slardar App AI 埋点梳理"),
+            "stepCount": .int(11),
+            "status": .string("CASCADE_RUN_STATUS_IDLE"),
+            "lastModifiedTime": .string("2026-11-11T07:00:00Z"),
+            "annotations": .object([
+                "lastUserViewTime": .string("2026-11-11T07:05:00Z")
+            ]),
+            "workspaces": .array([
+                .object(["workspaceFolderAbsoluteUri": .string("file:///Users/dev/slardar_app_ai")])
+            ])
+        ])
+        let decodedIdle = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "cid-slardar-tracking",
+                value: viewedIdleEntry,
+                now: refNow
+            )
+        )
+        XCTAssertEqual(decodedIdle.status, .unspecified)
+        XCTAssertFalse(decodedIdle.isUnread)
+        XCTAssertEqual(decodedIdle.relativeTimeLabel, "2h")
+        XCTAssertEqual(decodedIdle.statusSubtitle, "Idle · 11 steps")
+    }
 }

@@ -362,28 +362,18 @@ public actor AntigravityRPCClient {
     /// or Companion/Mock (`trajectories` array).
     public func getAllCascadeTrajectories() async throws -> [CascadeSummary] {
         let res = try await callUnaryJSON(method: "GetAllCascadeTrajectories")
+        let now = Date()
 
         // Format A: Native Desktop `language_server` map `{"trajectorySummaries": {"<cascadeId>": {...}}}`
         if let summaryMap = res["trajectorySummaries"]?.objectValue {
-            return summaryMap.compactMap { cascadeId, value -> CascadeSummary? in
-                guard let obj = value.objectValue else { return nil }
-                let title = obj["summary"]?.stringValue ?? obj["title"]?.stringValue ?? "Untitled Conversation"
-                let firstWorkspace = obj["workspaces"]?.arrayValue?.first?.objectValue
-                let uri = firstWorkspace?["workspaceFolderAbsoluteUri"]?.stringValue
-                    ?? obj["workspaceUri"]?.stringValue
-                    ?? "file:///Users/wl/code/workspace"
-                let slug = (uri as NSString).lastPathComponent
-                let statusRaw = obj["status"]?.stringValue ?? "CORTEX_STEP_STATUS_DONE"
-                let normalizedStatus = statusRaw.replacingOccurrences(of: "CASCADE_RUN_STATUS_", with: "CORTEX_STEP_STATUS_")
-                let stepCount = obj["stepCount"]?.intValue ?? 0
-                return CascadeSummary(
-                    cascadeId: cascadeId,
-                    title: title,
-                    projectSlug: slug,
-                    workspaceUri: uri,
-                    status: CortexStepStatus.from(jsonName: normalizedStatus),
-                    stepCount: stepCount
-                )
+            let decoded = summaryMap.compactMap { cascadeId, value in
+                Self.decodeTrajectorySummaryEntry(cascadeId: cascadeId, value: value, now: now)
+            }
+            return decoded.sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.cascadeId < rhs.cascadeId
             }
         }
 
@@ -399,6 +389,8 @@ public actor AntigravityRPCClient {
             let stepCount = obj["stepCount"]?.intValue ?? 0
             let branch = obj["branchName"]?.stringValue ?? "main"
             let subtitle = obj["statusSubtitle"]?.stringValue ?? ""
+            let updatedAt = Self.parseProtoTimestamp(obj["updatedAt"] ?? obj["lastModifiedTime"]) ?? now
+            let relativeLabel = obj["relativeTimeLabel"]?.stringValue ?? Self.formatRelativeTimeLabel(from: updatedAt, now: now)
             return CascadeSummary(
                 cascadeId: id,
                 title: title,
@@ -407,6 +399,8 @@ public actor AntigravityRPCClient {
                 branchName: branch,
                 status: CortexStepStatus.from(jsonName: statusName),
                 stepCount: stepCount,
+                updatedAt: updatedAt,
+                relativeTimeLabel: relativeLabel,
                 statusSubtitle: subtitle,
                 isPinned: obj["isPinned"]?.boolValue ?? false,
                 isArchived: obj["isArchived"]?.boolValue ?? false,
@@ -622,7 +616,7 @@ public actor AntigravityRPCClient {
                   let title = obj["title"]?.stringValue else { return nil }
             let slug = obj["projectSlug"]?.stringValue ?? "ledger-svc"
             let summary = obj["scheduleSummary"]?.stringValue ?? "\(slug) · Daily · Flash"
-            let sectionRaw = obj["section"]?.stringValue ?? AutomationSectionKind.scheduled.rawValue
+            let sectionRaw = (obj["section"]?.stringValue ?? AutomationSectionKind.scheduled.rawValue).uppercased()
             let section = AutomationSectionKind(rawValue: sectionRaw) ?? .scheduled
             return AutomationItem(
                 id: id,
@@ -631,7 +625,9 @@ public actor AntigravityRPCClient {
                 scheduleSummary: summary,
                 section: section,
                 nextRunText: obj["nextRunText"]?.stringValue ?? "Tonight, 02:00",
-                lastRunText: obj["lastRunText"]?.stringValue ?? "Scheduled"
+                lastRunText: obj["lastRunText"]?.stringValue ?? "Scheduled",
+                needsReview: obj["needsReview"]?.boolValue ?? false,
+                isRunningNow: obj["isRunningNow"]?.boolValue ?? false
             )
         }
     }
@@ -959,5 +955,204 @@ public actor AntigravityRPCClient {
             viewFile: viewFilePayload,
             requestedInteraction: interaction
         )
+    }
+
+    // MARK: - Live Desktop Summary & Timestamp Helpers
+
+    /// Decodes a single entry from `GetAllCascadeTrajectories.trajectorySummaries`,
+    /// filtering out blank 0-step unused Desktop tabs and computing accurate unread/status/relative-time fields.
+    public static func decodeTrajectorySummaryEntry(
+        cascadeId: String,
+        value: JSONValue,
+        now: Date = Date()
+    ) -> CascadeSummary? {
+        guard let obj = value.objectValue else { return nil }
+        let annotations = obj["annotations"]?.objectValue
+
+        let candidateTitles: [String?] = [
+            annotations?["title"]?.stringValue,
+            obj["summary"]?.stringValue,
+            obj["title"]?.stringValue
+        ]
+        let resolvedTitle = candidateTitles
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+
+        let stepCount = obj["stepCount"]?.intValue
+            ?? Int(obj["stepCount"]?.stringValue ?? "")
+            ?? 0
+
+        // Antigravity Desktop keeps unused 0-step New Chat placeholders in `trajectorySummaries`
+        // without a title/summary and hides them in its sidebar. Filter them out cleanly.
+        if resolvedTitle == nil && stepCount == 0 {
+            return nil
+        }
+        let title = resolvedTitle ?? "New Conversation"
+
+        let firstWorkspace = obj["workspaces"]?.arrayValue?.first?.objectValue
+        let uri = firstWorkspace?["workspaceFolderAbsoluteUri"]?.stringValue
+            ?? firstWorkspace?["workspaceUri"]?.stringValue
+            ?? obj["workspaceUri"]?.stringValue
+            ?? "file:///Users/wl/code/workspace"
+        let cleanPath = uri.replacingOccurrences(of: "file://", with: "")
+        let slug = (cleanPath as NSString).lastPathComponent
+        let branch = firstWorkspace?["gitBranch"]?.stringValue
+            ?? firstWorkspace?["branchName"]?.stringValue
+            ?? obj["branchName"]?.stringValue
+            ?? "main"
+
+        let statusRaw = obj["status"]?.stringValue ?? "CASCADE_RUN_STATUS_IDLE"
+        let status = CortexStepStatus.from(jsonName: statusRaw)
+
+        let updatedDate = Self.parseProtoTimestamp(
+            obj["lastModifiedTime"]
+                ?? obj["updatedAt"]
+                ?? obj["lastStepTime"]
+                ?? obj["createdTime"]
+        )
+        let lastViewedDate = Self.parseProtoTimestamp(
+            annotations?["lastUserViewTime"] ?? obj["lastUserViewTime"]
+        )
+        let updatedAt = updatedDate ?? now
+        let relativeLabel = Self.formatRelativeTimeLabel(from: updatedDate, now: now)
+
+        let isUnread: Bool
+        if let explicitUnread = obj["isUnread"]?.boolValue ?? annotations?["unread"]?.boolValue {
+            isUnread = explicitUnread
+        } else if let updatedDate, let lastViewedDate {
+            isUnread = updatedDate.timeIntervalSince(lastViewedDate) > 1.0
+                || statusRaw.uppercased() == "CASCADE_RUN_STATUS_DONE"
+        } else {
+            isUnread = statusRaw.uppercased() == "CASCADE_RUN_STATUS_DONE" || status == .waiting
+        }
+
+        let isPinned = obj["isPinned"]?.boolValue
+            ?? annotations?["pinned"]?.boolValue
+            ?? annotations?["isPinned"]?.boolValue
+            ?? false
+        let isArchived = obj["isArchived"]?.boolValue
+            ?? annotations?["archived"]?.boolValue
+            ?? annotations?["isArchived"]?.boolValue
+            ?? false
+
+        let explicitSubtitle = obj["statusSubtitle"]?.stringValue
+        let subtitle = Self.buildLiveStatusSubtitle(
+            status: status,
+            stepCount: stepCount,
+            isUnread: isUnread,
+            explicitSubtitle: explicitSubtitle
+        )
+
+        return CascadeSummary(
+            cascadeId: cascadeId,
+            title: title,
+            projectSlug: slug.isEmpty ? "workspace" : slug,
+            workspaceUri: uri,
+            branchName: branch,
+            status: status,
+            stepCount: stepCount,
+            currentStepIndex: max(1, stepCount),
+            totalSteps: max(1, stepCount),
+            updatedAt: updatedAt,
+            relativeTimeLabel: relativeLabel,
+            statusSubtitle: subtitle,
+            isPinned: isPinned,
+            isArchived: isArchived,
+            isUnread: isUnread
+        )
+    }
+
+    /// Parses Protobuf `google.protobuf.Timestamp` values encoded either as RFC3339 strings
+    /// (including 1–9 fractional nanosecond digits) or `{"seconds": ..., "nanos": ...}` objects.
+    public static func parseProtoTimestamp(_ value: JSONValue?) -> Date? {
+        guard let value else { return nil }
+
+        if let tsObj = value.objectValue {
+            let secs: Double? = tsObj["seconds"]?.doubleValue
+                ?? Double(tsObj["seconds"]?.stringValue ?? "")
+            if let secs {
+                let nanos = tsObj["nanos"]?.doubleValue
+                    ?? Double(tsObj["nanos"]?.stringValue ?? "")
+                    ?? 0
+                return Date(timeIntervalSince1970: secs + (nanos / 1_000_000_000.0))
+            }
+            return nil
+        }
+
+        guard let rawString = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawString.isEmpty else {
+            return nil
+        }
+
+        if let dotIdx = rawString.firstIndex(of: ".") {
+            let fracStart = rawString.index(after: dotIdx)
+            var fracEnd = fracStart
+            while fracEnd < rawString.endIndex && rawString[fracEnd].isNumber {
+                fracEnd = rawString.index(after: fracEnd)
+            }
+            let digits = rawString[fracStart..<fracEnd]
+            if !digits.isEmpty {
+                let millis = String(digits.prefix(3)).padding(toLength: 3, withPad: "0", startingAt: 0)
+                let normalized = "\(rawString[..<dotIdx]).\(millis)\(rawString[fracEnd...])"
+                let fracFormatter = ISO8601DateFormatter()
+                fracFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let parsed = fracFormatter.date(from: normalized) {
+                    return parsed
+                }
+            }
+        }
+
+        let plainFormatter = ISO8601DateFormatter()
+        plainFormatter.formatOptions = [.withInternetDateTime]
+        return plainFormatter.date(from: rawString)
+    }
+
+    /// Formats a compact mobile relative timestamp (`now`, `8m`, `2h`, `Yesterday`, `4d`, `2w`).
+    public static func formatRelativeTimeLabel(from date: Date?, now: Date = Date()) -> String {
+        guard let date else { return "now" }
+        let delta = max(0, now.timeIntervalSince(date))
+        if delta < 60 {
+            return "now"
+        } else if delta < 3_600 {
+            return "\(Int(delta / 60))m"
+        } else if delta < 86_400 {
+            return "\(Int(delta / 3_600))h"
+        } else if delta < 172_800 {
+            return "Yesterday"
+        } else if delta < 604_800 {
+            return "\(Int(delta / 86_400))d"
+        } else {
+            return "\(Int(delta / 604_800))w"
+        }
+    }
+
+    public static func buildLiveStatusSubtitle(
+        status: CortexStepStatus,
+        stepCount: Int,
+        isUnread: Bool,
+        explicitSubtitle: String? = nil
+    ) -> String {
+        if let explicitSubtitle, !explicitSubtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return explicitSubtitle
+        }
+        switch status {
+        case .inProgress:
+            return stepCount > 0 ? "Running · Step \(stepCount)" : "Running..."
+        case .pending:
+            return "Queued · Waiting to start"
+        case .waiting, .blocked:
+            return "Needs review · Waiting on you"
+        case .error:
+            return stepCount > 0 ? "Error · Step \(stepCount)" : "Error"
+        case .cancelled:
+            return stepCount > 0 ? "Stopped · \(stepCount) steps" : "Stopped"
+        case .done:
+            if isUnread {
+                return stepCount > 0 ? "Done · New reply · \(stepCount) steps" : "Done · New reply"
+            }
+            return stepCount > 0 ? "Done · \(stepCount) steps" : "Done"
+        case .unspecified:
+            return stepCount > 0 ? "Idle · \(stepCount) steps" : "Idle"
+        }
     }
 }

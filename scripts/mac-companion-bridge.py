@@ -20,6 +20,7 @@ What it does automatically on macOS:
 """
 
 import argparse
+import html
 import json
 import os
 import re
@@ -35,6 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -179,7 +181,7 @@ def encode_varint_field(field_no: int, value: int) -> bytes:
 class CompanionState:
     """Stateful companion store for Automations and Standalone Sandbox testing."""
 
-    def __init__(self, workspace_root: str):
+    def __init__(self, workspace_root: str, is_live_proxy: bool = False):
         self.lock = threading.Lock()
         self.workspace_root = workspace_root
         slug = Path(workspace_root).name or "iOSAntigravity"
@@ -231,17 +233,21 @@ class CompanionState:
                 },
             ]
         }
-        self.automations = [
-            {
-                "id": "auto-nightly-audit",
-                "title": "Nightly dependency & security audit",
-                "projectSlug": slug,
-                "scheduleSummary": f"{slug} · Daily at 02:00 · Flash",
-                "section": "Scheduled",
-                "nextRunText": "Tonight, 02:00",
-                "lastRunText": "Succeeded · 6h ago",
-            }
-        ]
+        self.automations = (
+            []
+            if is_live_proxy
+            else [
+                {
+                    "id": "auto-nightly-audit",
+                    "title": "Nightly dependency & security audit",
+                    "projectSlug": slug,
+                    "scheduleSummary": f"{slug} · Daily at 02:00 · Flash",
+                    "section": "SCHEDULED",
+                    "nextRunText": "Tonight, 02:00",
+                    "lastRunText": "Succeeded · 6h ago",
+                }
+            ]
+        )
 
     def build_binary_steps(self, cascade_id: str, count: int = 605) -> bytes:
         out = bytearray()
@@ -347,6 +353,43 @@ def query_upstream_default_model(upstream_url: str, upstream_csrf: str, api_key:
         return "", set()
 
 
+def read_desktop_annotation_pbtxt(cascade_id: str) -> dict:
+    """Reads Antigravity Desktop per-session annotations (`~/.gemini/antigravity/annotations/<id>.pbtxt`) if present."""
+    if not cascade_id or "/" in cascade_id or ".." in cascade_id:
+        return {}
+    candidates = [
+        Path.home() / ".gemini/antigravity/annotations" / f"{cascade_id}.pbtxt",
+        Path.home() / ".codeium/windsurf/annotations" / f"{cascade_id}.pbtxt",
+    ]
+    for p in candidates:
+        try:
+            if not p.is_file():
+                continue
+            raw = p.read_text(encoding="utf-8", errors="ignore")
+            out = {}
+            title_m = re.search(r'(?:^|\n)\s*title\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', raw)
+            if title_m:
+                out["title"] = bytes(title_m.group(1), "utf-8").decode("unicode_escape", errors="ignore")
+            view_block = re.search(r"last_user_view_time\s*\{([^}]*)\}", raw, re.DOTALL)
+            if view_block:
+                sec_m = re.search(r"seconds\s*:\s*(\d+)", view_block.group(1))
+                nano_m = re.search(r"nanos\s*:\s*(\d+)", view_block.group(1))
+                if sec_m:
+                    secs = int(sec_m.group(1))
+                    nanos = int(nano_m.group(1)) if nano_m else 0
+                    dt = datetime.fromtimestamp(secs + nanos / 1_000_000_000.0, tz=timezone.utc)
+                    out["lastUserViewTime"] = dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            if re.search(r"(?:^|\n)\s*(?:pinned|is_pinned)\s*:\s*true\b", raw):
+                out["pinned"] = True
+            if re.search(r"(?:^|\n)\s*(?:archived|is_archived)\s*:\s*true\b", raw):
+                out["archived"] = True
+            if out:
+                return out
+        except Exception:
+            continue
+    return {}
+
+
 def create_bridge_server(
     bind_host: str,
     bind_port: int,
@@ -355,7 +398,7 @@ def create_bridge_server(
     upstream_csrf: str = None,
     workspace_root: str = None,
 ):
-    state = CompanionState(workspace_root or os.getcwd())
+    state = CompanionState(workspace_root or os.getcwd(), is_live_proxy=bool(upstream_url))
     ssl_ctx = make_unverified_ssl_context()
     desktop_api_key = discover_desktop_oauth_token() if upstream_url else ""
     upstream_default_model, upstream_valid_models = (
@@ -385,7 +428,8 @@ def create_bridge_server(
             self.end_headers()
 
         def do_GET(self):
-            if self.path == "/health":
+            parsed_path = urllib.parse.urlparse(self.path).path
+            if parsed_path == "/health":
                 self._write_json(
                     200,
                     {
@@ -397,6 +441,71 @@ def create_bridge_server(
                     },
                 )
                 return
+
+            if parsed_path in ("/", "/pair"):
+                host_hdr = self.headers.get("Host") or f"{detect_lan_ip()}:{self.server.server_port}"
+                endpoint = f"http://{host_hdr}"
+                hostname = socket.gethostname()
+                pair_uri = (
+                    f"antigravity://pair?"
+                    f"url={urllib.parse.quote(endpoint, safe='')}"
+                    f"&csrf={urllib.parse.quote(bridge_csrf, safe='')}"
+                    f"&name={urllib.parse.quote(hostname, safe='')}"
+                )
+                mode_badge = "LIVE DESKTOP PROXY" if upstream_url else "COMPANION SANDBOX"
+                page = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pair Antigravity iOS · {html.escape(hostname)}</title>
+<style>
+  body {{
+    margin: 0; padding: 28px 18px; background: #090A0D; color: #F5F7FA;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  }}
+  .card {{
+    max-width: 440px; margin: 0 auto; background: #14161C; border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 22px; padding: 22px 18px;
+  }}
+  .badge {{
+    display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
+    color: #57C88A; background: rgba(87,200,138,0.12); padding: 5px 11px; border-radius: 999px;
+  }}
+  .dot {{ width: 8px; height: 8px; border-radius: 50%; background: #57C88A; }}
+  h1 {{ font-size: 24px; margin: 14px 0 6px; letter-spacing: -0.4px; }}
+  p {{ font-size: 14px; color: #8E93A2; line-height: 1.45; margin: 0 0 18px; }}
+  .cta {{
+    display: block; text-align: center; text-decoration: none; background: #8EB4FF; color: #0A0E17;
+    font-size: 16px; font-weight: 700; padding: 15px 18px; border-radius: 16px; margin-bottom: 18px;
+  }}
+  .field {{
+    background: #1B1D23; border-radius: 12px; padding: 10px 12px; margin-top: 9px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all;
+  }}
+  .label {{ font-size: 10.5px; color: #7C8190; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge"><span class="dot"></span>{html.escape(mode_badge)}</div>
+    <h1>Pair with {html.escape(hostname)}</h1>
+    <p>Install <strong>Antigravity</strong> on this iPhone via Xcode, then tap the button below to connect over Wi-Fi and sync your Mac workspaces.</p>
+    <a class="cta" href="{html.escape(pair_uri)}">Open &amp; Pair in Antigravity iOS</a>
+    <div class="field"><div class="label">Host Endpoint</div>{html.escape(endpoint)}</div>
+    <div class="field"><div class="label">x-codeium-csrf-token</div>{html.escape(bridge_csrf)}</div>
+  </div>
+</body>
+</html>"""
+                body_bytes = page.encode("utf-8")
+                self.send_response(200)
+                self._send_cors()
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body_bytes)))
+                self.end_headers()
+                self.wfile.write(body_bytes)
+                return
+
             self._write_json(404, {"error": "Not found"})
 
         def do_POST(self):
@@ -477,12 +586,13 @@ def create_bridge_server(
 
             if method == "CreateAutomation":
                 req_obj = self._parse_json(raw_body)
+                proj_slug = req_obj.get("projectSlug", "workspace")
                 item = {
                     "id": f"auto-{uuid.uuid4().hex[:8]}",
                     "title": req_obj.get("prompt", "Scheduled Automation"),
-                    "projectSlug": req_obj.get("projectSlug", "workspace"),
-                    "scheduleSummary": "Daily at 09:00 · Flash",
-                    "section": "Scheduled",
+                    "projectSlug": proj_slug,
+                    "scheduleSummary": f"{proj_slug} · Daily at 09:00 · Flash",
+                    "section": "SCHEDULED",
                     "nextRunText": "Tomorrow, 09:00",
                     "lastRunText": "Created just now",
                 }
@@ -498,6 +608,19 @@ def create_bridge_server(
                     for a in state.automations:
                         if a["id"] == aid:
                             a["lastRunText"] = "Running now..."
+                            a["isRunningNow"] = True
+                self._write_json(200, {"ok": True, "automationId": aid})
+                return
+
+            if method == "SetAutomationPaused":
+                req_obj = self._parse_json(raw_body)
+                aid = req_obj.get("automationId", "")
+                is_paused = bool(req_obj.get("isPaused", False))
+                with state.lock:
+                    for a in state.automations:
+                        if a["id"] == aid:
+                            a["section"] = "PAUSED" if is_paused else "SCHEDULED"
+                            a["lastRunText"] = "Paused" if is_paused else "Resumed · just now"
                 self._write_json(200, {"ok": True, "automationId": aid})
                 return
 
@@ -753,6 +876,15 @@ def create_bridge_server(
         def _merge_local_trajectories_response(self, resp_bytes: bytes) -> bytes:
             obj = self._parse_json(resp_bytes)
             summaries = obj.setdefault("trajectorySummaries", {})
+            for cid, summary_obj in list(summaries.items()):
+                if not isinstance(summary_obj, dict):
+                    continue
+                pbtxt_ann = read_desktop_annotation_pbtxt(cid)
+                if pbtxt_ann:
+                    ann = summary_obj.setdefault("annotations", {})
+                    if isinstance(ann, dict):
+                        for k, v in pbtxt_ann.items():
+                            ann.setdefault(k, v)
             with state.lock:
                 for cid, t in state.trajectories.items():
                     if cid == "cas-live-welcome":
@@ -1091,10 +1223,11 @@ def main():
     print(f"  Mode          : {'LIVE DESKTOP PROXY -> ' + upstream_url if upstream_url else 'STATEFUL SANDBOX'}", flush=True)
     print(f"  LAN Endpoint  : {endpoint}", flush=True)
     print(f"  CSRF Token    : {bridge_csrf}", flush=True)
+    print(f"  iPhone Safari : {endpoint}/pair   (1-Tap Pair on Physical iPhone)", flush=True)
     print(f"  iOS Deep Link : {pair_uri}", flush=True)
     print("-" * 74, flush=True)
-    print("  Quick CLI Verification (Login + StartCascade + SendUserCascadeMessage):", flush=True)
-    print(f"    python3 verification/verify-live-rpc-flow.py --url {endpoint} --csrf {bridge_csrf}", flush=True)
+    print("  Quick CLI Verification:", flush=True)
+    print(f"    python3 verification/verify-live-rpc-flow.py --url {endpoint} --csrf {bridge_csrf} --read-only", flush=True)
     print("=" * 74 + "\n", flush=True)
 
     try:

@@ -151,6 +151,7 @@ public final class AntigravitySessionStore {
     private var rpcClient: AntigravityRPCClient?
     private var summaryStreamTask: Task<Void, Never>? = nil
     private var stepPollingTask: Task<Void, Never>? = nil
+    private var locallyViewedAtByCascadeId: [String: Date] = [:]
 
     public init(
         hosts: [RemoteHostInstance] = [],
@@ -230,7 +231,7 @@ public final class AntigravitySessionStore {
     public var runningCascadeCount: Int { runningCount }
 
     public var needsYouCount: Int {
-        summaries.filter { !$0.isArchived && $0.status == .waiting }.count
+        summaries.filter { !$0.isArchived && ($0.status == .waiting || $0.status == .blocked) }.count
     }
 
     public var waitingApprovalCount: Int { needsYouCount }
@@ -257,7 +258,7 @@ public final class AntigravitySessionStore {
                 case .running:
                     if summary.status != .inProgress && summary.status != .pending { return false }
                 case .needsYou:
-                    if summary.status != .waiting { return false }
+                    if summary.status != .waiting && summary.status != .blocked { return false }
                 case .unread:
                     if !summary.isUnread { return false }
                 }
@@ -265,7 +266,7 @@ public final class AntigravitySessionStore {
                 case .all:
                     break
                 case .waitingApproval:
-                    if summary.status != .waiting { return false }
+                    if summary.status != .waiting && summary.status != .blocked { return false }
                 case .running:
                     if summary.status != .inProgress && summary.status != .pending { return false }
                 case .pinned:
@@ -667,57 +668,62 @@ public final class AntigravitySessionStore {
         connectionErrorText = nil
         connectionStatusText = "Connected · \(updatedHost.hostname) · \(handshake.latencyMs)ms"
 
+        var nextProjects: [ProjectWorkspace] = []
         if !handshake.workspaces.isEmpty {
             workspaces = handshake.workspaces
             selectedWorkspaceUri = handshake.workspaces[0].workspaceUri
-            projects = handshake.workspaces.map { ws in
+            nextProjects = handshake.workspaces.map { ws in
                 let slug = ws.displayName
                 return ProjectWorkspace(
                     id: slug,
                     name: slug,
                     pathDisplay: ws.workspaceUri.replacingOccurrences(of: "file://", with: ""),
                     workspaceUri: ws.workspaceUri,
-                    runtime: .macBookPro,
+                    runtime: ws.workspaceUri.hasPrefix("cloud://") ? .cloud : .macBookPro,
                     hostName: updatedHost.hostname,
                     activeBranch: ws.activeBranch,
                     worktrees: ws.worktrees.isEmpty ? [ws.activeBranch] : ws.worktrees,
                     isExpandedInHome: true
                 )
             }
-            selectedProjectId = projects[0].id
         }
 
-        if !handshake.summaries.isEmpty {
-            let primarySlug = projects.first?.id
-            summaries = handshake.summaries.sorted { lhs, rhs in
-                let lhsPrimary = (lhs.projectSlug == primarySlug)
-                let rhsPrimary = (rhs.projectSlug == primarySlug)
-                if lhsPrimary != rhsPrimary { return lhsPrimary }
-                if lhs.stepCount != rhs.stepCount { return lhs.stepCount > rhs.stepCount }
-                return lhs.cascadeId < rhs.cascadeId
+        let sortedSummaries = handshake.summaries.sorted { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
             }
-            var knownProjectIds = Set(projects.map(\.id))
-            for summary in summaries where !knownProjectIds.contains(summary.projectSlug) {
-                knownProjectIds.insert(summary.projectSlug)
-                projects.append(
-                    ProjectWorkspace(
-                        id: summary.projectSlug,
-                        name: summary.projectSlug,
-                        pathDisplay: summary.workspaceUri.replacingOccurrences(of: "file://", with: ""),
-                        workspaceUri: summary.workspaceUri,
-                        runtime: summary.workspaceUri.hasPrefix("cloud://") ? .cloud : .macBookPro,
-                        hostName: updatedHost.hostname,
-                        activeBranch: summary.branchName,
-                        worktrees: [summary.branchName],
-                        isExpandedInHome: true
-                    )
+            return lhs.cascadeId < rhs.cascadeId
+        }
+        summaries = sortedSummaries
+
+        var knownProjectIds = Set(nextProjects.map(\.id))
+        for summary in sortedSummaries where !knownProjectIds.contains(summary.projectSlug) {
+            knownProjectIds.insert(summary.projectSlug)
+            nextProjects.append(
+                ProjectWorkspace(
+                    id: summary.projectSlug,
+                    name: summary.projectSlug,
+                    pathDisplay: summary.workspaceUri.replacingOccurrences(of: "file://", with: ""),
+                    workspaceUri: summary.workspaceUri,
+                    runtime: summary.workspaceUri.hasPrefix("cloud://") ? .cloud : .macBookPro,
+                    hostName: updatedHost.hostname,
+                    activeBranch: summary.branchName,
+                    worktrees: [summary.branchName],
+                    isExpandedInHome: true
                 )
-            }
-            if selectedProjectId.isEmpty, let firstProj = projects.first {
-                selectedProjectId = firstProj.id
-            }
-            if let first = summaries.first {
-                activeCascadeId = first.cascadeId
+            )
+        }
+        if !nextProjects.isEmpty {
+            projects = nextProjects
+            selectedProjectId = nextProjects[0].id
+        }
+        activeCascadeId = sortedSummaries.first?.cascadeId ?? ""
+
+        // Clear offline ESDD demo automations when connected to a live backend and sync live Companion automations
+        automations = []
+        Task { [weak self] in
+            if let liveAutos = try? await client.listAutomations() {
+                self?.automations = liveAutos
             }
         }
 
@@ -727,37 +733,49 @@ public final class AntigravitySessionStore {
         }
     }
 
-    /// Subscribes to Connect-RPC 5-byte framed `JetboxSubscribeToSummaries` stream for real-time session status updates.
+    /// Subscribes to Connect-RPC 5-byte framed `JetboxSubscribeToSummaries` stream and maintains a
+    /// lightweight periodic sync loop so Desktop sidebar changes (new chats, status transitions, unread dots)
+    /// reflect automatically on iOS.
     public func startSummarySubscriptionStream() {
         summaryStreamTask?.cancel()
         guard let client = rpcClient else { return }
         summaryStreamTask = Task { [weak self] in
-            guard let stream = try? await client.subscribeEnvelopeStream(method: "JetboxSubscribeToSummaries") else {
-                return
-            }
-            do {
-                for try await event in stream {
-                    guard let self, !Task.isCancelled else { break }
-                    if let cid = event["cascadeId"]?.stringValue {
-                        let statusRaw = event["status"]?.stringValue ?? "CORTEX_STEP_STATUS_IN_PROGRESS"
-                        let newStatus = CortexStepStatus.from(jsonName: statusRaw)
-                        let stepCount = event["stepCount"]?.intValue
-                        let title = event["title"]?.stringValue
-                        if let idx = self.summaries.firstIndex(where: { $0.cascadeId == cid }) {
-                            self.summaries[idx].status = newStatus
-                            if let stepCount { self.summaries[idx].stepCount = stepCount }
-                            if let title, !title.isEmpty { self.summaries[idx].title = title }
-                            self.summaries[idx].updatedAt = Date()
-                            self.summaries[idx].relativeTimeLabel = "now"
-                            self.summaries[idx].statusSubtitle = event["summary"]?.stringValue ?? newStatus.displayBadgeText
-                        }
-                        if cid == self.activeCascadeId {
-                            self.syncStepsForCascade(cid, pollUntilIdle: false)
+            if let stream = try? await client.subscribeEnvelopeStream(method: "JetboxSubscribeToSummaries") {
+                do {
+                    for try await event in stream {
+                        guard let self, !Task.isCancelled else { break }
+                        if let cid = event["cascadeId"]?.stringValue {
+                            let statusRaw = event["status"]?.stringValue ?? "CORTEX_STEP_STATUS_IN_PROGRESS"
+                            let newStatus = CortexStepStatus.from(jsonName: statusRaw)
+                            let stepCount = event["stepCount"]?.intValue
+                            let title = event["title"]?.stringValue
+                            if let idx = self.summaries.firstIndex(where: { $0.cascadeId == cid }) {
+                                self.summaries[idx].status = newStatus
+                                if let stepCount { self.summaries[idx].stepCount = stepCount }
+                                if let title, !title.isEmpty { self.summaries[idx].title = title }
+                                self.summaries[idx].updatedAt = Date()
+                                self.summaries[idx].relativeTimeLabel = "now"
+                                self.summaries[idx].statusSubtitle = AntigravityRPCClient.buildLiveStatusSubtitle(
+                                    status: newStatus,
+                                    stepCount: self.summaries[idx].stepCount,
+                                    isUnread: self.summaries[idx].isUnread,
+                                    explicitSubtitle: event["summary"]?.stringValue
+                                )
+                            }
+                            if cid == self.activeCascadeId {
+                                self.syncStepsForCascade(cid, pollUntilIdle: false)
+                            }
                         }
                     }
+                } catch {
+                    // Stream ended or closed; periodic live sync below keeps state up-to-date.
                 }
-            } catch {
-                // Stream ended or disconnected; unilateral calls continue to work via Outbox
+            }
+
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard let self, !Task.isCancelled, self.isLiveBackendConnected else { break }
+                await self.refreshWorkspacesAndSummaries()
             }
         }
     }
@@ -834,8 +852,16 @@ public final class AntigravitySessionStore {
 
     public func selectCascade(_ cascadeId: String) {
         activeCascadeId = cascadeId
+        locallyViewedAtByCascadeId[cascadeId] = Date()
         if let idx = summaries.firstIndex(where: { $0.cascadeId == cascadeId }) {
             summaries[idx].isUnread = false
+            if isLiveBackendConnected {
+                summaries[idx].statusSubtitle = AntigravityRPCClient.buildLiveStatusSubtitle(
+                    status: summaries[idx].status,
+                    stepCount: summaries[idx].stepCount,
+                    isUnread: false
+                )
+            }
         }
         activeRoute = .cascadeChat(cascadeId)
         unreadStreamingStepCount = 0
@@ -855,8 +881,10 @@ public final class AntigravitySessionStore {
     }
 
     public func markAllConversationsAsRead() {
+        let now = Date()
         for idx in summaries.indices {
             summaries[idx].isUnread = false
+            locallyViewedAtByCascadeId[summaries[idx].cascadeId] = now
         }
         let snapshot = summaries
         let storeRef = projectionStore
@@ -883,6 +911,11 @@ public final class AntigravitySessionStore {
     public func toggleUnreadCascade(_ cascadeId: String) {
         guard let idx = summaries.firstIndex(where: { $0.cascadeId == cascadeId }) else { return }
         summaries[idx].isUnread.toggle()
+        if summaries[idx].isUnread {
+            locallyViewedAtByCascadeId.removeValue(forKey: cascadeId)
+        } else {
+            locallyViewedAtByCascadeId[cascadeId] = Date()
+        }
         let snapshot = summaries
         let storeRef = projectionStore
         Task {
@@ -1114,17 +1147,98 @@ public final class AntigravitySessionStore {
     public func refreshWorkspacesAndSummaries() async {
         isRefreshingSummaries = true
         defer { isRefreshingSummaries = false }
-        if let client = rpcClient, let remoteSummaries = try? await client.getAllCascadeTrajectories() {
-            for remote in remoteSummaries {
-                if let idx = summaries.firstIndex(where: { $0.cascadeId == remote.cascadeId }) {
-                    summaries[idx].status = remote.status
-                    summaries[idx].stepCount = max(summaries[idx].stepCount, remote.stepCount)
-                    summaries[idx].updatedAt = Date()
-                } else {
-                    summaries.append(remote)
+        guard let client = rpcClient else { return }
+
+        if let remoteWorkspaces = try? await client.getWorkspaceInfos(), !remoteWorkspaces.isEmpty {
+            workspaces = remoteWorkspaces
+            var knownIds = Set(projects.map(\.id))
+            for ws in remoteWorkspaces where !knownIds.contains(ws.displayName) {
+                knownIds.insert(ws.displayName)
+                projects.insert(
+                    ProjectWorkspace(
+                        id: ws.displayName,
+                        name: ws.displayName,
+                        pathDisplay: ws.workspaceUri.replacingOccurrences(of: "file://", with: ""),
+                        workspaceUri: ws.workspaceUri,
+                        runtime: ws.workspaceUri.hasPrefix("cloud://") ? .cloud : .macBookPro,
+                        hostName: activeHost.hostname,
+                        activeBranch: ws.activeBranch,
+                        worktrees: ws.worktrees.isEmpty ? [ws.activeBranch] : ws.worktrees,
+                        isExpandedInHome: true
+                    ),
+                    at: 0
+                )
+            }
+        }
+
+        if let remoteSummaries = try? await client.getAllCascadeTrajectories() {
+            let existingById = Dictionary(uniqueKeysWithValues: summaries.map { ($0.cascadeId, $0) })
+            let remoteIds = Set(remoteSummaries.map(\.cascadeId))
+
+            var mergedList: [CascadeSummary] = remoteSummaries.map { remote in
+                var copy = remote
+                if let existing = existingById[remote.cascadeId] {
+                    copy.isPinned = existing.isPinned || remote.isPinned
+                    copy.isArchived = existing.isArchived || remote.isArchived
+                    copy.stepCount = max(existing.stepCount, remote.stepCount)
+                }
+                if let viewedAt = locallyViewedAtByCascadeId[remote.cascadeId],
+                   remote.updatedAt <= viewedAt {
+                    copy.isUnread = false
+                    copy.statusSubtitle = AntigravityRPCClient.buildLiveStatusSubtitle(
+                        status: copy.status,
+                        stepCount: copy.stepCount,
+                        isUnread: false
+                    )
+                }
+                return copy
+            }
+
+            // Preserve any in-flight optimistic iOS sessions (`cas-*`) not yet returned by `GetAllCascadeTrajectories`
+            for local in summaries where !remoteIds.contains(local.cascadeId) && local.cascadeId.hasPrefix("cas-") && isLiveBackendConnected {
+                mergedList.insert(local, at: 0)
+            }
+
+            mergedList.sort { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.cascadeId < rhs.cascadeId
+            }
+
+            if isLiveBackendConnected {
+                summaries = mergedList
+                var knownProjectIds = Set(projects.map(\.id))
+                for summary in mergedList where !knownProjectIds.contains(summary.projectSlug) {
+                    knownProjectIds.insert(summary.projectSlug)
+                    projects.append(
+                        ProjectWorkspace(
+                            id: summary.projectSlug,
+                            name: summary.projectSlug,
+                            pathDisplay: summary.workspaceUri.replacingOccurrences(of: "file://", with: ""),
+                            workspaceUri: summary.workspaceUri,
+                            runtime: summary.workspaceUri.hasPrefix("cloud://") ? .cloud : .macBookPro,
+                            hostName: activeHost.hostname,
+                            activeBranch: summary.branchName,
+                            worktrees: [summary.branchName],
+                            isExpandedInHome: true
+                        )
+                    )
+                }
+            } else {
+                for remote in mergedList {
+                    if let idx = summaries.firstIndex(where: { $0.cascadeId == remote.cascadeId }) {
+                        summaries[idx] = remote
+                    } else {
+                        summaries.append(remote)
+                    }
                 }
             }
             await projectionStore.saveProjectedSummaries(summaries)
+        }
+
+        if isLiveBackendConnected, let remoteAutos = try? await client.listAutomations() {
+            automations = remoteAutos
         }
     }
 

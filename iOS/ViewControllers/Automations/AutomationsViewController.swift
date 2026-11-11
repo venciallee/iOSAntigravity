@@ -67,13 +67,20 @@ public struct AutomationsViewController: View {
 
                     quickCreateCapsuleBar
 
-                    scheduledSection
-                    alwaysOnSection
-                    pausedSection
+                    if store.isLiveBackendConnected {
+                        liveAutomationsBody
+                    } else {
+                        scheduledSection
+                        alwaysOnSection
+                        pausedSection
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
                 .padding(.bottom, 96)
+            }
+            .refreshable {
+                await store.refreshWorkspacesAndSummaries()
             }
 
             LinearGradient(
@@ -414,9 +421,206 @@ public struct AutomationsViewController: View {
         }
     }
 
+    // MARK: - Live Backend Automations View
+
+    @ViewBuilder
+    private var liveAutomationsBody: some View {
+        if store.automations.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("SCHEDULED · 0")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(UEChromePalette.textMuted)
+                    .padding(.leading, 2)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(AntigravityTheme.statusDone)
+                            .frame(width: 8, height: 8)
+                        Text("Connected to \(store.activeHost.hostname)")
+                            .font(.system(size: 15.5, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                    }
+                    Text("Antigravity Desktop does not define built-in cron automations yet. Enter a schedule above or tap + to create a live Companion automation scoped to `\(store.selectedProject?.name ?? "workspace")`.")
+                        .font(.system(size: 13.5, weight: .regular))
+                        .foregroundStyle(UEChromePalette.textSecondary)
+                        .lineSpacing(2)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(AntigravityTheme.surfaceCard)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+                )
+            }
+        } else {
+            if !store.scheduledAutomations.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("SCHEDULED · \(store.scheduledAutomations.count)")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(UEChromePalette.textMuted)
+                        .padding(.leading, 2)
+                        .padding(.top, 2)
+
+                    ForEach(store.scheduledAutomations) { item in
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack(alignment: .center, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title)
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(Color.white)
+                                    Text(item.scheduleSummary)
+                                        .font(.system(size: 13, weight: .regular))
+                                        .foregroundStyle(UEChromePalette.textSecondary)
+                                }
+                                Spacer()
+                                Button {
+                                    store.triggerAutomationNow(item.id)
+                                } label: {
+                                    Image(systemName: "play.fill")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(AntigravityTheme.accentPeriwinkle)
+                                        .frame(
+                                            width: AntigravityTheme.minTouchTargetPt,
+                                            height: AntigravityTheme.minTouchTargetPt
+                                        )
+                                        .background(
+                                            Circle()
+                                                .fill(Color(red: 0x1E / 255.0, green: 0x24 / 255.0, blue: 0x33 / 255.0))
+                                        )
+                                        .overlay(
+                                            Circle()
+                                                .strokeBorder(AntigravityTheme.accentPeriwinkle.opacity(0.20), lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            HStack(spacing: 9) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("NEXT RUN")
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .tracking(0.5)
+                                        .foregroundStyle(UEChromePalette.textMuted)
+                                    Text(item.nextRunText)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(UEChromePalette.textPrimary)
+                                }
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 9)
+                                .frame(maxWidth: .infinity, minHeight: 50, alignment: .topLeading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(UEChromePalette.surfaceSubtleBox)
+                                )
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("LAST RUN")
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .tracking(0.5)
+                                        .foregroundStyle(UEChromePalette.textMuted)
+                                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                                        Image(systemName: item.isRunningNow ? "bolt.fill" : "checkmark")
+                                            .font(.system(size: 10.5, weight: .bold))
+                                            .foregroundStyle(item.isRunningNow ? AntigravityTheme.statusRunning : AntigravityTheme.statusDone)
+                                        Text(item.lastRunText)
+                                            .font(.system(size: 13.5, weight: .medium))
+                                            .foregroundStyle(UEChromePalette.textPrimary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 9)
+                                .frame(maxWidth: .infinity, minHeight: 50, alignment: .topLeading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(UEChromePalette.surfaceSubtleBox)
+                                )
+                            }
+                        }
+                        .padding(13)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(AntigravityTheme.surfaceCard)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+                        )
+                    }
+                }
+            }
+
+            if !store.pausedAutomations.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("PAUSED · \(store.pausedAutomations.count)")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(UEChromePalette.textMuted)
+                        .padding(.leading, 2)
+                        .padding(.top, 2)
+
+                    ForEach(store.pausedAutomations) { item in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.system(size: 15.5, weight: .semibold))
+                                    .foregroundStyle(Color(red: 0xA0 / 255.0, green: 0xA5 / 255.0, blue: 0xB4 / 255.0))
+                                Text(item.scheduleSummary)
+                                    .font(.system(size: 13, weight: .regular))
+                                    .foregroundStyle(UEChromePalette.textMuted)
+                            }
+                            Spacer()
+                            Button {
+                                store.resumeAutomation(item.id)
+                            } label: {
+                                Text("Resume")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(UEChromePalette.textPrimary)
+                                    .padding(.horizontal, 16)
+                                    .frame(minHeight: AntigravityTheme.minTouchTargetPt)
+                                    .background(
+                                        Capsule()
+                                            .fill(Color(red: 0x23 / 255.0, green: 0x25 / 255.0, blue: 0x2D / 255.0))
+                                    )
+                                    .overlay(
+                                        Capsule()
+                                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(AntigravityTheme.surfaceCard)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private func createInlineAutomation() {
         let trimmed = quickPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
         let title = trimmed.isEmpty ? "Weekday morning summary" : trimmed
+        if store.isLiveBackendConnected {
+            _ = store.createAutomationFromPrompt(title)
+            quickPromptText = ""
+            return
+        }
         let newCard = ScheduledAutomationCardModel(
             id: "auto-\(scheduledAutomations.count + 1)",
             title: title,

@@ -41,6 +41,29 @@ public enum CortexStepStatus: Int, Codable, Sendable, CaseIterable {
         for status in Self.allCases where status.jsonName == jsonName {
             return status
         }
+        let upper = jsonName.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if upper.contains("WAITING") || upper.contains("NEEDS_USER") || upper.contains("APPROVAL") || upper.contains("PAUSED") {
+            return .waiting
+        }
+        if upper.contains("BLOCKED") {
+            return .blocked
+        }
+        if upper.contains("RUNNING") || upper.contains("IN_PROGRESS") || upper.contains("BUSY") || upper.contains("STREAMING") || upper.contains("EXECUTING") {
+            return .inProgress
+        }
+        if upper.contains("PENDING") || upper.contains("QUEUED") {
+            return .pending
+        }
+        if upper.contains("ERROR") || upper.contains("FAIL") {
+            return .error
+        }
+        if upper.contains("CANCEL") || upper.contains("ABORT") || upper.contains("STOP") {
+            return .cancelled
+        }
+        if upper.contains("DONE") || upper.contains("COMPLETE") || upper.contains("FINISH") {
+            return .done
+        }
+        // Maps `CASCADE_RUN_STATUS_IDLE` and `UNSPECIFIED` cleanly to `.unspecified` (`IDLE`)
         return .unspecified
     }
 }

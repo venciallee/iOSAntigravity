@@ -222,6 +222,9 @@ public struct AgentsHomeViewController: View {
                 .padding(.top, 8)
                 .padding(.bottom, 96)
             }
+            .refreshable {
+                await store.refreshWorkspacesAndSummaries()
+            }
 
             // Subtle bottom obsidian gradient behind floating liquid glass chrome
             LinearGradient(
@@ -266,6 +269,28 @@ public struct AgentsHomeViewController: View {
     private var topHeaderToolbar: some View {
         HStack(spacing: 8) {
             Menu {
+                if store.isLiveBackendConnected {
+                    Button {
+                        Task {
+                            await store.refreshWorkspacesAndSummaries()
+                        }
+                    } label: {
+                        Label("Sync Desktop Sessions Now", systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        onSelectTab?(.settings)
+                    } label: {
+                        Label("Host & Pairing Settings", systemImage: "qrcode.viewfinder")
+                    }
+                    Divider()
+                } else {
+                    Button {
+                        onSelectTab?(.settings)
+                    } label: {
+                        Label("Pair Mac / Cloud Host...", systemImage: "qrcode.viewfinder")
+                    }
+                    Divider()
+                }
                 ForEach(HostFilterTarget.allCases) { target in
                     Button {
                         selectedHost = target
@@ -737,9 +762,14 @@ public struct AgentsHomeViewController: View {
                     .frame(width: 8.5, height: 8.5)
             }
         case .unreadDot:
-            Circle()
-                .fill(AntigravityTheme.statusRunning)
-                .frame(width: 8, height: 8)
+            ZStack {
+                Circle()
+                    .fill(AntigravityTheme.statusRunning.opacity(0.20))
+                    .frame(width: 17, height: 17)
+                Circle()
+                    .fill(AntigravityTheme.statusRunning)
+                    .frame(width: 8, height: 8)
+            }
         case .none:
             Color.clear
                 .frame(width: 15, height: 15)
@@ -778,7 +808,7 @@ public struct AgentsHomeViewController: View {
         case .inProgress, .pending:
             tone = .running
             indicator = .runningArc
-        case .waiting:
+        case .waiting, .blocked:
             tone = .waiting
             indicator = .needsReviewHalo
         default:

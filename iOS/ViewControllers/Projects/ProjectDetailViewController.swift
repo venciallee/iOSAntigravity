@@ -143,11 +143,12 @@ public struct ProjectDetailViewController: View {
             Menu {
                 Button {
                     finderFeedbackBanner = true
+                    store.revealProjectInFinder(projectSlug)
                 } label: {
                     Label("Reveal in Finder on Mac", systemImage: "laptopcomputer")
                 }
                 Button {} label: {
-                    Label("Switch Git Branch (main)", systemImage: "arrow.triangle.branch")
+                    Label("Switch Git Branch (\(effectiveBranchName))", systemImage: "arrow.triangle.branch")
                 }
                 Button {} label: {
                     Label("Project Rules & Skills", systemImage: "doc.text")
@@ -169,6 +170,73 @@ public struct ProjectDetailViewController: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("btn-project-more")
         }
+    }
+
+    private var liveProject: ProjectWorkspace? {
+        store.projects.first(where: { $0.id == projectSlug || $0.name == projectSlug })
+    }
+
+    private var effectivePathDisplay: String {
+        guard store.isLiveBackendConnected else { return "~/code/\(projectSlug)" }
+        let raw = liveProject?.pathDisplay ?? "~/workspace/\(projectSlug)"
+        if raw.hasPrefix("/Users/") {
+            let parts = raw.split(separator: "/", omittingEmptySubsequences: true)
+            if parts.count >= 2 {
+                let tail = parts.dropFirst(2).joined(separator: "/")
+                return tail.isEmpty ? "~" : "~/\(tail)"
+            }
+        }
+        return raw
+    }
+
+    private var effectiveHostBadgeText: String {
+        guard store.isLiveBackendConnected else { return "Local · MacBook Pro" }
+        let prefix = liveProject?.runtime == .cloud ? "Cloud" : "Local"
+        return "\(prefix) · \(store.activeHost.hostname)"
+    }
+
+    private var effectiveBranchName: String {
+        guard store.isLiveBackendConnected else { return "main" }
+        return liveProject?.activeBranch ?? "main"
+    }
+
+    private func mapLiveSummaryToRow(_ s: CascadeSummary) -> ProjectConversationRowModel {
+        let indicator: ProjectConversationRowModel.IndicatorKind
+        switch s.status {
+        case .inProgress, .pending:
+            indicator = .runningArc
+        case .waiting, .blocked:
+            indicator = .needsReviewHalo
+        default:
+            indicator = s.isUnread ? .unreadDot : .none
+        }
+        return ProjectConversationRowModel(
+            id: s.cascadeId,
+            title: s.title,
+            subtitle: s.statusSubtitle.isEmpty ? s.status.displayBadgeText : s.statusSubtitle,
+            timestamp: s.relativeTimeLabel,
+            indicator: indicator,
+            additions: s.totalAdditions > 0 ? s.totalAdditions : nil,
+            deletions: s.totalDeletions > 0 ? s.totalDeletions : nil
+        )
+    }
+
+    private var effectiveActiveRows: [ProjectConversationRowModel] {
+        guard store.isLiveBackendConnected else { return activeRows }
+        return store.summaries
+            .filter { $0.projectSlug == projectSlug && !$0.isArchived }
+            .map(mapLiveSummaryToRow)
+    }
+
+    private var effectiveArchivedRows: [ProjectConversationRowModel] {
+        guard store.isLiveBackendConnected else { return archivedRows }
+        return store.summaries
+            .filter { $0.projectSlug == projectSlug && $0.isArchived }
+            .map(mapLiveSummaryToRow)
+    }
+
+    private var effectiveProjectAutomations: [AutomationItem] {
+        store.automations.filter { $0.projectSlug == projectSlug }
     }
 
     // MARK: - 2. Hero Header ([Folder] ledger-svc + ~/code/ledger-svc)
@@ -195,9 +263,11 @@ public struct ProjectDetailViewController: View {
                     .foregroundStyle(Color.white)
                     .accessibilityIdentifier("project-hero-title")
 
-                Text("~/code/\(projectSlug)")
+                Text(effectivePathDisplay)
                     .font(.system(size: 13.5, weight: .regular, design: .monospaced))
                     .foregroundStyle(UEChromePalette.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             Spacer()
@@ -207,13 +277,16 @@ public struct ProjectDetailViewController: View {
     // MARK: - 3. Metadata Pills
 
     private var metadataPillsRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let totalConvCount = store.isLiveBackendConnected
+            ? (effectiveActiveRows.count + effectiveArchivedRows.count)
+            : 5
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(AntigravityTheme.statusDone)
                         .frame(width: 7, height: 7)
-                    Text("Local · MacBook Pro")
+                    Text(effectiveHostBadgeText)
                         .font(.system(size: 12.5, weight: .medium))
                         .foregroundStyle(UEChromePalette.textBody)
                 }
@@ -226,7 +299,7 @@ public struct ProjectDetailViewController: View {
                     Image(systemName: "arrow.triangle.branch")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(UEChromePalette.textSecondary)
-                    Text("main")
+                    Text(effectiveBranchName)
                         .font(.system(size: 12.5, weight: .medium))
                         .foregroundStyle(UEChromePalette.textBody)
                 }
@@ -235,7 +308,7 @@ public struct ProjectDetailViewController: View {
                 .background(Capsule().fill(UEChromePalette.surfacePill))
                 .overlay(Capsule().strokeBorder(UEChromePalette.cardBorder, lineWidth: 1))
 
-                Text("5 conversations")
+                Text("\(totalConvCount) conversations")
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(UEChromePalette.textBody)
                     .padding(.horizontal, 11)
@@ -269,27 +342,30 @@ public struct ProjectDetailViewController: View {
         .accessibilityIdentifier("btn-new-conv-in-project")
     }
 
-    // MARK: - 5. Active 3 / Archived 2 / Automations 1 Underline Tabs
+    // MARK: - 5. Active / Archived / Automations Underline Tabs
 
     private var underlineTabsStrip: some View {
-        VStack(spacing: 0) {
+        let activeCountText = store.isLiveBackendConnected ? "\(effectiveActiveRows.count)" : "3"
+        let archivedCountText = store.isLiveBackendConnected ? "\(effectiveArchivedRows.count)" : "2"
+        let autoCountText = store.isLiveBackendConnected ? "\(effectiveProjectAutomations.count)" : "1"
+        return VStack(spacing: 0) {
             HStack(spacing: 18) {
                 underlineTabItem(
                     tab: .active,
                     title: "Active",
-                    count: "3",
+                    count: activeCountText,
                     accessibilityId: "project-tab-active"
                 )
                 underlineTabItem(
                     tab: .archived,
                     title: "Archived",
-                    count: "2",
+                    count: archivedCountText,
                     accessibilityId: "project-tab-archived"
                 )
                 underlineTabItem(
                     tab: .automations,
                     title: "Automations",
-                    count: "1",
+                    count: autoCountText,
                     accessibilityId: "project-tab-automations"
                 )
                 Spacer(minLength: 0)
@@ -339,69 +415,118 @@ public struct ProjectDetailViewController: View {
 
     @ViewBuilder
     private var tabBodyContent: some View {
-        let rows: [ProjectConversationRowModel] = (selectedTab == .archived) ? archivedRows : activeRows
-        VStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                Button {
-                    onOpenConversation?(row.id)
-                } label: {
-                    HStack(alignment: .top, spacing: 11) {
-                        rowIndicator(row.indicator)
-                            .frame(width: 18, height: 20)
-                            .padding(.top, 1)
-
+        let rows: [ProjectConversationRowModel] = (selectedTab == .archived) ? effectiveArchivedRows : effectiveActiveRows
+        if store.isLiveBackendConnected && selectedTab == .automations {
+            VStack(alignment: .leading, spacing: 0) {
+                if effectiveProjectAutomations.isEmpty {
+                    Text("No automations configured for \(projectSlug) yet.")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(UEChromePalette.textSecondary)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(effectiveProjectAutomations) { auto in
                         VStack(alignment: .leading, spacing: 3) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(row.title)
-                                    .font(.system(size: 15.5, weight: .semibold))
-                                    .foregroundStyle(Color.white)
-                                    .lineLimit(1)
-                                Spacer()
-                                Text(row.timestamp)
-                                    .font(.system(size: 12.5, weight: .regular))
-                                    .foregroundStyle(UEChromePalette.textMuted)
-                            }
+                            Text(auto.title)
+                                .font(.system(size: 15.5, weight: .semibold))
+                                .foregroundStyle(Color.white)
+                            Text("\(auto.scheduleSummary) · \(auto.lastRunText)")
+                                .font(.system(size: 13, weight: .regular))
+                                .foregroundStyle(UEChromePalette.textSecondary)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(AntigravityTheme.surfaceCard)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+            )
+            .accessibilityIdentifier("project-conv-list")
+        } else if store.isLiveBackendConnected && rows.isEmpty {
+            Text(selectedTab == .archived ? "No archived conversations in \(projectSlug)." : "No active conversations in \(projectSlug).")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(UEChromePalette.textSecondary)
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(AntigravityTheme.surfaceCard)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+                )
+                .accessibilityIdentifier("project-conv-list")
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    Button {
+                        onOpenConversation?(row.id)
+                    } label: {
+                        HStack(alignment: .top, spacing: 11) {
+                            rowIndicator(row.indicator)
+                                .frame(width: 18, height: 20)
+                                .padding(.top, 1)
 
-                            HStack(spacing: 5) {
-                                Text(row.subtitle)
-                                    .font(.system(size: 13.5, weight: .regular))
-                                    .foregroundStyle(subtitleColor(for: row.indicator))
-                                    .lineLimit(1)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(row.title)
+                                        .font(.system(size: 15.5, weight: .semibold))
+                                        .foregroundStyle(Color.white)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(row.timestamp)
+                                        .font(.system(size: 12.5, weight: .regular))
+                                        .foregroundStyle(UEChromePalette.textMuted)
+                                }
 
-                                if let add = row.additions, let del = row.deletions {
-                                    Text("+\(add)")
-                                        .font(.system(size: 13.5, weight: .medium))
-                                        .foregroundStyle(AntigravityTheme.statusDone)
-                                    Text("−\(del)")
-                                        .font(.system(size: 13.5, weight: .medium))
-                                        .foregroundStyle(AntigravityTheme.statusError)
+                                HStack(spacing: 5) {
+                                    Text(row.subtitle)
+                                        .font(.system(size: 13.5, weight: .regular))
+                                        .foregroundStyle(subtitleColor(for: row.indicator))
+                                        .lineLimit(1)
+
+                                    if let add = row.additions, let del = row.deletions {
+                                        Text("+\(add)")
+                                            .font(.system(size: 13.5, weight: .medium))
+                                            .foregroundStyle(AntigravityTheme.statusDone)
+                                        Text("−\(del)")
+                                            .font(.system(size: 13.5, weight: .medium))
+                                            .foregroundStyle(AntigravityTheme.statusError)
+                                    }
                                 }
                             }
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .frame(minHeight: 58)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .frame(minHeight: 58)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                    .buttonStyle(.plain)
 
-                if index < rows.count - 1 {
-                    Divider()
-                        .overlay(UEChromePalette.subtleDivider)
-                        .padding(.leading, 44)
+                    if index < rows.count - 1 {
+                        Divider()
+                            .overlay(UEChromePalette.subtleDivider)
+                            .padding(.leading, 44)
+                    }
                 }
             }
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(AntigravityTheme.surfaceCard)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+            )
+            .accessibilityIdentifier("project-conv-list")
         }
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(AntigravityTheme.surfaceCard)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
-        )
-        .accessibilityIdentifier("project-conv-list")
     }
 
     @ViewBuilder
@@ -431,9 +556,14 @@ public struct ProjectDetailViewController: View {
                     .frame(width: 8.5, height: 8.5)
             }
         case .unreadDot:
-            Circle()
-                .fill(AntigravityTheme.statusRunning)
-                .frame(width: 8, height: 8)
+            ZStack {
+                Circle()
+                    .fill(AntigravityTheme.statusRunning.opacity(0.20))
+                    .frame(width: 17, height: 17)
+                Circle()
+                    .fill(AntigravityTheme.statusRunning)
+                    .frame(width: 8, height: 8)
+            }
         case .none:
             Color.clear.frame(width: 15, height: 15)
         }
@@ -450,7 +580,8 @@ public struct ProjectDetailViewController: View {
     // MARK: - 7. THIS PROJECT Section
 
     private var thisProjectSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let firstAuto = effectiveProjectAutomations.first
+        return VStack(alignment: .leading, spacing: 8) {
             Text("THIS PROJECT")
                 .font(.system(size: 11.5, weight: .semibold))
                 .tracking(0.8)
@@ -469,10 +600,10 @@ public struct ProjectDetailViewController: View {
                             .frame(width: 22)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Nightly dependency audit")
+                            Text(store.isLiveBackendConnected ? (firstAuto?.title ?? "Project automations") : "Nightly dependency audit")
                                 .font(.system(size: 15.5, weight: .medium))
                                 .foregroundStyle(UEChromePalette.textPrimary)
-                            Text("Daily 02:00 · Next run in 6h")
+                            Text(store.isLiveBackendConnected ? (firstAuto?.scheduleSummary ?? "0 active · Tap to inspect") : "Daily 02:00 · Next run in 6h")
                                 .font(.system(size: 13, weight: .regular))
                                 .foregroundStyle(UEChromePalette.textMuted)
                         }
@@ -495,7 +626,8 @@ public struct ProjectDetailViewController: View {
                     .padding(.leading, 48)
 
                 Button {
-                    finderFeedbackBanner.toggle()
+                    finderFeedbackBanner = true
+                    store.revealProjectInFinder(projectSlug)
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "laptopcomputer")
@@ -503,7 +635,7 @@ public struct ProjectDetailViewController: View {
                             .foregroundStyle(UEChromePalette.textSecondary)
                             .frame(width: 22)
 
-                        Text(finderFeedbackBanner ? "Opened in Finder on MacBook Pro" : "Reveal in Finder on Mac")
+                        Text(finderFeedbackBanner ? "Opened in Finder on \(store.isLiveBackendConnected ? store.activeHost.hostname : "MacBook Pro")" : "Reveal in Finder on Mac")
                             .font(.system(size: 15.5, weight: .medium))
                             .foregroundStyle(UEChromePalette.textPrimary)
 

@@ -100,7 +100,7 @@ def call_rpc_json(base_url: str, method: str, body: dict, csrf_token: str = None
     raise last_err
 
 
-def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
+def run_flow(base_url: str, csrf_token: str, live_external: bool = False, read_only: bool = False):
     print(f"[*] Target Backend : {base_url}", flush=True)
 
     # 1. Auth Gate & Login Handshake
@@ -118,6 +118,26 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
         or "file:///workspace"
     )
     print(f"  [PASS] 1b. Login Handshake (`GetWorkspaceInfos`) -> {len(workspaces)} workspace(s), primary={ws_uri}")
+
+    if read_only:
+        list_status, list_res = call_rpc_json(base_url, "GetAllCascadeTrajectories", {}, csrf_token=csrf_token)
+        assert list_status == 200, f"GetAllCascadeTrajectories failed: {list_status} {list_res}"
+        summary_map = list_res.get("trajectorySummaries") or {}
+        traj_list = list_res.get("trajectories") or []
+        total_sessions = len(summary_map) if summary_map else len(traj_list)
+        print(f"  [PASS] 2.  Synced Live Desktop Sessions (`GetAllCascadeTrajectories` read-only) -> {total_sessions} trajectory record(s)", flush=True)
+        sample_cid = next((cid for cid, v in summary_map.items() if (v or {}).get("stepCount", 0) > 0), None)
+        if sample_cid:
+            st_code, st_res = call_rpc_json(
+                base_url,
+                "GetCascadeTrajectorySteps",
+                {"cascadeId": sample_cid, "startIndex": 0, "endIndex": 20},
+                csrf_token=csrf_token,
+            )
+            assert st_code == 200
+            print(f"  [PASS] 3.  Synced Real Trajectory Steps (`GetCascadeTrajectorySteps` for {sample_cid}) -> {len(st_res.get('steps', []))} step(s)", flush=True)
+        print("\nALL LIVE CONNECT-RPC FLOW CHECKS PASSED (READ-ONLY DESKTOP MODE).", flush=True)
+        return
 
     # 2. Create Session (`StartCascade`)
     sc_status, sc_res = call_rpc_json(
@@ -289,10 +309,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default=None, help="Target Connect-RPC base URL")
     parser.add_argument("--csrf", default=None, help="x-codeium-csrf-token")
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Verify live auth + workspaces + trajectories + steps without creating a new test session",
+    )
     args = parser.parse_args()
 
     if args.url:
-        run_flow(args.url, args.csrf or "", live_external=True)
+        run_flow(args.url, args.csrf or "", live_external=True, read_only=args.read_only)
         return
 
     bridge_mod = load_bridge_module()
