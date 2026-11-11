@@ -3,10 +3,18 @@ import AntigravityData
 
 @main
 public struct AntigravityApp: App {
-    @State private var store = AntigravitySessionStore.makeESDDVerificationStore()
-    @State private var activeVerifyCase: ESDDVerifySceneCase? = DebugSceneFactory.launchVerifyCase()
+    @State private var store: AntigravitySessionStore
+    @State private var activeVerifyCase: ESDDVerifySceneCase?
 
-    public init() {}
+    public init() {
+        let initialStore = AntigravitySessionStore.makeESDDVerificationStore()
+        let launchCase = DebugSceneFactory.launchVerifyCase()
+        if let launchCase {
+            initialStore.configureForVerifyScene(launchCase)
+        }
+        self._store = State(initialValue: initialStore)
+        self._activeVerifyCase = State(initialValue: launchCase)
+    }
 
     public var body: some Scene {
         WindowGroup {
@@ -30,6 +38,7 @@ public struct AntigravityApp: App {
                 }
                 .onOpenURL { url in
                     if let sceneCase = DebugSceneFactory.resolveDeepLink(url) {
+                        store.configureForVerifyScene(sceneCase)
                         activeVerifyCase = sceneCase
                         return
                     }

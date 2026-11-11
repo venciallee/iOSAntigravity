@@ -464,49 +464,79 @@ public struct AntigravityLiveActivitySpecShowcaseView: View {
     public init(store: AntigravitySessionStore) {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            specHeader
+        GeometryReader { proxy in
+            if proxy.size.width >= 760 {
+                VStack(alignment: .leading, spacing: 14) {
+                    specHeader(compactWidth: false)
 
-            // Top Row: 4 Compact / Minimal Dynamic Island States
-            HStack(alignment: .top, spacing: 12) {
-                compactRunningTile
-                compactWaitingTile
-                minimalRingTile
-                compactDoneTile
-            }
+                    HStack(alignment: .top, spacing: 12) {
+                        compactRunningTile
+                        compactWaitingTile
+                        minimalRingTile
+                        compactDoneTile
+                    }
 
-            // Bottom Row: 2 Expanded Dynamic Island Cards + 1 Lock Screen Multi-Agent Card
-            HStack(alignment: .top, spacing: 14) {
-                expandedRunningTile
-                expandedWaitingTile
-                lockScreenMultiAgentTile
+                    HStack(alignment: .top, spacing: 14) {
+                        expandedRunningTile
+                        expandedWaitingTile
+                        lockScreenMultiAgentTile
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(LiveActivityPalette.specBoardBg.ignoresSafeArea())
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        specHeader(compactWidth: true)
+
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: 10, alignment: .top),
+                                GridItem(.flexible(), spacing: 10, alignment: .top)
+                            ],
+                            spacing: 12
+                        ) {
+                            compactRunningTile
+                            compactWaitingTile
+                            minimalRingTile
+                            compactDoneTile
+                        }
+
+                        expandedRunningTile
+                        expandedWaitingTile
+                        lockScreenMultiAgentTile
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 24)
+                }
+                .background(LiveActivityPalette.specBoardBg.ignoresSafeArea())
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(LiveActivityPalette.specBoardBg)
+        .background(LiveActivityPalette.specBoardBg.ignoresSafeArea())
     }
 
     // MARK: Header & Legend
 
-    private var specHeader: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
+    private func specHeader(compactWidth: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center) {
                 Text("Live Activity · 灵动岛")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.system(size: compactWidth ? 19 : 20, weight: .bold))
                     .foregroundStyle(Color(red: 0.08, green: 0.09, blue: 0.12))
-                Text("一个 Live Activity 对应一个正在运行的会话。锁屏卡片聚合多个 Agent；需要批准时，灵动岛从“进度”切换为“琥珀色待办”，并可在展开态直接批准（必须 Face ID）。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(red: 0.35, green: 0.38, blue: 0.44))
-                    .lineLimit(2)
+                Spacer(minLength: 8)
+                HStack(spacing: 10) {
+                    legendDot(color: LiveActivityPalette.runningBlue, label: "运行中")
+                    legendDot(color: LiveActivityPalette.warmAmber, label: "等你处理")
+                    legendDot(color: LiveActivityPalette.emeraldDone, label: "完成")
+                }
             }
-            Spacer(minLength: 16)
-            HStack(spacing: 12) {
-                legendDot(color: LiveActivityPalette.runningBlue, label: "运行中")
-                legendDot(color: LiveActivityPalette.warmAmber, label: "等你处理")
-                legendDot(color: LiveActivityPalette.emeraldDone, label: "完成")
-            }
+            Text("一个 Live Activity 对应一个正在运行的会话。锁屏卡片聚合多个 Agent；需要批准时，灵动岛从“进度”切换为“琥珀色待办”，并可在展开态直接批准（必须 Face ID）。")
+                .font(.system(size: 11))
+                .foregroundStyle(Color(red: 0.35, green: 0.38, blue: 0.44))
+                .lineLimit(compactWidth ? 3 : 2)
         }
     }
 
