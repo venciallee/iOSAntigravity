@@ -281,9 +281,10 @@ public struct AgentsHomeViewController: View {
                     Circle()
                         .fill(selectedHost == .cloud ? AntigravityTheme.accentPeriwinkle : AntigravityTheme.statusDone)
                         .frame(width: 8, height: 8)
-                    Text(selectedHost.rawValue)
+                    Text(store.isLiveBackendConnected ? (store.activeHost?.name ?? selectedHost.rawValue) : selectedHost.rawValue)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(UEChromePalette.textPrimary)
+                        .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(UEChromePalette.textSecondary)
@@ -398,8 +399,12 @@ public struct AgentsHomeViewController: View {
     // MARK: - 3. Filter Pills Strip
 
     private var filterPillStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+        let runningBadge = store.isLiveBackendConnected ? store.runningCount : 2
+        let needsYouBadge = store.isLiveBackendConnected ? store.needsYouCount : 1
+        let unreadBadge = store.isLiveBackendConnected ? store.unreadCount : 3
+
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
                 filterPillButton(
                     filter: .all,
                     label: "All",
@@ -408,19 +413,19 @@ public struct AgentsHomeViewController: View {
                 )
                 filterPillButton(
                     filter: .running,
-                    label: "Running 2",
+                    label: "Running \(runningBadge)",
                     dotColor: AntigravityTheme.statusRunning,
                     accessibilityId: "filter-pill-running"
                 )
                 filterPillButton(
                     filter: .needsYou,
-                    label: "Needs you 1",
+                    label: "Needs you \(needsYouBadge)",
                     dotColor: AntigravityTheme.statusWaiting,
                     accessibilityId: "filter-pill-needs-you"
                 )
                 filterPillButton(
                     filter: .unread,
-                    label: "Unread 3",
+                    label: "Unread \(unreadBadge)",
                     dotColor: nil,
                     accessibilityId: "filter-pill-unread"
                 )
@@ -438,18 +443,19 @@ public struct AgentsHomeViewController: View {
         return Button {
             selectedFilter = filter
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 if let dotColor {
                     Circle()
                         .fill(isActive ? AntigravityTheme.canvasObsidian : dotColor)
                         .frame(width: 7, height: 7)
                 }
                 Text(label)
-                    .font(.system(size: 14, weight: isActive ? .semibold : .medium))
+                    .font(.system(size: 13.5, weight: isActive ? .semibold : .medium))
                     .foregroundStyle(isActive ? AntigravityTheme.canvasObsidian : UEChromePalette.textBody)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 14)
-            .frame(minWidth: 48, minHeight: AntigravityTheme.minTouchTargetPt)
+            .padding(.horizontal, 11.5)
+            .frame(minWidth: 44, minHeight: AntigravityTheme.minTouchTargetPt)
             .background(
                 Capsule()
                     .fill(isActive ? Color.white : UEChromePalette.surfacePill)

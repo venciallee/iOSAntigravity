@@ -19,7 +19,7 @@ public struct AntigravityApp: App {
     public var body: some Scene {
         WindowGroup {
             AntigravityRootContainerView(store: store, activeVerifyCase: $activeVerifyCase)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(activeVerifyCase == .liveActivitySpec ? .light : .dark)
                 .task {
                     guard activeVerifyCase == nil else { return }
                     let env = ProcessInfo.processInfo.environment

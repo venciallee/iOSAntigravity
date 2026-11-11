@@ -273,7 +273,7 @@ public struct ProjectDetailViewController: View {
 
     private var underlineTabsStrip: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 22) {
+            HStack(spacing: 18) {
                 underlineTabItem(
                     tab: .active,
                     title: "Active",
@@ -292,7 +292,7 @@ public struct ProjectDetailViewController: View {
                     count: "1",
                     accessibilityId: "project-tab-automations"
                 )
-                Spacer()
+                Spacer(minLength: 0)
             }
             Rectangle()
                 .fill(UEChromePalette.cardBorder)
@@ -315,10 +315,13 @@ public struct ProjectDetailViewController: View {
                     Text(title)
                         .font(.system(size: 15, weight: isSelected ? .semibold : .medium))
                         .foregroundStyle(isSelected ? Color.white : UEChromePalette.textMuted)
+                        .lineLimit(1)
                     Text(count)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(isSelected ? UEChromePalette.textSecondary : UEChromePalette.textMuted)
+                        .lineLimit(1)
                 }
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.top, 8)
 
                 Rectangle()

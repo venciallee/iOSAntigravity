@@ -1913,7 +1913,7 @@ public final class AntigravitySessionStore {
                 totalSteps: 6,
                 updatedAt: baseNow.addingTimeInterval(-3600),
                 relativeTimeLabel: "1h",
-                statusSubtitle: "Done · 6 files changed +42 -31",
+                statusSubtitle: "Done · 6 files changed",
                 isPinned: false,
                 isArchived: false,
                 isUnread: true,

@@ -125,11 +125,12 @@ public struct ChatComposerView: View {
                             .font(.system(size: 12.5, weight: .medium))
                             .foregroundStyle(AntigravityTheme.inkLabel)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.88)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(AntigravityTheme.inkSecondary)
                     }
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 9)
                     .frame(minWidth: AntigravityTheme.minTouchTargetPt, minHeight: AntigravityTheme.minTouchTargetPt)
                     .background(Self.controlPillBg)
                     .clipShape(Capsule())

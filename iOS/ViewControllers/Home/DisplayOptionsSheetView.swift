@@ -109,6 +109,7 @@ public struct DisplayOptionsSheetView: View {
                 }
             }
             .padding(.top, 108)
+            .ignoresSafeArea(edges: .bottom)
         }
         .background(AntigravityTheme.canvasObsidian.ignoresSafeArea())
     }

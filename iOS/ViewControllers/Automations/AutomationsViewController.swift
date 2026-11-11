@@ -259,11 +259,12 @@ public struct AutomationsViewController: View {
                                         .foregroundStyle(AntigravityTheme.statusDone)
                                 }
                                 Text(item.lastRunText)
-                                    .font(.system(size: 14, weight: .medium))
+                                    .font(.system(size: 13.5, weight: .medium))
                                     .foregroundStyle(
                                         item.needsReview ? AntigravityTheme.statusWaiting : UEChromePalette.textPrimary
                                     )
-                                    .lineLimit(2)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
                             }
                         }
                         .padding(.horizontal, 11)
