@@ -205,11 +205,12 @@ def main():
             env=launch_env,
             check=True,
         )
-        # Wait up to 8 seconds for SwiftUI WindowGroup `.task` to perform live Connect-RPC handshake
-        for _ in range(16):
+        # Wait up to 10 seconds for SwiftUI WindowGroup `.task` to perform live Connect-RPC handshake
+        for _ in range(20):
             if any("GetWorkspaceInfos" in p for p in rpc_hits) and any("GetAllCascadeTrajectories" in p for p in rpc_hits):
                 break
             time.sleep(0.5)
+        time.sleep(1.5)
 
         live_shot = out_dir / "LIVE_CONNECTED_HOME.png"
         subprocess.run(["xcrun", "simctl", "io", udid, "screenshot", str(live_shot)], check=True)

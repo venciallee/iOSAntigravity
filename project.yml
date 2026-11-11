@@ -38,7 +38,14 @@ targets:
     info:
       path: iOS/Support/Info.plist
       properties:
+        CFBundleDisplayName: "Antigravity"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         NSCameraUsageDescription: "Scan the Remote Control QR code from Antigravity Desktop to pair your device."
@@ -55,6 +62,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app
+        INFOPLIST_KEY_CFBundleDisplayName: "Antigravity"
         MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
@@ -74,11 +82,15 @@ targets:
     info:
       path: Extensions/LiveActivity/Info.plist
       properties:
+        CFBundleDisplayName: "Antigravity Live Activity"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app.LiveActivity
+        INFOPLIST_KEY_CFBundleDisplayName: "Antigravity Live Activity"
         MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
@@ -97,15 +109,20 @@ targets:
     info:
       path: Extensions/Share/Info.plist
       properties:
+        CFBundleDisplayName: "Send to Antigravity"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).AntigravityShareExtensionViewController"
           NSExtensionAttributes:
-            NSExtensionActivationSupportsText: true
-            NSExtensionActivationSupportsWebURLWithMaxCount: 1
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app.Share
+        INFOPLIST_KEY_CFBundleDisplayName: "Send to Antigravity"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) ANTIGRAVITY_SHARE_EXTENSION"
         MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"
