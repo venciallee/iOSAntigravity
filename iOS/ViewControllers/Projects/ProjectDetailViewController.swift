@@ -171,7 +171,6 @@ public struct ProjectDetailViewController: View {
                             .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                     )
             }
-            .buttonStyle(.plain)
             .accessibilityIdentifier("btn-project-more")
         }
     }

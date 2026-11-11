@@ -357,7 +357,6 @@ public struct AgentsHomeViewController: View {
                         .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                 )
             }
-            .buttonStyle(.plain)
             .accessibilityIdentifier("host-switcher-pill")
 
             Spacer()

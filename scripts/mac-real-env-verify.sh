@@ -12,6 +12,13 @@ cd "$ROOT_DIR"
 export NO_PROXY="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}"
 export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
 
+LIVE_ONLY=0
+for arg in "$@"; do
+  if [[ "$arg" == "--live-only" ]]; then
+    LIVE_ONLY=1
+  fi
+done
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "[!] macOS not detected ($(uname -s)). Running cross-platform live RPC + ESDD suite instead..."
   python3 verification/verify-live-rpc-flow.py
@@ -164,40 +171,55 @@ IFS='|' read -r SIM_UDID SIM_NAME SIM_RUNTIME <<< "$SIM_INFO"
 echo "[*] Selected Simulator: ${SIM_NAME} (${SIM_RUNTIME}, UDID=${SIM_UDID})"
 
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
+xcrun simctl bootstatus "$SIM_UDID" -b
+
+DERIVED_DATA="$ROOT_DIR/.build/DerivedData"
+mkdir -p verification/output/real-simulator
+
+if [[ "$LIVE_ONLY" -eq 1 ]]; then
+  echo ""
+  echo "=== [4/5] Building Antigravity.app (--live-only fast mode) ==="
+  xcodebuild build \
+    -project iOSAntigravity.xcodeproj \
+    -scheme Antigravity \
+    -sdk iphonesimulator \
+    -destination "id=${SIM_UDID}" \
+    -derivedDataPath "$DERIVED_DATA" \
+    -quiet \
+    CODE_SIGN_IDENTITY="-" \
+    CODE_SIGNING_REQUIRED=NO \
+    AD_HOC_CODE_SIGNING_ALLOWED=YES
+  echo "[PASS] Antigravity.app compiled for ${SIM_NAME}"
+else
+  echo ""
+  echo "=== [4/5] Compiling Antigravity.app & Running Automated XCUITest Suite (do not click Simulator during ~25s run) ==="
+  rm -rf verification/output/real-simulator/AntigravityUITests.xcresult
+  xcodebuild test \
+    -project iOSAntigravity.xcodeproj \
+    -scheme Antigravity \
+    -sdk iphonesimulator \
+    -destination "id=${SIM_UDID}" \
+    -derivedDataPath "$DERIVED_DATA" \
+    -only-testing:AntigravityUITests \
+    -resultBundlePath "verification/output/real-simulator/AntigravityUITests.xcresult" \
+    CODE_SIGN_IDENTITY="-" \
+    CODE_SIGNING_REQUIRED=NO \
+    AD_HOC_CODE_SIGNING_ALLOWED=YES
+  echo "[PASS] Real Simulator XCUITest UI Tap Suite passed on ${SIM_NAME}"
+fi
+
+echo ""
+echo "=== [5/5] Opening Simulator & Connecting Antigravity.app Live to Your Antigravity Desktop ==="
 DEV_DIR="$(xcode-select -p)"
 DEVICE_HUB_APP="$(dirname "$DEV_DIR")/Applications/DeviceHub.app"
 LEGACY_SIM_APP="$DEV_DIR/Applications/Simulator.app"
 if [[ -d "$DEVICE_HUB_APP" ]]; then
   open "$DEVICE_HUB_APP" >/dev/null 2>&1 || open -b com.apple.dt.Devices >/dev/null 2>&1 || true
+  open "devices://device/open?id=${SIM_UDID}" >/dev/null 2>&1 || true
 elif [[ -d "$LEGACY_SIM_APP" ]]; then
   open "$LEGACY_SIM_APP" --args -CurrentDeviceUDID "$SIM_UDID" >/dev/null 2>&1 || open -b com.apple.iphonesimulator >/dev/null 2>&1 || true
 fi
-xcrun simctl bootstatus "$SIM_UDID" -b
-if [[ -d "$DEVICE_HUB_APP" ]]; then
-  open "devices://device/open?id=${SIM_UDID}" >/dev/null 2>&1 || true
-fi
 
-echo ""
-echo "=== [4/5] Compiling Antigravity.app & Running Real XCUITest UI Tap Suite (AntigravityUITests) ==="
-DERIVED_DATA="$ROOT_DIR/.build/DerivedData"
-mkdir -p verification/output/real-simulator
-rm -rf verification/output/real-simulator/AntigravityUITests.xcresult
-
-xcodebuild test \
-  -project iOSAntigravity.xcodeproj \
-  -scheme Antigravity \
-  -sdk iphonesimulator \
-  -destination "id=${SIM_UDID}" \
-  -derivedDataPath "$DERIVED_DATA" \
-  -only-testing:AntigravityUITests \
-  -resultBundlePath "verification/output/real-simulator/AntigravityUITests.xcresult" \
-  CODE_SIGN_IDENTITY="-" \
-  CODE_SIGNING_REQUIRED=NO \
-  AD_HOC_CODE_SIGNING_ALLOWED=YES
-echo "[PASS] Real Simulator XCUITest UI Tap Suite (row tap -> detail -> project -> compose/send) passed on ${SIM_NAME}"
-
-echo ""
-echo "=== [5/5] Installing & Connecting Antigravity.app Live to Your Antigravity Desktop ==="
 APP_PATH="$(find "$DERIVED_DATA/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name "Antigravity.app" | head -n 1)"
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
   echo "[!] Built Antigravity.app bundle not found under $DERIVED_DATA/Build/Products/Debug-iphonesimulator"
