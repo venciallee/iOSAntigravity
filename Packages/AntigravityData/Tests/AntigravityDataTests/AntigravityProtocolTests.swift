@@ -350,6 +350,43 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertFalse(decodedIdle.isUnread)
         XCTAssertEqual(decodedIdle.relativeTimeLabel, "2h")
         XCTAssertEqual(decodedIdle.statusSubtitle, "Idle · 11 steps")
+
+        // 5. Synthetic probe session (`iOS Connect-RPC Handshake`) -> filtered out (`nil`)
+        let syntheticProbeEntry: JSONValue = .object([
+            "summary": .string("Reply in one short sentence confirming iOS Connect-RPC handshake."),
+            "stepCount": .int(1),
+            "status": .string("CASCADE_RUN_STATUS_DONE"),
+            "workspaces": .array([
+                .object(["workspaceFolderAbsoluteUri": .string("file:///Users/dev/iOSAntigravity")])
+            ])
+        ])
+        XCTAssertNil(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "cid-probe-handshake",
+                value: syntheticProbeEntry,
+                now: refNow
+            )
+        )
+
+        // 6. Cloud project (`cloud://venciallee/iOSAntigravity`) preserves `owner/repo` projectSlug & running status
+        let cloudRunningEntry: JSONValue = .object([
+            "summary": .string("Antigravity iOS App Architecture Research"),
+            "stepCount": .int(7),
+            "status": .string("CASCADE_RUN_STATUS_RUNNING"),
+            "lastModifiedTime": .string("2026-11-11T08:59:55Z"),
+            "workspaces": .array([
+                .object(["workspaceFolderAbsoluteUri": .string("cloud://venciallee/iOSAntigravity")])
+            ])
+        ])
+        let decodedCloudRunning = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "cid-arch-research",
+                value: cloudRunningEntry,
+                now: refNow
+            )
+        )
+        XCTAssertEqual(decodedCloudRunning.projectSlug, "venciallee/iOSAntigravity")
+        XCTAssertEqual(decodedCloudRunning.status, .inProgress)
     }
 
     @MainActor

@@ -56,6 +56,26 @@ public struct CascadeChatViewController: View {
                                 )
                             }
                         }
+
+                        if store.isCascadeStreaming || store.activeSummary?.status == .inProgress || store.activeSummary?.status == .pending {
+                            HStack(spacing: 10) {
+                                AntigravityFourDotLoadingView(
+                                    isAnimated: store.isLiveBackendConnected,
+                                    dotSize: 4.5,
+                                    spacing: 3.5,
+                                    tint: Self.periwinkle
+                                )
+                                Text("Agent is thinking and executing steps...")
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .foregroundStyle(AntigravityTheme.inkSecondary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(AntigravityTheme.surfaceCard.opacity(0.65))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .accessibilityIdentifier("chat-inline-four-dot-loading")
+                        }
                     }
                 }
                 .padding(.horizontal, 14)
@@ -63,7 +83,7 @@ public struct CascadeChatViewController: View {
             }
 
             // Above-Composer Status Strip
-            if isStaticESDDFixtureView || store.isCascadeStreaming || store.pendingWaitingStep != nil {
+            if isStaticESDDFixtureView || store.isCascadeStreaming || store.pendingWaitingStep != nil || store.activeSummary?.status == .inProgress {
                 waitingStatusStrip
                     .padding(.horizontal, 14)
                     .padding(.top, 4)
@@ -77,7 +97,7 @@ public struct CascadeChatViewController: View {
         }
         .background(AntigravityTheme.canvasObsidian)
         .task(id: store.activeCascadeId) {
-            if store.isLiveBackendConnected && !store.activeCascadeId.isEmpty && store.activeSteps.isEmpty {
+            if store.isLiveBackendConnected && !store.activeCascadeId.isEmpty {
                 store.syncStepsForCascade(store.activeCascadeId, pollUntilIdle: true)
             }
         }
@@ -118,8 +138,12 @@ public struct CascadeChatViewController: View {
     private var emptyOrLoadingSessionCard: some View {
         if store.isLiveBackendConnected && store.isLoadingSteps {
             HStack(spacing: 12) {
-                ProgressView()
-                    .tint(Self.periwinkle)
+                AntigravityFourDotLoadingView(
+                    isAnimated: true,
+                    dotSize: 4.5,
+                    spacing: 3.5,
+                    tint: Self.periwinkle
+                )
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Loading conversation history...")
                         .font(.system(size: 14.5, weight: .semibold))

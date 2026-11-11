@@ -255,7 +255,7 @@ public struct ProjectDetailViewController: View {
                         .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                 )
                 .overlay(
-                    Image(systemName: "folder")
+                    Image(systemName: (store.isLiveBackendConnected && liveProject?.runtime == .cloud) ? "cloud" : "folder")
                         .font(.system(size: 23, weight: .medium))
                         .foregroundStyle(UEChromePalette.textBody)
                 )
@@ -500,9 +500,16 @@ public struct ProjectDetailViewController: View {
                                             .foregroundStyle(Color.white)
                                             .lineLimit(1)
                                         Spacer()
-                                        Text(row.timestamp)
-                                            .font(.system(size: 12.5, weight: .regular))
-                                            .foregroundStyle(UEChromePalette.textMuted)
+                                        if row.indicator == .runningArc {
+                                            AntigravityFourDotLoadingView(isAnimated: store.isLiveBackendConnected)
+                                                .accessibilityElement(children: .ignore)
+                                                .accessibilityLabel("Running")
+                                                .accessibilityIdentifier("loading-four-dots-\(row.id)")
+                                        } else {
+                                            Text(row.timestamp)
+                                                .font(.system(size: 12.5, weight: .regular))
+                                                .foregroundStyle(UEChromePalette.textMuted)
+                                        }
                                     }
 
                                     HStack(spacing: 5) {
@@ -523,7 +530,7 @@ public struct ProjectDetailViewController: View {
                                 }
                             }
 
-                            if store.isLiveBackendConnected {
+                            if store.isLiveBackendConnected && row.indicator != .runningArc {
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 11.5, weight: .semibold))
                                     .foregroundStyle(UEChromePalette.textMuted.opacity(0.65))
@@ -558,19 +565,7 @@ public struct ProjectDetailViewController: View {
     private func rowIndicator(_ kind: ProjectConversationRowModel.IndicatorKind) -> some View {
         switch kind {
         case .runningArc:
-            ZStack {
-                Circle()
-                    .stroke(Color(red: 0x2A / 255.0, green: 0x31 / 255.0, blue: 0x42 / 255.0), lineWidth: 2)
-                    .frame(width: 15, height: 15)
-                Circle()
-                    .trim(from: 0.0, to: 0.32)
-                    .stroke(
-                        AntigravityTheme.statusRunning,
-                        style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
-                    )
-                    .frame(width: 15, height: 15)
-                    .rotationEffect(.degrees(-85))
-            }
+            AntigravityRunningArcIndicatorView(isAnimated: store.isLiveBackendConnected)
         case .needsReviewHalo:
             ZStack {
                 Circle()

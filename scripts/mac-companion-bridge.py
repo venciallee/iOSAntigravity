@@ -2,21 +2,25 @@
 """Antigravity iOS — Mac Companion Bridge (`scripts/mac-companion-bridge.py`).
 
 Bridges `iOSAntigravity` (on iPhone / iPad / Xcode Simulator over LAN or Tailscale)
-to a live running Antigravity Desktop `language_server` (`exa.language_server_pb.LanguageServerService`).
+to all live running Antigravity Desktop `language_server` / `agy --hub` processes
+(`exa.language_server_pb.LanguageServerService`).
 
 What it does automatically on macOS:
-1. Scans `ps aux` + `lsof` for the running Antigravity `language_server` process,
-   extracting its dynamic `--csrf_token` and loopback HTTPS/HTTP Connect-RPC port.
-2. Exposes a stable LAN / Tailscale endpoint (`0.0.0.0:8787` by default) guarded by
-   `x-codeium-csrf-token` authentication.
-3. Proxies all core `LanguageServerService` RPCs (`GetWorkspaceInfos`,
-   `GetAllCascadeTrajectories`, `StartCascade`, `SendUserCascadeMessage`,
-   `GetCascadeTrajectorySteps` [JSON & binary `application/proto`],
-   `HandleCascadeUserInteraction`, `CancelCascadeInvocation`,
-   `JetboxSubscribeToSummaries`) directly to the real `language_server`.
-4. Implements Mac-local companion RPCs (`OpenWorkspaceInFinder`, `GetTurnDiff` via
+1. Scans `ps aux` + `lsof` for ALL running Antigravity `language_server`, `antigravity_tools`,
+   and `agy --hub` (`--hub-port=<port>`) processes, extracting their dynamic `--csrf_token`
+   and loopback HTTPS/HTTP Connect-RPC ports, and re-discovers periodically.
+2. Subscribes in the background to `JetboxSubscribeToSummaries` (Antigravity 2.0.11+ Jetbox
+   all-time conversation stream) and `ProjectUpdatesStream` + `ReadProject` (plus
+   `~/.gemini/config/projects/*.json` and `~/Library/Application Support/Antigravity/config/projects/*.json`),
+   so ALL local and cloud (`☁️ owner/repo`) project conversations appear on iOS and update in real time.
+3. Federates `GetWorkspaceInfos` and `GetAllCascadeTrajectories` across all discovered backends
+   and Jetbox streams, while filtering out synthetic `iOS Connect-RPC Handshake` probe sessions.
+4. Proxies `StartCascade`, `SendUserCascadeMessage`, `GetCascadeTrajectorySteps` (auto-calling
+   `LoadTrajectory` if a historical Jetbox session is not yet loaded in memory),
+   `HandleCascadeUserInteraction`, `CancelCascadeInvocation`, and `JetboxSubscribeToSummaries`.
+5. Implements Mac-local companion RPCs (`OpenWorkspaceInFinder`, `GetTurnDiff` via
    `git diff`, `CreateProjectWorkspace`, and `Automations` persistence).
-5. Supports `--standalone-sandbox` when testing without Antigravity Desktop open.
+6. Supports `--standalone-sandbox` when testing without Antigravity Desktop open.
 """
 
 import argparse
@@ -41,6 +45,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 SERVICE_PREFIX = "/exa.language_server_pb.LanguageServerService/"
+
+SYNTHETIC_PROBE_PATTERNS = (
+    "ios connect-rpc handshake",
+    "reply in one short sentence confirming ios connect-rpc handshake",
+    "verify ios remote control connection",
+)
 
 
 def make_unverified_ssl_context() -> ssl.SSLContext:
@@ -72,38 +82,74 @@ def detect_lan_ip() -> str:
         return "127.0.0.1"
 
 
-def discover_local_language_server():
-    """Discovers a running Antigravity `language_server` PID, CSRF token, and port with bounded timeouts."""
+def is_synthetic_probe_summary(summary_obj: dict) -> bool:
+    """Returns True if a trajectory summary is a leftover synthetic CLI verification probe."""
+    if not isinstance(summary_obj, dict):
+        return False
+    ann = summary_obj.get("annotations") if isinstance(summary_obj.get("annotations"), dict) else {}
+    candidates = [
+        summary_obj.get("summary"),
+        summary_obj.get("title"),
+        ann.get("title"),
+    ]
+    for text in candidates:
+        if isinstance(text, str) and text.strip():
+            lower = text.strip().lower()
+            if any(pat in lower for pat in SYNTHETIC_PROBE_PATTERNS):
+                return True
+    return False
+
+
+def discover_all_local_language_servers() -> list[dict]:
+    """Discovers ALL running Antigravity `language_server`, `antigravity_tools`, and `agy --hub` backends."""
     try:
         ps_out = subprocess.check_output(
             ["ps", "aux"], text=True, stderr=subprocess.DEVNULL, timeout=2.5
         )
     except Exception:
-        return None
+        return []
 
     candidates = []
     for line in ps_out.splitlines():
-        if "language_server" not in line or "mac-companion-bridge" in line:
+        if "mac-companion-bridge" in line or "verify-live-rpc-flow" in line:
             continue
         csrf_match = re.search(r"--csrf_token[=\s]+([A-Za-z0-9_\-]+)", line)
         if not csrf_match:
+            continue
+        is_target_proc = (
+            "language_server" in line
+            or "antigravity_tools" in line
+            or "--subclient_type" in line
+            or "--hub-port" in line
+            or re.search(r"(?:^|/|\\)agy(?:\.exe)?\b", line) is not None
+        )
+        if not is_target_proc:
             continue
         parts = line.split()
         if len(parts) < 2 or not parts[1].isdigit():
             continue
         pid = int(parts[1])
         csrf_token = csrf_match.group(1)
+        is_hub = (
+            "--subclient_type hub" in line
+            or "--subclient_type=hub" in line
+            or "--hub-port" in line
+            or ("--standalone" in line and "--workspace_id" not in line)
+        )
         hinted_ports = [
             int(p)
-            for p in re.findall(r"--[A-Za-z0-9_]*port[=\s]+(\d+)", line)
+            for p in re.findall(r"--(?:hub[-_]|extension_server_)?[A-Za-z0-9_]*port[=\s]+(\d+)", line)
             if 1024 <= int(p) <= 65535
         ]
-        candidates.append((pid, csrf_token, hinted_ports))
+        candidates.append((0 if is_hub else 1, pid, csrf_token, hinted_ports, is_hub))
 
+    candidates.sort(key=lambda item: (item[0], item[1]))
     ctx = make_unverified_ssl_context()
-    deadline = time.monotonic() + 6.0
+    deadline = time.monotonic() + 7.5
+    discovered = []
+    seen_urls = set()
 
-    for pid, csrf_token, hinted_ports in candidates:
+    for _, pid, csrf_token, hinted_ports, is_hub in candidates:
         if time.monotonic() > deadline:
             break
         ports = list(dict.fromkeys(hinted_ports))
@@ -112,7 +158,7 @@ def discover_local_language_server():
                 ["lsof", "-nP", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN"],
                 text=True,
                 stderr=subprocess.DEVNULL,
-                timeout=2.5,
+                timeout=2.0,
             )
             for row in lsof_out.splitlines():
                 m = re.search(r":(\d+)\s+\(LISTEN\)", row)
@@ -123,36 +169,58 @@ def discover_local_language_server():
         except Exception:
             pass
 
+        schemes = ("http", "https") if is_hub else ("https", "http")
+        probe_methods = ("GetAllCascadeTrajectories", "GetUserStatus", "GetUnleashData")
+
+        found_for_pid = False
         for port in ports:
-            if time.monotonic() > deadline:
+            if time.monotonic() > deadline or found_for_pid:
                 break
-            for scheme in ("https", "http"):
-                probe_url = f"{scheme}://127.0.0.1:{port}{SERVICE_PREFIX}GetAllCascadeTrajectories"
-                req = urllib.request.Request(
-                    probe_url,
-                    data=b"{}",
-                    method="POST",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Connect-Protocol-Version": "1",
-                        "x-codeium-csrf-token": csrf_token,
-                    },
-                )
-                try:
-                    with urlopen_direct(
-                        req,
-                        timeout=0.8,
-                        ssl_ctx=ctx if scheme == "https" else None,
-                    ) as resp:
-                        if 200 <= resp.status < 300:
-                            return {
-                                "pid": pid,
-                                "upstream_url": f"{scheme}://127.0.0.1:{port}",
-                                "upstream_csrf": csrf_token,
-                            }
-                except Exception:
+            for scheme in schemes:
+                base_url = f"{scheme}://127.0.0.1:{port}"
+                if base_url in seen_urls:
                     continue
-    return None
+                for probe_method in probe_methods:
+                    probe_url = f"{base_url}{SERVICE_PREFIX}{probe_method}"
+                    req = urllib.request.Request(
+                        probe_url,
+                        data=b"{}",
+                        method="POST",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Connect-Protocol-Version": "1",
+                            "x-codeium-csrf-token": csrf_token,
+                        },
+                    )
+                    try:
+                        with urlopen_direct(
+                            req,
+                            timeout=0.75,
+                            ssl_ctx=ctx if scheme == "https" else None,
+                        ) as resp:
+                            if 200 <= resp.status < 300:
+                                seen_urls.add(base_url)
+                                discovered.append(
+                                    {
+                                        "pid": pid,
+                                        "upstream_url": base_url,
+                                        "upstream_csrf": csrf_token,
+                                        "is_hub": is_hub,
+                                    }
+                                )
+                                found_for_pid = True
+                                break
+                    except Exception:
+                        continue
+                if found_for_pid:
+                    break
+    return discovered
+
+
+def discover_local_language_server():
+    """Returns the primary (Hub-preferred) running Antigravity backend."""
+    backends = discover_all_local_language_servers()
+    return backends[0] if backends else None
 
 
 def encode_connect_frame(payload: bytes, flags: int = 0x00) -> bytes:
@@ -178,12 +246,112 @@ def encode_varint_field(field_no: int, value: int) -> bytes:
     return encode_varint((field_no << 3) | 0) + encode_varint(value)
 
 
+def parse_local_project_entry(p_obj: dict) -> dict | None:
+    """Normalizes a project definition from `ReadProject` or `~/.gemini/config/projects/*.json`."""
+    if not isinstance(p_obj, dict):
+        return None
+    proj_id = (p_obj.get("id") or "").strip()
+    name = (p_obj.get("name") or "").strip()
+    folder_uri = ""
+    is_cloud = False
+    branch = "main"
+
+    resources = (p_obj.get("projectResources") or {}).get("resources") or []
+    for res in resources:
+        if not isinstance(res, dict):
+            continue
+        git_folder = res.get("gitFolder") or {}
+        if isinstance(git_folder, dict) and git_folder.get("folderUri"):
+            folder_uri = git_folder["folderUri"]
+            if git_folder.get("gitBranch"):
+                branch = git_folder["gitBranch"]
+            break
+        gh_repo = res.get("githubRepo") or res.get("githubRepository") or res.get("remoteRepo") or {}
+        if isinstance(gh_repo, dict):
+            owner = gh_repo.get("owner") or ""
+            repo_name = gh_repo.get("name") or gh_repo.get("repo") or ""
+            full_name = gh_repo.get("fullName") or (f"{owner}/{repo_name}".strip("/"))
+            if full_name:
+                folder_uri = f"cloud://{full_name}"
+                if not name:
+                    name = full_name
+                is_cloud = True
+                break
+
+    if not folder_uri:
+        raw_uri = p_obj.get("folderUri") or p_obj.get("workspaceUri") or ""
+        if raw_uri:
+            folder_uri = raw_uri
+
+    if name and "/" in name and not folder_uri.startswith("file://"):
+        is_cloud = True
+        if not folder_uri:
+            folder_uri = f"cloud://{name}"
+    elif folder_uri.startswith("cloud://") or folder_uri.startswith("https://github.com/"):
+        is_cloud = True
+        if folder_uri.startswith("https://github.com/"):
+            repo_slug = folder_uri.replace("https://github.com/", "").strip("/")
+            folder_uri = f"cloud://{repo_slug}"
+            if not name:
+                name = repo_slug
+
+    if not name and folder_uri:
+        clean = folder_uri.replace("file://", "").replace("cloud://", "").rstrip("/")
+        name = Path(clean).name if not is_cloud else clean
+
+    if not proj_id and not name:
+        return None
+
+    if not folder_uri:
+        folder_uri = f"cloud://{name}" if is_cloud else f"file:///{name}"
+
+    return {
+        "id": proj_id or name,
+        "name": name or proj_id,
+        "workspaceUri": folder_uri,
+        "workspaceFolderAbsoluteUri": folder_uri,
+        "displayName": name or proj_id,
+        "activeBranch": branch,
+        "isCloud": is_cloud,
+    }
+
+
+def read_disk_project_configs() -> dict[str, dict]:
+    """Reads Antigravity 2.0 project registry files (`~/.gemini/config/projects/*.json`, etc.)."""
+    out: dict[str, dict] = {}
+    candidate_dirs = [
+        Path.home() / ".gemini/config/projects",
+        Path.home() / "Library/Application Support/Antigravity/config/projects",
+        Path.home() / ".config/gemini/config/projects",
+    ]
+    env_home = os.environ.get("GEMINI_HOME", "").strip()
+    if env_home:
+        candidate_dirs.insert(0, Path(env_home) / "config/projects")
+
+    for d in candidate_dirs:
+        try:
+            if not d.is_dir():
+                continue
+            for jf in sorted(d.glob("*.json")):
+                try:
+                    raw = json.loads(jf.read_text(encoding="utf-8", errors="ignore"))
+                    parsed = parse_local_project_entry(raw)
+                    if parsed:
+                        out[parsed["id"]] = parsed
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return out
+
+
 class CompanionState:
-    """Stateful companion store for Automations and Standalone Sandbox testing."""
+    """Stateful companion store for Automations, Jetbox live cache, and Standalone Sandbox testing."""
 
     def __init__(self, workspace_root: str, is_live_proxy: bool = False):
         self.lock = threading.Lock()
         self.workspace_root = workspace_root
+        self.is_live_proxy = is_live_proxy
         slug = Path(workspace_root).name or "iOSAntigravity"
         uri = f"file://{workspace_root}"
         self.workspaces = [
@@ -248,6 +416,11 @@ class CompanionState:
                 }
             ]
         )
+        # Live Jetbox & multi-backend federation caches
+        self.jetbox_summaries: dict[str, dict] = {}
+        self.projects_by_id: dict[str, dict] = read_disk_project_configs() if is_live_proxy else {}
+        self.cascade_to_backend: dict[str, dict] = {}
+        self.loaded_trajectories: set[str] = set()
 
     def build_binary_steps(self, cascade_id: str, count: int = 605) -> bytes:
         out = bytearray()
@@ -359,6 +532,7 @@ def read_desktop_annotation_pbtxt(cascade_id: str) -> dict:
         return {}
     candidates = [
         Path.home() / ".gemini/antigravity/annotations" / f"{cascade_id}.pbtxt",
+        Path.home() / ".gemini/antigravity-cli/annotations" / f"{cascade_id}.pbtxt",
         Path.home() / ".codeium/windsurf/annotations" / f"{cascade_id}.pbtxt",
     ]
     for p in candidates:
@@ -390,6 +564,300 @@ def read_desktop_annotation_pbtxt(cascade_id: str) -> dict:
     return {}
 
 
+class UpstreamFederationManager:
+    """Manages multi-backend (`agy --hub` + `language_server`) discovery, Jetbox summary streaming, and project resolution."""
+
+    def __init__(
+        self,
+        state: CompanionState,
+        ssl_ctx: ssl.SSLContext,
+        explicit_url: str = None,
+        explicit_csrf: str = None,
+        extra_backends: list[dict] = None,
+        auto_discover: bool = True,
+    ):
+        self.state = state
+        self.ssl_ctx = ssl_ctx
+        self.explicit_url = explicit_url
+        self.explicit_csrf = explicit_csrf
+        self.auto_discover = auto_discover
+        self.lock = threading.Lock()
+        self.backends: list[dict] = []
+        self.last_scan_ts = 0.0
+        self.jetbox_threads: dict[str, threading.Thread] = {}
+        self.project_threads: dict[str, threading.Thread] = {}
+
+        if explicit_url:
+            self.backends.append(
+                {
+                    "pid": 0,
+                    "upstream_url": explicit_url.rstrip("/"),
+                    "upstream_csrf": explicit_csrf or "",
+                    "is_hub": True,
+                }
+            )
+        if extra_backends:
+            for b in extra_backends:
+                if isinstance(b, dict) and b.get("upstream_url"):
+                    self.backends.append(
+                        {
+                            "pid": int(b.get("pid", 0)),
+                            "upstream_url": b["upstream_url"].rstrip("/"),
+                            "upstream_csrf": b.get("upstream_csrf", ""),
+                            "is_hub": bool(b.get("is_hub", False)),
+                        }
+                    )
+        self.refresh_backends(force=True)
+
+    def get_backends(self) -> list[dict]:
+        self.refresh_backends(force=False)
+        with self.lock:
+            return list(self.backends)
+
+    def get_primary_backend(self) -> dict | None:
+        backends = self.get_backends()
+        return backends[0] if backends else None
+
+    def refresh_backends(self, force: bool = False):
+        now = time.monotonic()
+        with self.lock:
+            if not force and (now - self.last_scan_ts) < 6.0 and self.backends:
+                return
+            self.last_scan_ts = now
+
+        if self.auto_discover and not self.explicit_url:
+            discovered = discover_all_local_language_servers()
+            with self.lock:
+                if discovered:
+                    self.backends = discovered
+
+        with self.lock:
+            current_backends = list(self.backends)
+
+        for b in current_backends:
+            url = b["upstream_url"]
+            if url not in self.jetbox_threads or not self.jetbox_threads[url].is_alive():
+                t = threading.Thread(
+                    target=self._run_jetbox_summary_subscriber,
+                    args=(b,),
+                    daemon=True,
+                )
+                self.jetbox_threads[url] = t
+                t.start()
+            if url not in self.project_threads or not self.project_threads[url].is_alive():
+                pt = threading.Thread(
+                    target=self._run_project_updates_subscriber,
+                    args=(b,),
+                    daemon=True,
+                )
+                self.project_threads[url] = pt
+                pt.start()
+
+    def call_backend_json(self, backend: dict, method: str, body: dict, timeout: float = 4.0) -> dict | None:
+        target = f"{backend['upstream_url']}{SERVICE_PREFIX}{method}"
+        is_https = target.startswith("https://")
+        req = urllib.request.Request(
+            target,
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+                "x-codeium-csrf-token": backend.get("upstream_csrf") or "",
+            },
+        )
+        try:
+            with urlopen_direct(req, timeout=timeout, ssl_ctx=self.ssl_ctx if is_https else None) as resp:
+                raw = resp.read()
+                return json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            return None
+
+    def resolve_project_by_id(self, backend: dict, project_id: str) -> dict | None:
+        if not project_id or project_id == "outside-of-project":
+            return None
+        with self.state.lock:
+            if project_id in self.state.projects_by_id:
+                return self.state.projects_by_id[project_id]
+
+        disk_projects = read_disk_project_configs()
+        if project_id in disk_projects:
+            with self.state.lock:
+                self.state.projects_by_id.update(disk_projects)
+            return disk_projects[project_id]
+
+        res = self.call_backend_json(backend, "ReadProject", {"id": project_id}, timeout=2.0)
+        if isinstance(res, dict) and isinstance(res.get("project"), dict):
+            parsed = parse_local_project_entry(res["project"])
+            if parsed:
+                with self.state.lock:
+                    self.state.projects_by_id[project_id] = parsed
+                return parsed
+        return None
+
+    def _run_jetbox_summary_subscriber(self, backend: dict):
+        """Maintains a Connect-RPC stream to `JetboxSubscribeToSummaries` on `backend` to capture all-time & live updates."""
+        url = f"{backend['upstream_url']}{SERVICE_PREFIX}JetboxSubscribeToSummaries"
+        is_https = url.startswith("https://")
+        envelope = encode_connect_frame(b"{}", flags=0x00)
+        req = urllib.request.Request(
+            url,
+            data=envelope,
+            method="POST",
+            headers={
+                "Content-Type": "application/connect+json",
+                "Connect-Protocol-Version": "1",
+                "x-codeium-csrf-token": backend.get("upstream_csrf") or "",
+            },
+        )
+        try:
+            with urlopen_direct(req, timeout=60.0, ssl_ctx=self.ssl_ctx if is_https else None) as resp:
+                if resp.status >= 400:
+                    return
+                buf = bytearray()
+                while True:
+                    chunk = resp.read(1)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    while len(buf) >= 5:
+                        flag = buf[0]
+                        msg_len = struct.unpack(">I", buf[1:5])[0]
+                        if msg_len > len(buf) - 5:
+                            needed = (5 + msg_len) - len(buf)
+                            more = resp.read(needed)
+                            if not more:
+                                return
+                            buf.extend(more)
+                        if len(buf) < 5 + msg_len:
+                            break
+                        payload = bytes(buf[5 : 5 + msg_len])
+                        del buf[: 5 + msg_len]
+                        if flag != 0x00:
+                            continue
+                        try:
+                            frame = json.loads(payload.decode("utf-8"))
+                        except Exception:
+                            continue
+                        self._apply_jetbox_frame(backend, frame)
+        except Exception:
+            return
+
+    def _apply_jetbox_frame(self, backend: dict, frame: dict):
+        if not isinstance(frame, dict):
+            return
+        updates = frame.get("updates")
+        deletes = frame.get("deletes")
+        if isinstance(updates, dict):
+            for cid, summary_obj in updates.items():
+                if not isinstance(summary_obj, dict):
+                    continue
+                if is_synthetic_probe_summary(summary_obj):
+                    continue
+                proj_id = (summary_obj.get("trajectoryMetadata") or {}).get("projectId")
+                if proj_id:
+                    self.resolve_project_by_id(backend, proj_id)
+                with self.state.lock:
+                    self.state.jetbox_summaries[cid] = summary_obj
+                    self.state.cascade_to_backend[cid] = backend
+        elif isinstance(frame.get("cascadeId"), str):
+            cid = frame["cascadeId"]
+            if not is_synthetic_probe_summary(frame):
+                with self.state.lock:
+                    existing = dict(self.state.jetbox_summaries.get(cid) or {})
+                    existing.update(frame)
+                    self.state.jetbox_summaries[cid] = existing
+                    self.state.cascade_to_backend[cid] = backend
+        if isinstance(deletes, list):
+            with self.state.lock:
+                for cid in deletes:
+                    self.state.jetbox_summaries.pop(cid, None)
+
+    def _run_project_updates_subscriber(self, backend: dict):
+        """Subscribes to `ProjectUpdatesStream` on `backend` and resolves each project via `ReadProject`."""
+        url = f"{backend['upstream_url']}{SERVICE_PREFIX}ProjectUpdatesStream"
+        is_https = url.startswith("https://")
+        envelope = encode_connect_frame(b"{}", flags=0x00)
+        req = urllib.request.Request(
+            url,
+            data=envelope,
+            method="POST",
+            headers={
+                "Content-Type": "application/connect+json",
+                "Connect-Protocol-Version": "1",
+                "x-codeium-csrf-token": backend.get("upstream_csrf") or "",
+            },
+        )
+        try:
+            with urlopen_direct(req, timeout=60.0, ssl_ctx=self.ssl_ctx if is_https else None) as resp:
+                if resp.status >= 400:
+                    return
+                buf = bytearray()
+                while True:
+                    chunk = resp.read(1)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    while len(buf) >= 5:
+                        flag = buf[0]
+                        msg_len = struct.unpack(">I", buf[1:5])[0]
+                        if msg_len > len(buf) - 5:
+                            needed = (5 + msg_len) - len(buf)
+                            more = resp.read(needed)
+                            if not more:
+                                return
+                            buf.extend(more)
+                        if len(buf) < 5 + msg_len:
+                            break
+                        payload = bytes(buf[5 : 5 + msg_len])
+                        del buf[: 5 + msg_len]
+                        if flag != 0x00:
+                            continue
+                        try:
+                            frame = json.loads(payload.decode("utf-8"))
+                        except Exception:
+                            continue
+                        proj_ids = []
+                        if isinstance(frame.get("projectList"), dict):
+                            proj_ids.extend(frame["projectList"].get("projectIds") or [])
+                        if isinstance(frame.get("projectUpdatedId"), str):
+                            proj_ids.append(frame["projectUpdatedId"])
+                        for pid in proj_ids:
+                            if isinstance(pid, str) and pid:
+                                self.resolve_project_by_id(backend, pid)
+        except Exception:
+            return
+
+
+def enrich_summary_entry(cid: str, summary_obj: dict, projects_by_id: dict[str, dict]) -> dict:
+    """Enriches a trajectory summary with `.pbtxt` annotations and `trajectoryMetadata.projectId` workspace mapping."""
+    enriched = dict(summary_obj)
+    pbtxt_ann = read_desktop_annotation_pbtxt(cid)
+    if pbtxt_ann:
+        ann = dict(enriched.get("annotations") or {})
+        for k, v in pbtxt_ann.items():
+            ann.setdefault(k, v)
+        enriched["annotations"] = ann
+
+    traj_meta = enriched.get("trajectoryMetadata")
+    proj_id = traj_meta.get("projectId") if isinstance(traj_meta, dict) else None
+    workspaces = enriched.get("workspaces")
+    has_workspace = isinstance(workspaces, list) and len(workspaces) > 0 and isinstance(workspaces[0], dict) and (
+        workspaces[0].get("workspaceFolderAbsoluteUri") or workspaces[0].get("workspaceUri")
+    )
+    if proj_id and proj_id in projects_by_id and not has_workspace:
+        proj = projects_by_id[proj_id]
+        enriched["workspaces"] = [
+            {
+                "workspaceFolderAbsoluteUri": proj["workspaceUri"],
+                "workspaceUri": proj["workspaceUri"],
+                "gitBranch": proj.get("activeBranch", "main"),
+            }
+        ]
+        enriched.setdefault("projectSlug", proj["displayName"])
+    return enriched
+
+
 def create_bridge_server(
     bind_host: str,
     bind_port: int,
@@ -397,13 +865,30 @@ def create_bridge_server(
     upstream_url: str = None,
     upstream_csrf: str = None,
     workspace_root: str = None,
+    extra_backends: list[dict] = None,
+    auto_discover: bool = None,
 ):
-    state = CompanionState(workspace_root or os.getcwd(), is_live_proxy=bool(upstream_url))
+    has_upstream = bool(upstream_url) or bool(extra_backends)
+    state = CompanionState(workspace_root or os.getcwd(), is_live_proxy=has_upstream)
     ssl_ctx = make_unverified_ssl_context()
-    desktop_api_key = discover_desktop_oauth_token() if upstream_url else ""
+    should_auto_discover = (auto_discover is True) if auto_discover is not None else False
+    federation = UpstreamFederationManager(
+        state=state,
+        ssl_ctx=ssl_ctx,
+        explicit_url=upstream_url,
+        explicit_csrf=upstream_csrf or bridge_csrf,
+        extra_backends=extra_backends,
+        auto_discover=should_auto_discover,
+    )
+    primary = federation.get_primary_backend()
+    desktop_api_key = discover_desktop_oauth_token() if primary else ""
     upstream_default_model, upstream_valid_models = (
-        query_upstream_default_model(upstream_url, upstream_csrf or bridge_csrf, desktop_api_key)
-        if upstream_url
+        query_upstream_default_model(
+            primary["upstream_url"],
+            primary.get("upstream_csrf") or bridge_csrf,
+            desktop_api_key,
+        )
+        if primary
         else ("", set())
     )
 
@@ -430,13 +915,15 @@ def create_bridge_server(
         def do_GET(self):
             parsed_path = urllib.parse.urlparse(self.path).path
             if parsed_path == "/health":
+                backends = federation.get_backends()
                 self._write_json(
                     200,
                     {
                         "ok": True,
                         "hostname": socket.gethostname(),
-                        "mode": "upstream_proxy" if upstream_url else "standalone_sandbox",
-                        "upstream": upstream_url,
+                        "mode": "upstream_proxy" if backends else "standalone_sandbox",
+                        "upstream": backends[0]["upstream_url"] if backends else None,
+                        "upstreams": [b["upstream_url"] for b in backends],
                         "desktopAuthDetected": bool(desktop_api_key),
                     },
                 )
@@ -452,7 +939,8 @@ def create_bridge_server(
                     f"&csrf={urllib.parse.quote(bridge_csrf, safe='')}"
                     f"&name={urllib.parse.quote(hostname, safe='')}"
                 )
-                mode_badge = "LIVE DESKTOP PROXY" if upstream_url else "COMPANION SANDBOX"
+                backends = federation.get_backends()
+                mode_badge = f"LIVE DESKTOP PROXY ({len(backends)} BACKEND{'S' if len(backends) != 1 else ''})" if backends else "COMPANION SANDBOX"
                 page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -624,17 +1112,190 @@ def create_bridge_server(
                 self._write_json(200, {"ok": True, "automationId": aid})
                 return
 
+            backends = federation.get_backends()
             if method == "JetboxSubscribeToSummaries":
-                self._handle_standalone_rpc(method, raw_body, content_type)
+                self._handle_jetbox_subscribe_stream(backends)
                 return
 
-            # 3. Forward to real Desktop `language_server` when available!
-            if upstream_url:
-                self._proxy_to_upstream(method, raw_body, content_type)
+            # 3. Forward / Federate across real Desktop `language_server` / `agy --hub` backends when available!
+            if backends:
+                if method == "GetWorkspaceInfos":
+                    self._handle_federated_workspaces(backends)
+                    return
+                if method == "GetAllCascadeTrajectories":
+                    self._handle_federated_trajectories(backends)
+                    return
+                self._proxy_to_upstream(backends, method, raw_body, content_type)
                 return
 
             # 4. Standalone Sandbox Mode (full live Connect-RPC state machine!)
             self._handle_standalone_rpc(method, raw_body, content_type)
+
+        def _handle_jetbox_subscribe_stream(self, backends: list[dict]):
+            """Emits a Connect 5-byte framed snapshot of current summaries (both `updates` map and `cascadeId` event)."""
+            if backends:
+                merged_map = self._collect_federated_summaries_map(backends)
+                if merged_map:
+                    first_cid, first_obj = next(iter(merged_map.items()))
+                    ann = first_obj.get("annotations") if isinstance(first_obj.get("annotations"), dict) else {}
+                    title = ann.get("title") or first_obj.get("summary") or first_obj.get("title") or "Session"
+                    frame1 = encode_connect_frame(
+                        json.dumps(
+                            {
+                                "cascadeId": first_cid,
+                                "title": title,
+                                "status": first_obj.get("status", "CASCADE_RUN_STATUS_IDLE"),
+                                "stepCount": first_obj.get("stepCount", 0),
+                                "summary": first_obj.get("summary", title),
+                                "updates": merged_map,
+                            }
+                        ).encode("utf-8"),
+                        flags=0x00,
+                    )
+                else:
+                    frame1 = encode_connect_frame(
+                        json.dumps({"cascadeId": "cas-live-sync", "updates": {}}).encode("utf-8"),
+                        flags=0x00,
+                    )
+                end_frame = encode_connect_frame(b"{}", flags=0x02)
+                payload = frame1 + end_frame
+                self.send_response(200)
+                self._send_cors()
+                self.send_header("Content-Type", "application/connect+json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+
+            self._handle_standalone_rpc("JetboxSubscribeToSummaries", b"{}", "application/connect+json")
+
+        def _handle_federated_workspaces(self, backends: list[dict]):
+            seen_uris = set()
+            normalized = []
+
+            for b in backends:
+                res = federation.call_backend_json(b, "GetWorkspaceInfos", {}, timeout=3.0)
+                if not isinstance(res, dict):
+                    continue
+                raw_items = res.get("workspaceInfos") or res.get("workspaces") or []
+                for item in raw_items:
+                    if not isinstance(item, dict):
+                        continue
+                    uri = item.get("workspaceUri") or item.get("workspaceFolderAbsoluteUri") or ""
+                    if not uri:
+                        continue
+                    dedup_key = urllib.parse.unquote(uri).rstrip("/").lower()
+                    if dedup_key in seen_uris:
+                        continue
+                    seen_uris.add(dedup_key)
+                    clean_path = uri.replace("file://", "").replace("cloud://", "").rstrip("/")
+                    default_name = clean_path if uri.startswith("cloud://") else (Path(clean_path).name or "workspace")
+                    enriched = dict(item)
+                    enriched.setdefault("workspaceUri", uri)
+                    enriched.setdefault("workspaceFolderAbsoluteUri", uri)
+                    enriched.setdefault("displayName", item.get("displayName") or default_name)
+                    enriched.setdefault("activeBranch", item.get("gitBranch") or item.get("activeBranch") or "main")
+                    normalized.append(enriched)
+
+            disk_projects = read_disk_project_configs()
+            with state.lock:
+                state.projects_by_id.update(disk_projects)
+                known_projects = list(state.projects_by_id.values())
+
+            for proj in known_projects:
+                uri = proj.get("workspaceUri") or ""
+                if not uri:
+                    continue
+                dedup_key = urllib.parse.unquote(uri).rstrip("/").lower()
+                if dedup_key in seen_uris:
+                    continue
+                seen_uris.add(dedup_key)
+                normalized.append(
+                    {
+                        "workspaceUri": uri,
+                        "workspaceFolderAbsoluteUri": uri,
+                        "displayName": proj.get("displayName") or proj.get("name") or "workspace",
+                        "activeBranch": proj.get("activeBranch") or "main",
+                        "indexedFiles": [],
+                    }
+                )
+
+            if not normalized:
+                with state.lock:
+                    normalized = list(state.workspaces)
+
+            self._write_json(200, {"workspaces": normalized, "workspaceInfos": normalized})
+
+        def _collect_federated_summaries_map(self, backends: list[dict]) -> dict[str, dict]:
+            merged_summaries: dict[str, dict] = {}
+            disk_projects = read_disk_project_configs()
+            with state.lock:
+                state.projects_by_id.update(disk_projects)
+                projects_snapshot = dict(state.projects_by_id)
+                jetbox_snapshot = dict(state.jetbox_summaries)
+
+            # 1. Seed with Jetbox all-time summaries
+            for cid, s_obj in jetbox_snapshot.items():
+                if not isinstance(s_obj, dict) or is_synthetic_probe_summary(s_obj):
+                    continue
+                merged_summaries[cid] = enrich_summary_entry(cid, s_obj, projects_snapshot)
+
+            # 2. Query every discovered backend (`agy --hub` + `language_server` instances)
+            for b in backends:
+                res = federation.call_backend_json(b, "GetAllCascadeTrajectories", {}, timeout=3.5)
+                if not isinstance(res, dict):
+                    continue
+                b_map = res.get("trajectorySummaries") or {}
+                if isinstance(b_map, dict):
+                    for cid, s_obj in b_map.items():
+                        if not isinstance(s_obj, dict):
+                            continue
+                        with state.lock:
+                             is_local_session = cid in state.trajectories and cid != "cas-live-welcome"
+                        if is_synthetic_probe_summary(s_obj) and not is_local_session:
+                            continue
+                        proj_id = (s_obj.get("trajectoryMetadata") or {}).get("projectId")
+                        if proj_id and proj_id not in projects_snapshot:
+                            resolved_p = federation.resolve_project_by_id(b, proj_id)
+                            if resolved_p:
+                                projects_snapshot[proj_id] = resolved_p
+                        enriched = enrich_summary_entry(cid, s_obj, projects_snapshot)
+                        prev = merged_summaries.get(cid)
+                        if prev is None:
+                            merged_summaries[cid] = enriched
+                        else:
+                            prev_steps = int(prev.get("stepCount") or 0)
+                            new_steps = int(enriched.get("stepCount") or 0)
+                            new_status = str(enriched.get("status") or "").upper()
+                            if (
+                                new_steps >= prev_steps
+                                or "RUNNING" in new_status
+                                or "IN_PROGRESS" in new_status
+                                or "WAITING" in new_status
+                            ):
+                                merged_summaries[cid] = enriched
+                        with state.lock:
+                            state.cascade_to_backend[cid] = b
+
+            # 3. Merge any optimistic iOS-created sessions not yet reported by upstream
+            with state.lock:
+                for cid, t in state.trajectories.items():
+                    if cid == "cas-live-welcome":
+                        continue
+                    merged_summaries.setdefault(
+                        cid,
+                        {
+                            "summary": t["title"],
+                            "stepCount": t["stepCount"],
+                            "status": t["status"],
+                            "workspaces": [{"workspaceFolderAbsoluteUri": t["workspaceUri"]}],
+                        },
+                    )
+            return merged_summaries
+
+        def _handle_federated_trajectories(self, backends: list[dict]):
+            merged_summaries = self._collect_federated_summaries_map(backends)
+            self._write_json(200, {"trajectorySummaries": merged_summaries})
 
         def _build_upstream_metadata(self, existing: dict) -> dict:
             meta = {}
@@ -709,8 +1370,20 @@ def create_bridge_server(
 
             return 200, req_obj
 
-        def _proxy_to_upstream(self, method: str, raw_body: bytes, content_type: str):
-            target = f"{upstream_url}{SERVICE_PREFIX}{method}"
+        def _select_backend_for_request(self, backends: list[dict], method: str, req_obj: dict) -> dict:
+            cid = (
+                req_obj.get("cascadeId")
+                or (req_obj.get("interaction") or {}).get("trajectoryId")
+                or ""
+            )
+            if cid:
+                with state.lock:
+                    mapped = state.cascade_to_backend.get(cid)
+                if mapped:
+                    return mapped
+            return backends[0]
+
+        def _proxy_to_upstream(self, backends: list[dict], method: str, raw_body: bytes, content_type: str):
             is_json = "json" in content_type.lower() and "connect+" not in content_type.lower()
             forward_body = raw_body
             req_obj = {}
@@ -724,10 +1397,13 @@ def create_bridge_server(
                 req_obj = sanitized
                 forward_body = json.dumps(req_obj).encode("utf-8")
 
+            chosen_backend = self._select_backend_for_request(backends, method, req_obj)
+            target = f"{chosen_backend['upstream_url']}{SERVICE_PREFIX}{method}"
+
             headers = {
                 "Content-Type": content_type,
                 "Connect-Protocol-Version": self.headers.get("Connect-Protocol-Version", "1"),
-                "x-codeium-csrf-token": upstream_csrf or bridge_csrf,
+                "x-codeium-csrf-token": chosen_backend.get("upstream_csrf") or bridge_csrf,
             }
             if "Accept" in self.headers:
                 headers["Accept"] = self.headers["Accept"]
@@ -753,6 +1429,7 @@ def create_bridge_server(
                                 ws_uri = uris[0] if uris else state.workspaces[0]["workspaceUri"]
                                 slug = Path(ws_uri.replace("file://", "")).name or "workspace"
                                 with state.lock:
+                                    state.cascade_to_backend[new_cid] = chosen_backend
                                     state.trajectories.setdefault(
                                         new_cid,
                                         {
@@ -779,6 +1456,7 @@ def create_bridge_server(
                                     "",
                                 )
                                 with state.lock:
+                                    state.cascade_to_backend[cid] = chosen_backend
                                     local_steps = state.steps_by_cascade.setdefault(cid, [])
                                     if not local_steps and text_val:
                                         local_steps.append(
@@ -795,12 +1473,10 @@ def create_bridge_server(
                                         state.trajectories[cid]["stepCount"] = max(
                                             state.trajectories[cid]["stepCount"], len(local_steps)
                                         )
-                        elif is_json and method == "GetWorkspaceInfos":
-                            resp_bytes = self._normalize_workspace_infos_response(resp_bytes)
-                        elif is_json and method == "GetAllCascadeTrajectories":
-                            resp_bytes = self._merge_local_trajectories_response(resp_bytes)
                         elif is_json and method == "GetCascadeTrajectorySteps":
-                            resp_bytes = self._merge_local_steps_response(req_obj, resp_bytes)
+                            resp_bytes = self._ensure_loaded_and_merge_steps(
+                                chosen_backend, backends, req_obj, resp_bytes
+                            )
                         self.send_response(resp.status)
                         self._send_cors()
                         self.send_header("Content-Type", resp_ct)
@@ -811,14 +1487,12 @@ def create_bridge_server(
                 except urllib.error.HTTPError as e:
                     err_body = e.read()
                     err_text = err_body.decode("utf-8", errors="ignore")
-                    # Auto-strip any protojson unknown top-level field if Desktop schema differs
                     if is_json and e.code == 400 and attempts <= 3:
                         m = re.search(r'unknown field "([^"]+)"', err_text)
                         if m and m.group(1) in req_obj:
                             req_obj.pop(m.group(1), None)
                             forward_body = json.dumps(req_obj).encode("utf-8")
                             continue
-                    # Graceful fallback to local companion state if Desktop rejects model/auth/offline
                     if is_json and method in ("StartCascade", "SendUserCascadeMessage") and e.code in (
                         400,
                         401,
@@ -850,64 +1524,38 @@ def create_bridge_server(
                     self._write_json(502, {"error": f"Upstream language_server error: {exc}"})
                     return
 
-        def _normalize_workspace_infos_response(self, resp_bytes: bytes) -> bytes:
-            obj = self._parse_json(resp_bytes)
-            raw_items = obj.get("workspaceInfos") or obj.get("workspaces") or []
-            normalized = []
-            for item in raw_items:
-                if not isinstance(item, dict):
-                    continue
-                uri = item.get("workspaceUri") or item.get("workspaceFolderAbsoluteUri") or ""
-                if not uri:
-                    continue
-                enriched = dict(item)
-                enriched.setdefault("workspaceUri", uri)
-                enriched.setdefault("workspaceFolderAbsoluteUri", uri)
-                enriched.setdefault("displayName", Path(uri.replace("file://", "")).name or "workspace")
-                enriched.setdefault("activeBranch", item.get("gitBranch") or "main")
-                normalized.append(enriched)
-            if not normalized:
-                with state.lock:
-                    normalized = list(state.workspaces)
-            obj["workspaces"] = normalized
-            obj.setdefault("workspaceInfos", normalized)
-            return json.dumps(obj).encode("utf-8")
-
-        def _merge_local_trajectories_response(self, resp_bytes: bytes) -> bytes:
-            obj = self._parse_json(resp_bytes)
-            summaries = obj.setdefault("trajectorySummaries", {})
-            for cid, summary_obj in list(summaries.items()):
-                if not isinstance(summary_obj, dict):
-                    continue
-                pbtxt_ann = read_desktop_annotation_pbtxt(cid)
-                if pbtxt_ann:
-                    ann = summary_obj.setdefault("annotations", {})
-                    if isinstance(ann, dict):
-                        for k, v in pbtxt_ann.items():
-                            ann.setdefault(k, v)
-            with state.lock:
-                for cid, t in state.trajectories.items():
-                    if cid == "cas-live-welcome":
-                        continue
-                    summaries.setdefault(
-                        cid,
-                        {
-                            "summary": t["title"],
-                            "stepCount": t["stepCount"],
-                            "status": t["status"],
-                            "workspaces": [{"workspaceFolderAbsoluteUri": t["workspaceUri"]}],
-                        },
-                    )
-            return json.dumps(obj).encode("utf-8")
-
-        def _merge_local_steps_response(self, req_obj: dict, resp_bytes: bytes) -> bytes:
+        def _ensure_loaded_and_merge_steps(
+            self,
+            chosen_backend: dict,
+            backends: list[dict],
+            req_obj: dict,
+            resp_bytes: bytes,
+        ) -> bytes:
             obj = self._parse_json(resp_bytes)
             cid = req_obj.get("cascadeId", "")
-            if not obj.get("steps") and cid:
+            steps = obj.get("steps") or []
+            if not steps and cid:
+                # 1. Try `LoadTrajectory` on `chosen_backend` (and any secondary backends) to wake up dormant disk sessions
                 with state.lock:
-                    local_steps = state.steps_by_cascade.get(cid)
-                    if local_steps:
-                        obj["steps"] = list(local_steps)
+                    already_loaded = cid in state.loaded_trajectories
+                    if not already_loaded:
+                        state.loaded_trajectories.add(cid)
+                if not already_loaded:
+                    for b in [chosen_backend] + [x for x in backends if x != chosen_backend]:
+                        federation.call_backend_json(b, "LoadTrajectory", {"cascadeId": cid}, timeout=2.5)
+                        retry_res = federation.call_backend_json(b, "GetCascadeTrajectorySteps", req_obj, timeout=4.0)
+                        if isinstance(retry_res, dict) and retry_res.get("steps"):
+                            obj["steps"] = retry_res["steps"]
+                            steps = obj["steps"]
+                            with state.lock:
+                                state.cascade_to_backend[cid] = b
+                            break
+                # 2. Fallback to local companion steps if still empty
+                if not steps:
+                    with state.lock:
+                        local_steps = state.steps_by_cascade.get(cid)
+                        if local_steps:
+                            obj["steps"] = list(local_steps)
             return json.dumps(obj).encode("utf-8")
 
         def _handle_standalone_rpc(self, method: str, raw_body: bytes, content_type: str):
@@ -1035,7 +1683,6 @@ def create_bridge_server(
                             },
                         }
                     )
-                    # If user asks to run a command / test, emit a WAITING runCommand step to test Face ID approval!
                     if "vegeta" in user_text.lower() or "run_command" in user_text.lower():
                         steps.append(
                             {
@@ -1177,17 +1824,22 @@ def main():
 
     upstream_url = args.upstream_url
     upstream_csrf = args.upstream_csrf
+    extra_backends = []
 
     if not args.standalone_sandbox and not upstream_url:
-        print("[*] Scanning for local Antigravity Desktop `language_server`...", flush=True)
-        discovered = discover_local_language_server()
-        if discovered:
-            upstream_url = discovered["upstream_url"]
-            upstream_csrf = discovered["upstream_csrf"]
-            print(
-                f"[+] Auto-discovered Antigravity Desktop language_server (PID {discovered['pid']}) at {upstream_url}",
-                flush=True,
-            )
+        print("[*] Scanning for local Antigravity Desktop `language_server` / `agy --hub` backends...", flush=True)
+        discovered_all = discover_all_local_language_servers()
+        if discovered_all:
+            primary = discovered_all[0]
+            upstream_url = primary["upstream_url"]
+            upstream_csrf = primary["upstream_csrf"]
+            extra_backends = discovered_all[1:]
+            for idx, b in enumerate(discovered_all):
+                role = "HUB" if b.get("is_hub") else "LS"
+                print(
+                    f"[+] Auto-discovered Antigravity {role} #{idx + 1} (PID {b['pid']}) at {b['upstream_url']}",
+                    flush=True,
+                )
         else:
             print(
                 "[!] No running Antigravity Desktop `language_server` detected; starting in Stateful Companion Sandbox mode.",
@@ -1215,12 +1867,18 @@ def main():
         bridge_csrf=bridge_csrf,
         upstream_url=upstream_url,
         upstream_csrf=upstream_csrf,
+        extra_backends=extra_backends,
+        auto_discover=(not args.standalone_sandbox and not args.upstream_url),
     )
 
+    total_upstreams = (1 if upstream_url else 0) + len(extra_backends)
     print("\n" + "=" * 74, flush=True)
     print("  iOSAntigravity — Connect-RPC Backend Bridge Ready", flush=True)
     print("=" * 74, flush=True)
-    print(f"  Mode          : {'LIVE DESKTOP PROXY -> ' + upstream_url if upstream_url else 'STATEFUL SANDBOX'}", flush=True)
+    print(
+        f"  Mode          : {'LIVE DESKTOP PROXY (' + str(total_upstreams) + ' backend(s), primary -> ' + upstream_url + ')' if upstream_url else 'STATEFUL SANDBOX'}",
+        flush=True,
+    )
     print(f"  LAN Endpoint  : {endpoint}", flush=True)
     print(f"  CSRF Token    : {bridge_csrf}", flush=True)
     print(f"  iPhone Safari : {endpoint}/pair   (1-Tap Pair on Physical iPhone)", flush=True)

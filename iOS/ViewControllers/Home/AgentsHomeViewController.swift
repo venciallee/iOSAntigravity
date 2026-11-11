@@ -690,9 +690,16 @@ public struct AgentsHomeViewController: View {
                                 .foregroundStyle(UEChromePalette.textPrimary)
                                 .lineLimit(1)
                             Spacer(minLength: 6)
-                            Text(item.timestampLabel)
-                                .font(.system(size: 12.5, weight: .regular))
-                                .foregroundStyle(UEChromePalette.textMuted)
+                            if item.indicator == .runningArc {
+                                AntigravityFourDotLoadingView(isAnimated: store.isLiveBackendConnected)
+                                    .accessibilityElement(children: .ignore)
+                                    .accessibilityLabel("Running")
+                                    .accessibilityIdentifier("loading-four-dots-\(item.id)")
+                            } else {
+                                Text(item.timestampLabel)
+                                    .font(.system(size: 12.5, weight: .regular))
+                                    .foregroundStyle(UEChromePalette.textMuted)
+                            }
                         }
 
                         HStack(spacing: 5) {
@@ -719,7 +726,7 @@ public struct AgentsHomeViewController: View {
                     }
                 }
 
-                if store.isLiveBackendConnected {
+                if store.isLiveBackendConnected && item.indicator != .runningArc {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(UEChromePalette.textMuted.opacity(0.65))
@@ -774,19 +781,7 @@ public struct AgentsHomeViewController: View {
     private func leadingStatusIndicator(_ style: IndicatorStyle) -> some View {
         switch style {
         case .runningArc:
-            ZStack {
-                Circle()
-                    .stroke(Color(red: 0x2A / 255.0, green: 0x31 / 255.0, blue: 0x42 / 255.0), lineWidth: 2)
-                    .frame(width: 15, height: 15)
-                Circle()
-                    .trim(from: 0.0, to: 0.32)
-                    .stroke(
-                        AntigravityTheme.statusRunning,
-                        style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
-                    )
-                    .frame(width: 15, height: 15)
-                    .rotationEffect(.degrees(-85))
-            }
+            AntigravityRunningArcIndicatorView(isAnimated: store.isLiveBackendConnected)
         case .needsReviewHalo:
             ZStack {
                 Circle()

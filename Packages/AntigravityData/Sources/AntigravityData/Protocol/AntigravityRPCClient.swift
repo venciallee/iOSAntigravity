@@ -364,7 +364,15 @@ public actor AntigravityRPCClient {
             guard let obj = item.objectValue else { return nil }
             guard let uri = obj["workspaceUri"]?.stringValue
                 ?? obj["workspaceFolderAbsoluteUri"]?.stringValue else { return nil }
-            let name = obj["displayName"]?.stringValue ?? (uri as NSString).lastPathComponent
+            let fallbackName: String
+            if uri.hasPrefix("cloud://") {
+                fallbackName = uri.replacingOccurrences(of: "cloud://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            } else if uri.hasPrefix("https://github.com/") {
+                fallbackName = uri.replacingOccurrences(of: "https://github.com/", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            } else {
+                fallbackName = (uri.replacingOccurrences(of: "file://", with: "") as NSString).lastPathComponent
+            }
+            let name = obj["displayName"]?.stringValue ?? fallbackName
             let branch = obj["activeBranch"]?.stringValue ?? obj["gitBranch"]?.stringValue ?? "main"
             let files = obj["indexedFiles"]?.arrayValue?.compactMap(\.stringValue) ?? []
             return WorkspaceInfo(
@@ -1173,14 +1181,37 @@ public actor AntigravityRPCClient {
             return nil
         }
         let title = resolvedTitle ?? "New Conversation"
+        let lowerTitle = title.lowercased()
+        if lowerTitle.contains("ios connect-rpc handshake")
+            || lowerTitle.contains("reply in one short sentence confirming ios connect-rpc handshake") {
+            return nil
+        }
 
         let firstWorkspace = obj["workspaces"]?.arrayValue?.first?.objectValue
+        let trajMeta = obj["trajectoryMetadata"]?.objectValue
         let uri = firstWorkspace?["workspaceFolderAbsoluteUri"]?.stringValue
             ?? firstWorkspace?["workspaceUri"]?.stringValue
             ?? obj["workspaceUri"]?.stringValue
             ?? "file:///Users/wl/code/workspace"
-        let cleanPath = uri.replacingOccurrences(of: "file://", with: "")
-        let slug = (cleanPath as NSString).lastPathComponent
+        let explicitSlug = obj["projectSlug"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slug: String
+        if let explicitSlug, !explicitSlug.isEmpty {
+            slug = explicitSlug
+        } else if uri.hasPrefix("cloud://") {
+            let trimmedCloud = uri.replacingOccurrences(of: "cloud://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            slug = trimmedCloud.isEmpty ? "cloud-workspace" : trimmedCloud
+        } else if uri.hasPrefix("https://github.com/") {
+            let trimmedGH = uri.replacingOccurrences(of: "https://github.com/", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            slug = trimmedGH.isEmpty ? "github-workspace" : trimmedGH
+        } else {
+            let cleanPath = uri.replacingOccurrences(of: "file://", with: "")
+            let lastComp = (cleanPath as NSString).lastPathComponent
+            if (!lastComp.isEmpty && lastComp != "workspace") || trajMeta?["projectId"]?.stringValue == nil {
+                slug = lastComp
+            } else {
+                slug = trajMeta?["projectId"]?.stringValue ?? "workspace"
+            }
+        }
         let branch = firstWorkspace?["gitBranch"]?.stringValue
             ?? firstWorkspace?["branchName"]?.stringValue
             ?? obj["branchName"]?.stringValue
