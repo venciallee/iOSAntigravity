@@ -438,23 +438,103 @@ public struct RemoteHostInstance: Codable, Sendable, Equatable, Identifiable {
         self.certificateFingerprintSHA256 = certificateFingerprintSHA256
     }
 
-    /// Parses an official Antigravity Remote Control QR URL (`https://antigravity.google.com/r/<id>?p=c%2F<conv>`).
-    public static func parseRemoteControlQR(urlString: String) -> (instanceId: String, conversationId: String?)? {
-        guard let url = URL(string: urlString),
-              let host = url.host?.lowercased(),
-              host.contains("antigravity.google") else {
+    /// Structured result from parsing an official Antigravity Remote Control QR URL or device identifier.
+    public struct ParsedRemoteControlTarget: Sendable, Equatable {
+        public var instanceId: String
+        public var conversationId: String?
+        public var authUser: String?
+        public var relayOrigin: String
+
+        public init(
+            instanceId: String,
+            conversationId: String? = nil,
+            authUser: String? = nil,
+            relayOrigin: String = "https://antigravity.google.com"
+        ) {
+            self.instanceId = instanceId
+            self.conversationId = conversationId
+            self.authUser = authUser
+            self.relayOrigin = relayOrigin
+        }
+
+        public var canonicalRelayURLString: String {
+            let trimmedOrigin = relayOrigin.hasSuffix("/") ? String(relayOrigin.dropLast()) : relayOrigin
+            if instanceId.isEmpty {
+                return trimmedOrigin
+            }
+            return "\(trimmedOrigin)/r/\(instanceId)"
+        }
+    }
+
+    /// Parses an official Antigravity Remote Control QR URL (`https://antigravity.google.com/r/<id>?p=c%2F<conv>`),
+    /// `/u/<authuser>/r/<id>`, custom test relay `/r/<id>` URLs, or bare device slug/UUIDs.
+    public static func parseRemoteControlTarget(_ rawInput: String) -> ParsedRemoteControlTarget? {
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Bare instance UUID or device slug (e.g. `lt74xt6l0m-golden-star` or `0f5819ac-9308-40d8-a308-98b55122c533-v2`)
+        if !trimmed.contains("://") && !trimmed.contains("/") && !trimmed.contains(":") && !trimmed.contains(" ") {
+            return ParsedRemoteControlTarget(instanceId: trimmed)
+        }
+
+        guard let url = URL(string: trimmed),
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = comps.scheme?.lowercased(),
+              (scheme == "https" || scheme == "http"),
+              let host = comps.host?.lowercased() else {
             return nil
         }
+
         let parts = url.pathComponents.filter { $0 != "/" }
-        guard parts.count >= 2, parts[0] == "r" else { return nil }
-        let instanceId = parts[1]
-        var conversationId: String?
-        if let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+        let isAntigravityGoogleHost = host.contains("antigravity.google")
+        let rIndex = parts.firstIndex(of: "r")
+        guard isAntigravityGoogleHost || rIndex != nil else {
+            return nil
+        }
+
+        var instanceId = ""
+        if let rIndex, parts.count > rIndex + 1 {
+            instanceId = parts[rIndex + 1]
+        }
+
+        var authUser: String? = comps.queryItems?.first(where: { $0.name.lowercased() == "authuser" })?.value
+        if authUser == nil,
+           let uIndex = parts.firstIndex(of: "u"),
+           parts.count > uIndex + 1,
+           parts[uIndex + 1].allSatisfy(\.isNumber) {
+            authUser = parts[uIndex + 1]
+        }
+
+        var conversationId: String? = nil
+        if let queryItems = comps.queryItems,
            let pValue = queryItems.first(where: { $0.name == "p" })?.value?.removingPercentEncoding,
            pValue.hasPrefix("c/") {
             conversationId = String(pValue.dropFirst(2))
         }
-        return (instanceId, conversationId)
+
+        let origin: String
+        if let port = comps.port {
+            origin = "\(scheme)://\(host):\(port)"
+        } else {
+            origin = "\(scheme)://\(host)"
+        }
+
+        return ParsedRemoteControlTarget(
+            instanceId: instanceId,
+            conversationId: conversationId,
+            authUser: authUser,
+            relayOrigin: origin
+        )
+    }
+
+    /// Parses an official Antigravity Remote Control QR URL (`https://antigravity.google.com/r/<id>?p=c%2F<conv>`).
+    public static func parseRemoteControlQR(urlString: String) -> (instanceId: String, conversationId: String?)? {
+        guard let target = parseRemoteControlTarget(urlString),
+              !target.instanceId.isEmpty,
+              urlString.contains("://") else {
+            return nil
+        }
+        return (target.instanceId, target.conversationId)
     }
 }
 

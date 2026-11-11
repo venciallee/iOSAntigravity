@@ -146,6 +146,9 @@ public final class AntigravitySessionStore {
     public var connectionStatusText: String = "Demo Sandbox · Offline ESDD Fixtures"
     public var connectionErrorText: String? = nil
     public var lastPingLatencyMs: Int? = nil
+    public var availableRelayInstances: [RelayInstanceInfo] = []
+    public var activeAuthUser: String = "0"
+    public var lastScannedRelayURL: String = ""
     public var isLoadingSteps: Bool = false
     public var stepLoadErrorText: String? = nil
 
@@ -515,23 +518,49 @@ public final class AntigravitySessionStore {
             return await connectCloudRelay(
                 relayURLString: saved.endpointURLString,
                 sessionCookie: saved.sessionCookie ?? "",
+                authUser: saved.authUser,
+                resolvedInstanceUuid: saved.resolvedInstanceUuid,
                 hostName: saved.hostname,
                 isRestoringSavedSession: true
             )
         }
     }
 
+    /// Reads any previously saved Google Cloud Relay session cookie from Keychain so scanning a new QR code
+    /// connects immediately without asking the user to sign in again.
+    public func loadSavedSessionCookie() async -> (cookie: String, authUser: String?)? {
+        guard let saved = await KeychainStore.shared.loadCredentials(),
+              let cookie = saved.sessionCookie,
+              !cookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return (cookie, saved.authUser)
+    }
+
     /// Parses and connects via QR / Deep Link URI:
-    /// - `antigravity://pair?url=https://192.168.1.20:8787&csrf=<token>&sha256=<fp>&name=MacBook%20Pro`
-    /// - `https://antigravity.google.com/r/<instance-id>`
+    /// - Official Antigravity Desktop QR: `https://antigravity.google.com/r/<instance-id>?p=c%2F<cascadeId>`
+    /// - Optional LAN / Bridge Deep Link: `antigravity://pair?url=https://192.168.1.20:8787&csrf=<token>&sha256=<fp>&name=MacBook%20Pro`
     @discardableResult
     public func connectWithPairingURI(_ rawURI: String, fallbackCookie: String = "") async -> Bool {
         let trimmed = rawURI.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let relay = RemoteHostInstance.parseRemoteControlQR(urlString: trimmed) {
+        if let target = RemoteHostInstance.parseRemoteControlTarget(trimmed),
+           trimmed.contains("://") && (trimmed.lowercased().contains("antigravity.google") || trimmed.contains("/r/")) {
+            lastScannedRelayURL = target.canonicalRelayURLString
+            var effectiveCookie = fallbackCookie.trimmingCharacters(in: .whitespacesAndNewlines)
+            var savedAuthUser = target.authUser
+            if effectiveCookie.isEmpty, let cached = await loadSavedSessionCookie() {
+                effectiveCookie = cached.cookie
+                if savedAuthUser == nil {
+                    savedAuthUser = cached.authUser
+                }
+            }
+            let displayHost = target.instanceId.isEmpty ? "Antigravity Desktop" : target.instanceId
             return await connectCloudRelay(
-                relayURLString: "https://antigravity.google.com/r/\(relay.instanceId)",
-                sessionCookie: fallbackCookie,
-                hostName: "Remote · \(relay.instanceId)"
+                relayURLString: target.canonicalRelayURLString,
+                sessionCookie: effectiveCookie,
+                authUser: savedAuthUser,
+                deepLinkedConversationId: target.conversationId,
+                hostName: displayHost
             )
         }
 
@@ -639,27 +668,48 @@ public final class AntigravitySessionStore {
     }
 
     /// Connects to official Google Cloud Remote Control Relay (`https://antigravity.google.com/r/<instance-id>`)
-    /// after completing Google OAuth login via `ASWebAuthenticationSession`.
+    /// via `devtools_jetski_boq_api_proto.ApiService` (`ListInstances` + `ProxyCommand` + `SAPISIDHASH`).
     @discardableResult
     public func connectCloudRelay(
         relayURLString: String,
         sessionCookie: String,
-        hostName: String = "MacBook Pro · Cloud Relay",
+        authUser: String? = nil,
+        resolvedInstanceUuid: String? = nil,
+        deepLinkedConversationId: String? = nil,
+        hostName: String = "Antigravity Desktop",
         isRestoringSavedSession: Bool = false
     ) async -> Bool {
-        guard let url = URL(string: relayURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
-              url.scheme != nil else {
-            connectionErrorText = "Invalid Cloud Relay URL: \(relayURLString)"
+        let trimmedInput = relayURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsedTarget = RemoteHostInstance.parseRemoteControlTarget(
+            trimmedInput.isEmpty ? SAPISIDHashGenerator.defaultOrigin : trimmedInput
+        )
+        let canonicalURLString = parsedTarget?.canonicalRelayURLString ?? trimmedInput
+        guard let url = URL(string: canonicalURLString), url.scheme != nil else {
+            connectionErrorText = "Invalid Remote Control QR link: \(relayURLString)"
+            return false
+        }
+
+        lastScannedRelayURL = canonicalURLString
+        let trimmedCookie = sessionCookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCookie.isEmpty else {
+            isLiveBackendConnected = false
+            connectionErrorText = "Google Sign-In required: sign in once to pair with \(parsedTarget?.instanceId ?? url.lastPathComponent)."
+            connectionStatusText = "Sign in with Google to pair Remote Control"
             return false
         }
 
         isConnectingToBackend = true
         connectionErrorText = nil
-        connectionStatusText = "Authenticating Google Cloud Relay..."
+        let targetBadge = parsedTarget?.instanceId.isEmpty == false ? parsedTarget!.instanceId : "Cloud Relay"
+        connectionStatusText = "Pairing with \(targetBadge) via Google Cloud Relay..."
         defer { isConnectingToBackend = false }
 
+        let effectiveAuthUser = authUser ?? parsedTarget?.authUser
+        let initialInstanceId = parsedTarget?.instanceId.isEmpty == false ? parsedTarget!.instanceId : "auto"
+        let deepLinkConv = deepLinkedConversationId ?? parsedTarget?.conversationId
+
         let hostInstance = RemoteHostInstance(
-            instanceId: url.lastPathComponent,
+            instanceId: resolvedInstanceUuid ?? initialInstanceId,
             hostname: hostName,
             channel: .cloudRelay,
             endpointURL: url,
@@ -667,27 +717,103 @@ public final class AntigravitySessionStore {
         )
         let candidateClient = AntigravityRPCClient(
             host: hostInstance,
-            sessionCookie: sessionCookie
+            sessionCookie: trimmedCookie,
+            authUser: effectiveAuthUser,
+            resolvedInstanceUuid: resolvedInstanceUuid
         )
 
         do {
             let handshake = try await candidateClient.verifyConnection()
+            let finalHostName = handshake.resolvedHostname ?? hostName
+            let finalUuid = handshake.resolvedInstanceUuid ?? hostInstance.instanceId
+            let finalAuthUser = handshake.resolvedAuthUser ?? effectiveAuthUser ?? "0"
+            let originPrefix = parsedTarget?.relayOrigin ?? SAPISIDHashGenerator.defaultOrigin
+            let finalRelayURL = URL(string: "\(originPrefix)/r/\(finalUuid)") ?? url
+
+            let verifiedHost = RemoteHostInstance(
+                instanceId: finalUuid,
+                hostname: finalHostName,
+                version: handshake.serverVersion,
+                channel: .cloudRelay,
+                endpointURL: finalRelayURL,
+                isOnline: true,
+                latencyMs: handshake.latencyMs
+            )
+
+            availableRelayInstances = handshake.availableRelayInstances
+            activeAuthUser = finalAuthUser
             applyVerifiedLiveConnection(
-                host: hostInstance,
+                host: verifiedHost,
                 client: candidateClient,
                 handshake: handshake
             )
+
+            // Register all reachable Cloud Relay instances in `hosts` so the user can switch Macs from Home
+            for inst in handshake.availableRelayInstances where inst.uuid != finalUuid {
+                let instURL = URL(string: "\(originPrefix)/r/\(inst.uuid)") ?? finalRelayURL
+                let peerHost = RemoteHostInstance(
+                    instanceId: inst.uuid,
+                    hostname: inst.name,
+                    version: inst.version,
+                    channel: .cloudRelay,
+                    endpointURL: instURL,
+                    isOnline: inst.status.isReachable,
+                    latencyMs: handshake.latencyMs
+                )
+                if let existingIdx = hosts.firstIndex(where: { $0.instanceId == peerHost.instanceId }) {
+                    hosts[existingIdx] = peerHost
+                } else {
+                    hosts.append(peerHost)
+                }
+            }
+
             await KeychainStore.shared.saveCredentials(
                 SavedBackendCredentials(
-                    endpointURLString: url.absoluteString,
+                    endpointURLString: finalRelayURL.absoluteString,
                     channel: .cloudRelay,
-                    hostname: hostName,
-                    sessionCookie: sessionCookie
+                    hostname: finalHostName,
+                    sessionCookie: trimmedCookie,
+                    authUser: finalAuthUser,
+                    resolvedInstanceUuid: finalUuid
                 )
             )
+
+            if let deepLinkConv, !deepLinkConv.isEmpty {
+                selectCascade(deepLinkConv)
+            }
             return true
+        } catch let AntigravityRPCError.unauthorized(reason) {
+            let errMsg = "Google session unauthorized: please sign in again. (\(reason))"
+            if isRestoringSavedSession {
+                await applyOfflinePairedSession(
+                    host: hostInstance,
+                    client: candidateClient,
+                    errorText: errMsg,
+                    statusText: "Google Sign-In Expired"
+                )
+            } else {
+                isLiveBackendConnected = false
+                connectionErrorText = errMsg
+                connectionStatusText = "Google Sign-In Expired"
+            }
+            return false
+        } catch let AntigravityRPCError.httpError(code, body) {
+            let errMsg = "Cloud Relay error (\(code)): \(body)"
+            if (isRestoringSavedSession || hasPairedBackend) && (code == 502 || code == 503 || code == 504) {
+                await applyOfflinePairedSession(
+                    host: hostInstance,
+                    client: candidateClient,
+                    errorText: errMsg,
+                    statusText: "Offline · \(hostName)"
+                )
+            } else {
+                isLiveBackendConnected = false
+                connectionErrorText = errMsg
+                connectionStatusText = "Cloud Relay Handshake Failed"
+            }
+            return false
         } catch {
-            let errMsg = "Relay handshake failed: \(error.localizedDescription)"
+            let errMsg = "Cloud Relay handshake failed: \(error.localizedDescription)"
             if isRestoringSavedSession || hasPairedBackend {
                 await applyOfflinePairedSession(
                     host: hostInstance,
@@ -712,6 +838,7 @@ public final class AntigravitySessionStore {
         isLiveBackendConnected = false
         rpcClient = nil
         lastPingLatencyMs = nil
+        availableRelayInstances = []
         connectionErrorText = nil
         connectionStatusText = "Disconnected · Demo Sandbox Mode"
         await KeychainStore.shared.clearCredentials()
@@ -1290,6 +1417,20 @@ public final class AntigravitySessionStore {
 
     public func selectHost(_ host: RemoteHostInstance) {
         activeHost = host
+        if (hasPairedBackend || isLiveBackendConnected), host.channel == .cloudRelay {
+            let authIdx = activeAuthUser
+            Task { [weak self] in
+                guard let self, let cached = await self.loadSavedSessionCookie() else { return }
+                _ = await self.connectCloudRelay(
+                    relayURLString: host.endpointURL.absoluteString,
+                    sessionCookie: cached.cookie,
+                    authUser: cached.authUser ?? authIdx,
+                    resolvedInstanceUuid: host.instanceId,
+                    hostName: host.hostname
+                )
+            }
+            return
+        }
         rpcClient = AntigravityRPCClient(
             host: host,
             csrfToken: "csrf-antigravity-ios-session-token"

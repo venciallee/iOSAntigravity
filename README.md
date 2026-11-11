@@ -18,27 +18,22 @@
 
 ---
 
-## 2. Connecting to Live Backend (Login, Session Creation & Messaging)
+## 2. Connecting to Live Backend (Official Remote Control QR & Connect-RPC)
 
-### Step 1 — Start the Mac Companion Bridge (on macOS with Antigravity Desktop open)
+### Option A (Recommended) — Scan Official Antigravity Remote Control QR (Zero Bridge / Any Network)
 
-```bash
-python3 scripts/mac-companion-bridge.py
-```
+No companion script, LAN IP, or Tailscale setup is required — works seamlessly over both Wi-Fi and 5G cellular:
 
-- Automatically scans `ps aux` + `lsof` on macOS to locate the running `language_server` process, its loopback HTTPS/HTTP port, and `--csrf_token`.
-- Exposes a LAN / Tailscale Connect-RPC endpoint (`http://<Mac-LAN-IP>:8787`) protected by `x-codeium-csrf-token` and prints an **`antigravity://pair?url=...&csrf=...`** deep link.
-- Proxies core `LanguageServerService` RPCs (`GetWorkspaceInfos`, `GetAllCascadeTrajectories`, `StartCascade`, `SendUserCascadeMessage`, `GetCascadeTrajectorySteps`, `HandleCascadeUserInteraction`, `CancelCascadeInvocation`, `JetboxSubscribeToSummaries`) to the live `language_server`, while handling local `Automations` and `OpenWorkspaceInFinder` on the Mac.
+1. On your Mac or PC, open **Antigravity Desktop** and click **Remote Control** to display the official QR code (`https://antigravity.google.com/r/<instance-id>`).
+2. On your iPhone, open the **`Settings`** tab ([`RemotePairingViewController.swift`](iOS/ViewControllers/Pairing/RemotePairingViewController.swift)) and tap **Scan Remote Control QR Code** ([`RemoteControlQRScannerSheet.swift`](iOS/ViewControllers/Pairing/RemoteControlQRScannerSheet.swift)) — or pick a QR screenshot / paste the `/r/<id>` link.
+3. Sign in once with your Google account in [`CloudRelaySignInSheet.swift`](iOS/ViewControllers/Pairing/CloudRelaySignInSheet.swift). `iOSAntigravity` securely stores the session in iOS Keychain ([`KeychainStore.swift`](Packages/AntigravityData/Sources/AntigravityData/Store/KeychainStore.swift)), computes `SAPISIDHASH` ([`CloudRelayProtocol.swift`](Packages/AntigravityData/Sources/AntigravityData/Protocol/CloudRelayProtocol.swift)), resolves your online Desktop UUID via `ApiService/ListInstances` (auto-probing multi-account `X-Goog-AuthUser`), and tunnels all unary & streaming `LanguageServerService` RPCs through `ApiService/ProxyCommand` & `StreamProxyCommand`.
 
-### Step 2 — Pair & Sign In on iOS (`RemotePairingViewController`)
+### Option B (Optional Local Fallback) — Direct LAN / Tailscale via Mac Companion Bridge
 
-1. **Direct LAN / Tailscale (`x-codeium-csrf-token` + TLS Pinning/TOFU)**:
-   - Open the **`Settings`** tab ([`RemotePairingViewController.swift`](iOS/ViewControllers/Pairing/RemotePairingViewController.swift)), enter `http://<Mac-LAN-IP>:8787` + CSRF token (or scan `antigravity://pair?...`), and tap **Connect via Direct LAN / Tailscale**.
-   - Credentials are encrypted in iOS Keychain ([`KeychainStore.swift`](Packages/AntigravityData/Sources/AntigravityData/Store/KeychainStore.swift)) and restored automatically on app launch.
-2. **Google Cloud Relay OAuth (`ASWebAuthenticationSession`)**:
-   - Tap **Sign in via Google Cloud Relay** to authenticate against `https://antigravity.google.com/r/<instance-id>` and persist the session cookie in Keychain.
-3. **Zero-Config Xcode Simulator Environment Variables**:
-   - Set `ANTIGRAVITY_BACKEND_URL=http://127.0.0.1:8787` and `ANTIGRAVITY_CSRF_TOKEN=<token>` in your Xcode Scheme ([`AntigravityApp.swift`](iOS/Application/AntigravityApp.swift)).
+If you prefer offline local-only LAN / Tailscale routing without Google Cloud Relay:
+
+1. Run `python3 scripts/mac-companion-bridge.py` on macOS to auto-discover the local `language_server` port & `--csrf_token` and expose `http://<Mac-LAN-IP>:8787`.
+2. In **`Settings`** → **Direct LAN / Bridge**, enter `http://<Mac-LAN-IP>:8787` + `x-codeium-csrf-token` (or set `ANTIGRAVITY_BACKEND_URL` / `ANTIGRAVITY_CSRF_TOKEN` in Xcode Simulator).
 
 ### Step 3 — Create Sessions & Send Streaming Messages
 

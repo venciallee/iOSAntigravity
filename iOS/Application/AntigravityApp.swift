@@ -24,7 +24,16 @@ public struct AntigravityApp: App {
                 .task {
                     guard activeVerifyCase == nil else { return }
                     let env = ProcessInfo.processInfo.environment
-                    if let backendURL = env["ANTIGRAVITY_BACKEND_URL"], !backendURL.isEmpty {
+                    if let relayURL = env["ANTIGRAVITY_RELAY_URL"], !relayURL.isEmpty {
+                        let cookie = env["ANTIGRAVITY_RELAY_COOKIE"] ?? ""
+                        let authUser = env["ANTIGRAVITY_AUTHUSER"]
+                        _ = await store.connectCloudRelay(
+                            relayURLString: relayURL,
+                            sessionCookie: cookie,
+                            authUser: authUser,
+                            hostName: env["ANTIGRAVITY_HOST_NAME"] ?? "Antigravity Desktop"
+                        )
+                    } else if let backendURL = env["ANTIGRAVITY_BACKEND_URL"], !backendURL.isEmpty {
                         let csrf = env["ANTIGRAVITY_CSRF_TOKEN"] ?? ""
                         let sha256 = env["ANTIGRAVITY_CERT_SHA256"]
                         _ = await store.connectDirectLAN(
@@ -49,12 +58,21 @@ public struct AntigravityApp: App {
                         activeVerifyCase = sceneCase
                         return
                     }
-                    if url.scheme?.lowercased() == "antigravity" && url.host?.lowercased() == "pair" {
+                    let rawURL = url.absoluteString
+                    if (url.scheme?.lowercased() == "antigravity" && url.host?.lowercased() == "pair")
+                        || RemoteHostInstance.parseRemoteControlQR(urlString: rawURL) != nil {
                         activeVerifyCase = nil
                         Task {
-                            let ok = await store.connectWithPairingURI(url.absoluteString)
+                            let webCookie = await CloudRelayCookieExtractor.readGoogleCookieHeader() ?? ""
+                            let ok = await store.connectWithPairingURI(rawURL, fallbackCookie: webCookie)
                             if ok {
-                                store.activeRoute = .tabRoot
+                                if case .cascadeChat = store.activeRoute {
+                                    // Keep deep-linked conversation open (`?p=c%2F<cascadeId>`)
+                                } else {
+                                    store.activeRoute = .tabRoot
+                                }
+                            } else {
+                                store.activeRoute = .pairingSettings
                             }
                         }
                     }

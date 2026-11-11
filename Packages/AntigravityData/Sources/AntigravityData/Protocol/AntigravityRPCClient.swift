@@ -20,17 +20,29 @@ public struct BackendHandshakeResult: Sendable, Equatable {
     public let workspaces: [WorkspaceInfo]
     public let summaries: [CascadeSummary]
     public let serverVersion: String
+    public let resolvedHostname: String?
+    public let resolvedInstanceUuid: String?
+    public let resolvedAuthUser: String?
+    public let availableRelayInstances: [RelayInstanceInfo]
 
     public init(
         latencyMs: Int,
         workspaces: [WorkspaceInfo],
         summaries: [CascadeSummary],
-        serverVersion: String = "v2.32.0"
+        serverVersion: String = "v2.32.0",
+        resolvedHostname: String? = nil,
+        resolvedInstanceUuid: String? = nil,
+        resolvedAuthUser: String? = nil,
+        availableRelayInstances: [RelayInstanceInfo] = []
     ) {
         self.latencyMs = latencyMs
         self.workspaces = workspaces
         self.summaries = summaries
         self.serverVersion = serverVersion
+        self.resolvedHostname = resolvedHostname
+        self.resolvedInstanceUuid = resolvedInstanceUuid
+        self.resolvedAuthUser = resolvedAuthUser
+        self.availableRelayInstances = availableRelayInstances
     }
 }
 
@@ -98,28 +110,62 @@ public final class PinnedTLSURLSessionDelegate: NSObject, URLSessionDelegate, @u
     }
 }
 
-/// Pure Swift 6 Connect-RPC & `/connect-websocket` client for `exa.language_server_pb.LanguageServerService`.
+/// Pure Swift 6 Connect-RPC & Google Cloud Relay client for `exa.language_server_pb.LanguageServerService`.
 ///
 /// Connects either to:
-/// 1. Official Antigravity Remote Control Relay (`https://antigravity.google.com/r/<instance-id>`)
+/// 1. Official Antigravity Remote Control Relay (`https://antigravity.google.com/r/<instance-id>` via `devtools_jetski_boq_api_proto.ApiService`)
 /// 2. Direct LAN / Tailscale `language_server` or Mac Companion Bridge (`https://<host>:<port>`) with `x-codeium-csrf-token`
 public actor AntigravityRPCClient {
     public static let servicePrefix = "/exa.language_server_pb.LanguageServerService"
     public static let protobufStepThreshold = 600
 
+    private let channel: RemoteConnectionChannel
     private let endpointURL: URL
+    private let relayOriginURL: URL
     private let csrfToken: String?
     private let sessionCookie: String?
+    private let explicitAuthUser: String?
+    private var authUser: String
+    private var targetInstanceIdentifier: String
+    private var resolvedInstanceUuid: String?
+    private var cachedValidUpstreamModels: Set<String>?
+    private var cachedDefaultUpstreamModel: String?
     private let urlSession: URLSession
+
+    private static let companionOnlyMethods: Set<String> = [
+        "ListAutomations",
+        "CreateAutomation",
+        "TriggerAutomationNow",
+        "SetAutomationPaused",
+        "OpenWorkspaceInFinder",
+        "CreateProjectWorkspace",
+        "GetTurnDiff",
+        "GetArtifactSnapshots",
+        "SendPlanReviewComments",
+        "RevertDiffHunk",
+        "SendDiffReviewComments"
+    ]
 
     public init(
         host: RemoteHostInstance,
         csrfToken: String? = nil,
         sessionCookie: String? = nil,
+        authUser: String? = nil,
+        resolvedInstanceUuid: String? = nil,
         pinnedFingerprintSHA256: String? = nil,
         urlSession: URLSession? = nil
     ) {
+        self.channel = host.channel
         self.endpointURL = host.endpointURL
+        let parsedTarget = RemoteHostInstance.parseRemoteControlTarget(host.endpointURL.absoluteString)
+        self.relayOriginURL = URL(string: parsedTarget?.relayOrigin ?? SAPISIDHashGenerator.defaultOrigin)
+            ?? host.endpointURL
+        let extractedId = parsedTarget?.instanceId.isEmpty == false ? parsedTarget!.instanceId : host.instanceId
+        self.targetInstanceIdentifier = extractedId
+        self.resolvedInstanceUuid = resolvedInstanceUuid
+        let effectiveAuthUser = authUser ?? parsedTarget?.authUser
+        self.explicitAuthUser = effectiveAuthUser
+        self.authUser = effectiveAuthUser ?? "0"
         self.csrfToken = csrfToken
         self.sessionCookie = sessionCookie
         if let urlSession {
@@ -137,10 +183,21 @@ public actor AntigravityRPCClient {
         baseURL: URL,
         csrfToken: String? = nil,
         sessionCookie: String? = nil,
+        authUser: String? = nil,
+        resolvedInstanceUuid: String? = nil,
         pinnedFingerprintSHA256: String? = nil,
         urlSession: URLSession? = nil
     ) {
+        let parsedTarget = RemoteHostInstance.parseRemoteControlTarget(baseURL.absoluteString)
+        let isRelay = parsedTarget != nil && (csrfToken == nil || csrfToken?.isEmpty == true) && (sessionCookie?.isEmpty == false)
+        self.channel = isRelay ? .cloudRelay : .directHost
         self.endpointURL = baseURL
+        self.relayOriginURL = URL(string: parsedTarget?.relayOrigin ?? SAPISIDHashGenerator.defaultOrigin) ?? baseURL
+        self.targetInstanceIdentifier = parsedTarget?.instanceId ?? ""
+        self.resolvedInstanceUuid = resolvedInstanceUuid
+        let effectiveAuthUser = authUser ?? parsedTarget?.authUser
+        self.explicitAuthUser = effectiveAuthUser
+        self.authUser = effectiveAuthUser ?? "0"
         self.csrfToken = csrfToken
         self.sessionCookie = sessionCookie
         if let urlSession {
@@ -183,20 +240,172 @@ public actor AntigravityRPCClient {
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
+    // MARK: - Cloud Relay `ApiService/ListInstances` & Instance Resolution
+
+    /// Queries `POST /$rpc/devtools_jetski_boq_api_proto.ApiService/ListInstances` for a given `X-Goog-AuthUser`.
+    public func listRelayInstances(
+        authUserOverride: String? = nil,
+        timeoutInterval: TimeInterval? = nil
+    ) async throws -> [RelayInstanceInfo] {
+        let activeAuthUser = authUserOverride ?? authUser
+        let urlString = "\(SAPISIDHashGenerator.normalizeOrigin(relayOriginURL.absoluteString))\(SAPISIDHashGenerator.apiServicePrefix)/ListInstances"
+        guard let url = URL(string: urlString) else {
+            throw AntigravityRPCError.invalidEndpoint
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
+        SAPISIDHashGenerator.applyApiServiceHeaders(
+            to: &request,
+            cookieHeader: sessionCookie ?? "",
+            origin: relayOriginURL.absoluteString,
+            authUser: activeAuthUser
+        )
+        request.httpBody = CloudRelayJSPBCodec.encodeListInstancesRequest()
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw AntigravityRPCError.invalidEndpoint
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            let text = String(data: data, encoding: .utf8) ?? "Google session expired or unauthorized"
+            throw AntigravityRPCError.unauthorized(text)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw AntigravityRPCError.httpError(statusCode: http.statusCode, body: text)
+        }
+        return try CloudRelayJSPBCodec.decodeListInstancesResponse(
+            data,
+            responseHeaders: http.allHeaderFields
+        )
+    }
+
+    /// Resolves a scanned Remote Control device slug (`lt74xt6l0m-golden-star`) or UUID (`0f5819ac-...-v2`)
+    /// to an online `RelayInstanceInfo`, automatically probing `X-Goog-AuthUser` `0..4` for multi-account sessions.
+    public func resolveCloudRelayInstance(
+        preferredIdentifier: String? = nil,
+        timeoutInterval: TimeInterval? = nil
+    ) async throws -> (selected: RelayInstanceInfo, allInstances: [RelayInstanceInfo], matchedAuthUser: String) {
+        let rawTarget = (preferredIdentifier ?? targetInstanceIdentifier).trimmingCharacters(in: .whitespacesAndNewlines)
+        let isWildcardTarget = rawTarget.isEmpty
+            || rawTarget == "r"
+            || rawTarget == "auto"
+            || rawTarget == "macbook-pro-local"
+
+        var candidateAuthUsers: [String] = []
+        if let explicitAuthUser, !explicitAuthUser.isEmpty {
+            candidateAuthUsers.append(explicitAuthUser)
+        }
+        for fallbackIdx in ["0", "1", "2", "3", "4"] where !candidateAuthUsers.contains(fallbackIdx) {
+            candidateAuthUsers.append(fallbackIdx)
+        }
+
+        var firstNonEmptyResult: (instances: [RelayInstanceInfo], authUser: String)? = nil
+        var lastError: Error? = nil
+
+        for candidateUser in candidateAuthUsers {
+            do {
+                let instances = try await listRelayInstances(
+                    authUserOverride: candidateUser,
+                    timeoutInterval: timeoutInterval
+                )
+                if instances.isEmpty {
+                    continue
+                }
+                if firstNonEmptyResult == nil {
+                    firstNonEmptyResult = (instances, candidateUser)
+                }
+
+                if !isWildcardTarget {
+                    if let exactOnline = instances.first(where: { $0.matches(identifier: rawTarget) && $0.status.isReachable })
+                        ?? instances.first(where: { $0.matches(identifier: rawTarget) }) {
+                        self.authUser = candidateUser
+                        self.resolvedInstanceUuid = exactOnline.uuid
+                        return (exactOnline, instances, candidateUser)
+                    }
+                } else if let online = instances.first(where: { $0.status.isReachable }) ?? instances.first {
+                    self.authUser = candidateUser
+                    self.resolvedInstanceUuid = online.uuid
+                    return (online, instances, candidateUser)
+                }
+            } catch {
+                lastError = error
+                if explicitAuthUser != nil && candidateUser == explicitAuthUser {
+                    continue
+                }
+            }
+        }
+
+        if let fallback = firstNonEmptyResult, isWildcardTarget,
+           let chosen = fallback.instances.first(where: { $0.status.isReachable }) ?? fallback.instances.first {
+            self.authUser = fallback.authUser
+            self.resolvedInstanceUuid = chosen.uuid
+            return (chosen, fallback.instances, fallback.authUser)
+        }
+
+        if !isWildcardTarget && (rawTarget.hasSuffix("-v2") || rawTarget.count >= 32) {
+            let directInfo = RelayInstanceInfo(
+                uuid: rawTarget,
+                name: rawTarget,
+                status: .connected
+            )
+            self.resolvedInstanceUuid = rawTarget
+            return (directInfo, firstNonEmptyResult?.instances ?? [directInfo], authUser)
+        }
+
+        if let firstNonEmptyResult {
+            let names = firstNonEmptyResult.instances.map { "\($0.name) (\($0.status.badgeText))" }.joined(separator: ", ")
+            throw AntigravityRPCError.httpError(
+                statusCode: 404,
+                body: "Host '\(rawTarget)' not found among your Google account's instances: [\(names)]"
+            )
+        }
+        if let lastError {
+            throw lastError
+        }
+        throw AntigravityRPCError.unauthorized(
+            "No online Antigravity Desktop instances found for this Google account. Ensure Remote Control is enabled on your Mac/PC."
+        )
+    }
+
     // MARK: - Handshake & Login Verification
 
-    /// Verifies authentication (`x-codeium-csrf-token` or Google session cookie) and hydrates initial state.
+    /// Verifies authentication (`SAPISIDHASH` + `ApiService/ListInstances` + `ProxyCommand`, or `x-codeium-csrf-token`)
+    /// and hydrates initial workspaces & trajectories.
     public func verifyConnection(timeoutInterval: TimeInterval = 4.0) async throws -> BackendHandshakeResult {
         let start = Date()
-        async let workspacesTask = getWorkspaceInfosOptional(timeoutInterval: timeoutInterval)
-        async let summariesTask = getAllCascadeTrajectories(timeoutInterval: timeoutInterval)
+        let effectiveTimeout = (channel == .cloudRelay) ? max(timeoutInterval, 15.0) : timeoutInterval
+        var resolvedName: String? = nil
+        var serverVersion = "v2.32.0"
+        var allRelayInstances: [RelayInstanceInfo] = []
+
+        if channel == .cloudRelay {
+            let resolution = try await resolveCloudRelayInstance(
+                preferredIdentifier: targetInstanceIdentifier,
+                timeoutInterval: effectiveTimeout
+            )
+            resolvedName = resolution.selected.name
+            serverVersion = resolution.selected.version
+            allRelayInstances = resolution.allInstances
+        }
+
+        async let workspacesTask = getWorkspaceInfosOptional(timeoutInterval: effectiveTimeout)
+        async let summariesTask = getAllCascadeTrajectories(timeoutInterval: effectiveTimeout)
         let workspaces = try await workspacesTask
         let summaries = try await summariesTask
         let elapsedMs = max(1, Int(Date().timeIntervalSince(start) * 1000.0))
         return BackendHandshakeResult(
             latencyMs: elapsedMs,
             workspaces: workspaces,
-            summaries: summaries
+            summaries: summaries,
+            serverVersion: serverVersion,
+            resolvedHostname: resolvedName,
+            resolvedInstanceUuid: resolvedInstanceUuid,
+            resolvedAuthUser: channel == .cloudRelay ? authUser : nil,
+            availableRelayInstances: allRelayInstances
         )
     }
 
@@ -205,6 +414,11 @@ public actor AntigravityRPCClient {
             return try await getWorkspaceInfos(timeoutInterval: timeoutInterval)
         } catch let AntigravityRPCError.httpError(statusCode, _) where statusCode == 404 {
             return []
+        } catch {
+            if channel == .cloudRelay {
+                return []
+            }
+            throw error
         }
     }
 
@@ -215,6 +429,15 @@ public actor AntigravityRPCClient {
         body: [String: JSONValue] = [:],
         timeoutInterval: TimeInterval? = nil
     ) async throws -> [String: JSONValue] {
+        if channel == .cloudRelay {
+            let relayTimeout = timeoutInterval.map { max($0, 10.0) }
+            return try await callCloudRelayUnaryJSON(
+                method: method,
+                body: body,
+                timeoutInterval: relayTimeout
+            )
+        }
+
         let url = endpointURL.appendingPathComponent("\(Self.servicePrefix)/\(method)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -245,6 +468,255 @@ public actor AntigravityRPCClient {
             throw AntigravityRPCError.decodingError("Expected JSON object from \(method)")
         }
         return decoded
+    }
+
+    private func callCloudRelayUnaryJSON(
+        method: String,
+        body: [String: JSONValue],
+        timeoutInterval: TimeInterval? = nil
+    ) async throws -> [String: JSONValue] {
+        if Self.companionOnlyMethods.contains(method) {
+            if method == "ListAutomations" {
+                return ["automations": .array([])]
+            }
+            if method == "GetArtifactSnapshots" {
+                return ["artifacts": .array([])]
+            }
+            if method == "GetTurnDiff" {
+                return ["files": .array([])]
+            }
+            return ["ok": .bool(true)]
+        }
+
+        var workingBody = try await sanitizeCloudRelayPayload(method: method, body: body)
+        for attempt in 1...3 {
+            let encodedPayload = workingBody.isEmpty ? Data("{}".utf8) : try JSONEncoder().encode(workingBody)
+            let (respData, _) = try await callCloudRelayProxyCommand(
+                method: method,
+                payload: encodedPayload,
+                contentType: "application/json",
+                timeoutInterval: timeoutInterval
+            )
+            if respData.isEmpty {
+                return [:]
+            }
+            if let decoded = try? JSONDecoder().decode([String: JSONValue].self, from: respData) {
+                if let code = decoded["code"]?.stringValue,
+                   let message = decoded["message"]?.stringValue,
+                   decoded.count <= 3 {
+                    if attempt < 3, let unknownField = Self.extractUnknownProtoFieldName(from: message),
+                       workingBody[unknownField] != nil {
+                        workingBody.removeValue(forKey: unknownField)
+                        continue
+                    }
+                    throw AntigravityRPCError.httpError(statusCode: 400, body: "\(code): \(message)")
+                }
+                return decoded
+            }
+            let rawText = String(data: respData, encoding: .utf8) ?? ""
+            if attempt < 3, let unknownField = Self.extractUnknownProtoFieldName(from: rawText),
+               workingBody[unknownField] != nil {
+                workingBody.removeValue(forKey: unknownField)
+                continue
+            }
+            throw AntigravityRPCError.decodingError("Expected JSON object from Cloud Relay \(method)")
+        }
+        return [:]
+    }
+
+    private func callCloudRelayProxyCommand(
+        method: String,
+        payload: Data,
+        contentType: String,
+        timeoutInterval: TimeInterval? = nil
+    ) async throws -> (payload: Data, headers: [String: String]) {
+        if resolvedInstanceUuid == nil {
+            _ = try await resolveCloudRelayInstance(
+                preferredIdentifier: targetInstanceIdentifier,
+                timeoutInterval: timeoutInterval
+            )
+        }
+        guard let targetUuid = resolvedInstanceUuid, !targetUuid.isEmpty else {
+            throw AntigravityRPCError.invalidEndpoint
+        }
+
+        let originStr = SAPISIDHashGenerator.normalizeOrigin(relayOriginURL.absoluteString)
+        guard var comps = URLComponents(string: "\(originStr)\(SAPISIDHashGenerator.apiServicePrefix)/ProxyCommand") else {
+            throw AntigravityRPCError.invalidEndpoint
+        }
+        comps.queryItems = [URLQueryItem(name: "$unique", value: method)]
+        guard let url = comps.url else {
+            throw AntigravityRPCError.invalidEndpoint
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
+        SAPISIDHashGenerator.applyApiServiceHeaders(
+            to: &request,
+            cookieHeader: sessionCookie ?? "",
+            origin: originStr,
+            authUser: authUser,
+            isStreaming: false
+        )
+        request.httpBody = try CloudRelayJSPBCodec.encodeProxyCommandRequest(
+            targetInstanceUuid: targetUuid,
+            rpcPath: "\(Self.servicePrefix)/\(method)",
+            payload: payload,
+            contentType: contentType,
+            isStreaming: false
+        )
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw AntigravityRPCError.invalidEndpoint
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            let text = String(data: data, encoding: .utf8) ?? "Unauthorized"
+            throw AntigravityRPCError.unauthorized(text)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw AntigravityRPCError.httpError(statusCode: http.statusCode, body: text)
+        }
+        return try CloudRelayJSPBCodec.decodeProxyCommandResponse(
+            data,
+            responseHeaders: http.allHeaderFields
+        )
+    }
+
+    private func sanitizeCloudRelayPayload(
+        method: String,
+        body: [String: JSONValue]
+    ) async throws -> [String: JSONValue] {
+        let desktopMetadata: JSONValue = .object([
+            "ideName": .string("antigravity"),
+            "extensionName": .string("antigravity"),
+            "locale": .string("en")
+        ])
+
+        switch method {
+        case "StartCascade":
+            var clean: [String: JSONValue] = [
+                "metadata": desktopMetadata,
+                "source": .string("CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT")
+            ]
+            if let uris = body["workspaceUris"], uris.arrayValue?.isEmpty == false {
+                clean["workspaceUris"] = uris
+            }
+            return clean
+
+        case "SendUserCascadeMessage":
+            var cleanItems: [JSONValue] = []
+            if let rawItems = body["items"]?.arrayValue {
+                for entry in rawItems {
+                    guard let obj = entry.objectValue else { continue }
+                    if let text = obj["text"]?.stringValue {
+                        cleanItems.append(.object(["text": .string(text)]))
+                    } else if let absUri = obj["item"]?.objectValue?["file"]?.objectValue?["absoluteUri"]?.stringValue,
+                              absUri.hasPrefix("file://") {
+                        cleanItems.append(
+                            .object([
+                                "item": .object([
+                                    "file": .object(["absoluteUri": .string(absUri)])
+                                ])
+                            ])
+                        )
+                    }
+                }
+            }
+            if cleanItems.isEmpty, let fallbackText = body["userResponse"]?.stringValue, !fallbackText.isEmpty {
+                cleanItems.append(.object(["text": .string(fallbackText)]))
+            }
+
+            var clean: [String: JSONValue] = [
+                "cascadeId": body["cascadeId"] ?? .string(""),
+                "items": .array(cleanItems),
+                "metadata": desktopMetadata
+            ]
+
+            if var cascadeCfg = body["cascadeConfig"]?.objectValue,
+               var plannerCfg = cascadeCfg["plannerConfig"]?.objectValue {
+                let requestedModel = plannerCfg["requestedModel"]?.objectValue?["model"]?.stringValue ?? ""
+                let (defaultModel, validModels) = await ensureUpstreamModelCatalog()
+                if !validModels.isEmpty && !validModels.contains(requestedModel) {
+                    if let defaultModel, !defaultModel.isEmpty {
+                        plannerCfg["requestedModel"] = .object(["model": .string(defaultModel)])
+                    } else {
+                        plannerCfg.removeValue(forKey: "requestedModel")
+                    }
+                } else if validModels.isEmpty && (!requestedModel.hasPrefix("MODEL_") || requestedModel.contains(" ")) {
+                    if let defaultModel, !defaultModel.isEmpty {
+                        plannerCfg["requestedModel"] = .object(["model": .string(defaultModel)])
+                    } else {
+                        plannerCfg.removeValue(forKey: "requestedModel")
+                    }
+                }
+                cascadeCfg["plannerConfig"] = .object(plannerCfg)
+                clean["cascadeConfig"] = .object(cascadeCfg)
+            }
+            return clean
+
+        case "HandleCascadeUserInteraction":
+            guard var interaction = body["interaction"]?.objectValue else {
+                return body
+            }
+            if var rc = interaction["runCommand"]?.objectValue {
+                if rc["confirm"]?.boolValue == true && rc["faceIdVerified"]?.boolValue == false {
+                    throw AntigravityRPCError.unauthorized("Face ID verification required before approving command")
+                }
+                rc.removeValue(forKey: "faceIdVerified")
+                interaction["runCommand"] = .object(rc)
+            }
+            return ["interaction": .object(interaction)]
+
+        default:
+            return body
+        }
+    }
+
+    private func ensureUpstreamModelCatalog() async -> (defaultModel: String?, validModels: Set<String>) {
+        if let cachedValidUpstreamModels {
+            return (cachedDefaultUpstreamModel, cachedValidUpstreamModels)
+        }
+        let metaReq: [String: JSONValue] = [
+            "metadata": .object([
+                "ideName": .string("antigravity"),
+                "extensionName": .string("antigravity"),
+                "locale": .string("en")
+            ])
+        ]
+        if let payload = try? JSONEncoder().encode(metaReq),
+           let (respData, _) = try? await callCloudRelayProxyCommand(
+               method: "GetCascadeModelConfigData",
+               payload: payload,
+               contentType: "application/json"
+           ),
+           let obj = try? JSONDecoder().decode([String: JSONValue].self, from: respData) {
+            var models = Set<String>()
+            for cfg in obj["clientModelConfigs"]?.arrayValue ?? [] {
+                if let m = cfg.objectValue?["modelOrAlias"]?.objectValue?["model"]?.stringValue, !m.isEmpty {
+                    models.insert(m)
+                }
+            }
+            let defaultModel = obj["defaultOverrideModelConfig"]?.objectValue?["modelOrAlias"]?.objectValue?["model"]?.stringValue
+                ?? models.first
+            self.cachedValidUpstreamModels = models
+            self.cachedDefaultUpstreamModel = defaultModel
+            return (defaultModel, models)
+        }
+        self.cachedValidUpstreamModels = []
+        self.cachedDefaultUpstreamModel = nil
+        return (nil, [])
+    }
+
+    private static func extractUnknownProtoFieldName(from message: String) -> String? {
+        guard let markerRange = message.range(of: "unknown field \"") else { return nil }
+        let rest = message[markerRange.upperBound...]
+        guard let endQuote = rest.firstIndex(of: "\"") else { return nil }
+        return String(rest[..<endQuote])
     }
 
     /// Fetches trajectory steps, automatically switching from JSON (`0..<600`) to Binary Protobuf (`>=600`).
@@ -346,6 +818,20 @@ public actor AntigravityRPCClient {
         startIndex: Int,
         endIndex: Int
     ) async throws -> [CascadeStep] {
+        let protoReqBytes = ProtobufStepCodec.encodeGetStepsRequest(
+            cascadeId: cascadeId,
+            startIndex: startIndex,
+            endIndex: endIndex
+        )
+        if channel == .cloudRelay {
+            let (respBytes, _) = try await callCloudRelayProxyCommand(
+                method: "GetCascadeTrajectorySteps",
+                payload: protoReqBytes,
+                contentType: "application/proto"
+            )
+            return ProtobufStepCodec.decodeStepsResponse(respBytes, cascadeId: cascadeId)
+        }
+
         let url = endpointURL.appendingPathComponent("\(Self.servicePrefix)/GetCascadeTrajectorySteps")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -353,11 +839,7 @@ public actor AntigravityRPCClient {
         request.setValue("application/proto", forHTTPHeaderField: "Accept")
         request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
         applyAuthHeaders(to: &request)
-        request.httpBody = ProtobufStepCodec.encodeGetStepsRequest(
-            cascadeId: cascadeId,
-            startIndex: startIndex,
-            endIndex: endIndex
-        )
+        request.httpBody = protoReqBytes
 
         let (data, response) = try await urlSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -859,14 +1341,80 @@ public actor AntigravityRPCClient {
         method: String,
         requestPayload: [String: JSONValue] = [:]
     ) throws -> AsyncThrowingStream<[String: JSONValue], Error> {
+        let rawJSON = try JSONEncoder().encode(requestPayload)
+
+        if channel == .cloudRelay {
+            guard let targetUuid = resolvedInstanceUuid, !targetUuid.isEmpty else {
+                return AsyncThrowingStream { continuation in
+                    continuation.finish()
+                }
+            }
+            let originStr = SAPISIDHashGenerator.normalizeOrigin(relayOriginURL.absoluteString)
+            guard var comps = URLComponents(string: "\(originStr)\(SAPISIDHashGenerator.apiServicePrefix)/StreamProxyCommand") else {
+                throw AntigravityRPCError.invalidEndpoint
+            }
+            comps.queryItems = [URLQueryItem(name: "$unique", value: method)]
+            guard let relayURL = comps.url else {
+                throw AntigravityRPCError.invalidEndpoint
+            }
+            var relayRequest = URLRequest(url: relayURL)
+            relayRequest.httpMethod = "POST"
+            SAPISIDHashGenerator.applyApiServiceHeaders(
+                to: &relayRequest,
+                cookieHeader: sessionCookie ?? "",
+                origin: originStr,
+                authUser: authUser,
+                isStreaming: true
+            )
+            relayRequest.httpBody = try CloudRelayJSPBCodec.encodeProxyCommandRequest(
+                targetInstanceUuid: targetUuid,
+                rpcPath: "\(Self.servicePrefix)/\(method)",
+                payload: rawJSON,
+                contentType: "application/json",
+                isStreaming: true
+            )
+
+            let session = self.urlSession
+            let immutableRelayReq = relayRequest
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        let (bytes, response) = try await session.bytes(for: immutableRelayReq)
+                        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                            continuation.finish()
+                            return
+                        }
+                        let decoder = JSONDecoder()
+                        var connectParser = ConnectStreamParser()
+                        for try await line in bytes.lines {
+                            for chunkData in CloudRelayJSPBCodec.extractStreamProxyPayloads(from: line) {
+                                if chunkData.first == UInt8(ascii: "{"),
+                                   let obj = try? decoder.decode([String: JSONValue].self, from: chunkData) {
+                                    continuation.yield(obj)
+                                } else {
+                                    for frame in connectParser.feed(chunkData) where !frame.flags.contains(.endStream) {
+                                        if let obj = try? decoder.decode([String: JSONValue].self, from: frame.payload) {
+                                            continuation.yield(obj)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+
         let url = endpointURL.appendingPathComponent("\(Self.servicePrefix)/\(method)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/connect+json", forHTTPHeaderField: "Content-Type")
         request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
         applyAuthHeaders(to: &request)
-
-        let rawJSON = try JSONEncoder().encode(requestPayload)
         request.httpBody = ConnectEnvelopeFrame(flags: [], payload: rawJSON).encode()
 
         let session = self.urlSession

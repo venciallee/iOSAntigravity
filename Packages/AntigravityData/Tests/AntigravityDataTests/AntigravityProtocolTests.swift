@@ -599,4 +599,75 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(store.connectionStatusText, "Offline · LT74XT6L0M")
         XCTAssertEqual(store.projects.map(\.id), ["iOSAntigravity"])
     }
+
+    func testOfficialRemoteControlQRAndCloudRelayJSPBCodec() throws {
+        // 1. Official QR URL parsing (`/r/<slug>`, `/u/<authuser>/r/<uuid>`, `?p=c%2F<cid>`, and bare slug)
+        let parsedQR = try XCTUnwrap(
+            RemoteHostInstance.parseRemoteControlTarget(
+                "https://antigravity.google.com/u/2/r/lt74xt6l0m-golden-star?p=c%2Fcas-rate-limiter"
+            )
+        )
+        XCTAssertEqual(parsedQR.instanceId, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(parsedQR.authUser, "2")
+        XCTAssertEqual(parsedQR.conversationId, "cas-rate-limiter")
+        XCTAssertEqual(parsedQR.canonicalRelayURLString, "https://antigravity.google.com/r/lt74xt6l0m-golden-star")
+
+        let bareTarget = try XCTUnwrap(RemoteHostInstance.parseRemoteControlTarget("0f5819ac-9308-40d8-a308-98b55122c533-v2"))
+        XCTAssertEqual(bareTarget.instanceId, "0f5819ac-9308-40d8-a308-98b55122c533-v2")
+
+        // 2. SAPISIDHASH SHA-1 vector & pure-Swift parity
+        let mockCookie = "SAPISID=test_sapisid_val_123; __Secure-1PAPISID=test_sapisid_val_123; SID=test_sid_val"
+        XCTAssertTrue(SAPISIDHashGenerator.hasRequiredGoogleAuthCookies(mockCookie))
+        let authHeader = try XCTUnwrap(
+            SAPISIDHashGenerator.computeAuthorizationHeader(
+                cookieHeader: mockCookie,
+                origin: "https://antigravity.google.com",
+                timestamp: 1794406100
+            )
+        )
+        let expectedDigest = SAPISIDHashGenerator.pureSwiftSHA1Hex(
+            Array("1794406100 test_sapisid_val_123 https://antigravity.google.com".utf8)
+        )
+        XCTAssertEqual(
+            SAPISIDHashGenerator.sha1Hex("1794406100 test_sapisid_val_123 https://antigravity.google.com"),
+            expectedDigest
+        )
+        XCTAssertTrue(authHeader.contains("SAPISIDHASH 1794406100_\(expectedDigest)"))
+        XCTAssertTrue(authHeader.contains("SAPISID1PHASH 1794406100_\(expectedDigest)"))
+
+        // 3. ListInstances JSPB decoding (with XSSI `)]}'\n` prefix)
+        let rawListInstances = Data(
+            ")]}'\n[[[\"0f5819ac-9308-40d8-a308-98b55122c533-v2\",[\"lt74xt6l0m-golden-star\",\"2.32.0\",1],1,[1794406100,0]]],5]".utf8
+        )
+        let instances = try CloudRelayJSPBCodec.decodeListInstancesResponse(rawListInstances)
+        XCTAssertEqual(instances.count, 1)
+        XCTAssertEqual(instances[0].uuid, "0f5819ac-9308-40d8-a308-98b55122c533-v2")
+        XCTAssertEqual(instances[0].name, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(instances[0].status, .connected)
+        XCTAssertTrue(instances[0].matches(identifier: "lt74xt6l0m-golden-star"))
+        XCTAssertTrue(instances[0].matches(identifier: "0f5819ac-9308-40d8-a308-98b55122c533-v2"))
+
+        // 4. ProxyCommand request & response JSPB round-trip (including outer Base64 safety wrapper)
+        let encodedProxyReq = try CloudRelayJSPBCodec.encodeProxyCommandRequest(
+            targetInstanceUuid: "0f5819ac-9308-40d8-a308-98b55122c533-v2",
+            rpcPath: "/exa.language_server_pb.LanguageServerService/GetWorkspaceInfos",
+            payload: Data("{}".utf8),
+            contentType: "application/json"
+        )
+        let reqArray = try XCTUnwrap(try JSONDecoder().decode(JSONValue.self, from: encodedProxyReq).arrayValue)
+        XCTAssertEqual(reqArray[0].stringValue, "0f5819ac-9308-40d8-a308-98b55122c533-v2")
+        XCTAssertEqual(reqArray[2].stringValue, "e30=")
+
+        let sampleProxyResp = Data("[\"e30=\",[[\"accept-encoding\",\"gzip\"],[\"content-type\",\"application/json\"]]]".utf8)
+        let decodedResp = try CloudRelayJSPBCodec.decodeProxyCommandResponse(sampleProxyResp)
+        XCTAssertEqual(String(data: decodedResp.payload, encoding: .utf8), "{}")
+        XCTAssertEqual(decodedResp.headers["content-type"], "application/json")
+
+        let xssiOuterWrapped = Data((")]}'\n" + String(data: sampleProxyResp, encoding: .utf8)!).utf8).base64EncodedData()
+        let decodedWrapped = try CloudRelayJSPBCodec.decodeProxyCommandResponse(
+            xssiOuterWrapped,
+            responseHeaders: ["Content-Transfer-Encoding": "base64"]
+        )
+        XCTAssertEqual(String(data: decodedWrapped.payload, encoding: .utf8), "{}")
+    }
 }

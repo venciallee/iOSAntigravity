@@ -19,6 +19,13 @@ fi
 xcodegen generate
 
 # 1. Auto-detect Apple Development Team ID from local macOS Keychain if not set
+WITH_BRIDGE=0
+for arg in "$@"; do
+  if [[ "$arg" == "--with-bridge" ]]; then
+    WITH_BRIDGE=1
+  fi
+done
+
 TEAM_ID="${TEAM_ID:-}"
 if [[ -z "$TEAM_ID" ]]; then
   TEAM_ID="$(security find-identity -v -p codesigning 2>/dev/null \
@@ -35,9 +42,10 @@ if [[ -z "$TEAM_ID" ]]; then
   echo "    Opening iOSAntigravity.xcodeproj in Xcode — sign in under Settings > Accounts,"
   echo "    select your Team on the 'Antigravity' target, pick your iPhone, and press Cmd+R!"
   open iOSAntigravity.xcodeproj
-  echo ""
-  echo "[*] Starting Mac Companion Bridge so your iPhone can pair over Wi-Fi..."
-  exec python3 -u scripts/mac-companion-bridge.py
+  if [[ "$WITH_BRIDGE" -eq 1 ]]; then
+    exec python3 -u scripts/mac-companion-bridge.py
+  fi
+  exit 0
 fi
 
 echo "[*] Signing Team ID   : ${TEAM_ID}"
@@ -79,9 +87,10 @@ if [[ -z "$DEVICE_LINE" ]]; then
   echo "    Connect & unlock your iPhone (enable Settings > Privacy & Security > Developer Mode),"
   echo "    or build directly in Xcode (opening project now)..."
   open iOSAntigravity.xcodeproj
-  echo ""
-  echo "[*] Starting Mac Companion Bridge for Wi-Fi pairing..."
-  exec python3 -u scripts/mac-companion-bridge.py
+  if [[ "$WITH_BRIDGE" -eq 1 ]]; then
+    exec python3 -u scripts/mac-companion-bridge.py
+  fi
+  exit 0
 fi
 
 IFS='|' read -r DEVICE_UDID CORE_DEVICE_ID DEVICE_NAME <<< "$DEVICE_LINE"
@@ -109,5 +118,11 @@ xcrun devicectl device process launch --device "$CORE_DEVICE_ID" "${BUNDLE_PREFI
 
 echo ""
 echo "[PASS] Antigravity.app installed & launched on ${DEVICE_NAME}!"
-echo "       Open the 'iPhone Safari' URL printed below on your iPhone (same Wi-Fi) and tap 'Open & Pair'!"
-exec python3 -u scripts/mac-companion-bridge.py
+echo "       1. In Antigravity Desktop on your Mac/PC, click 'Remote Control' to open the QR code."
+echo "       2. On your iPhone -> Settings tab -> tap 'Scan Remote Control QR Code' and sign in with Google."
+echo "       (No bridge script or Tailscale needed — works over Wi-Fi and 5G cellular!)"
+if [[ "$WITH_BRIDGE" -eq 1 ]]; then
+  echo ""
+  echo "[*] Starting optional Mac Companion Bridge (--with-bridge)..."
+  exec python3 -u scripts/mac-companion-bridge.py
+fi

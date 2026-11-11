@@ -10,6 +10,8 @@ public struct SavedBackendCredentials: Codable, Sendable, Equatable {
     public var hostname: String
     public var csrfToken: String?
     public var sessionCookie: String?
+    public var authUser: String?
+    public var resolvedInstanceUuid: String?
     public var certFingerprintSHA256: String?
     public var pairedAt: Date
 
@@ -19,6 +21,8 @@ public struct SavedBackendCredentials: Codable, Sendable, Equatable {
         hostname: String,
         csrfToken: String? = nil,
         sessionCookie: String? = nil,
+        authUser: String? = nil,
+        resolvedInstanceUuid: String? = nil,
         certFingerprintSHA256: String? = nil,
         pairedAt: Date = Date()
     ) {
@@ -27,6 +31,8 @@ public struct SavedBackendCredentials: Codable, Sendable, Equatable {
         self.hostname = hostname
         self.csrfToken = csrfToken
         self.sessionCookie = sessionCookie
+        self.authUser = authUser
+        self.resolvedInstanceUuid = resolvedInstanceUuid
         self.certFingerprintSHA256 = certFingerprintSHA256
         self.pairedAt = pairedAt
     }

@@ -227,11 +227,140 @@ class LiveMockServer:
                     return
                 self._send_json(404, {"error": "Not found"})
 
+            def _verify_sapisidhash(self) -> bool:
+                import hashlib
+
+                auth_hdr = self.headers.get("Authorization", "")
+                cookie_hdr = self.headers.get("Cookie", "")
+                origin = self.headers.get("Origin") or "https://antigravity.google.com"
+                if not auth_hdr.startswith("SAPISIDHASH ") or "SAPISID=" not in cookie_hdr:
+                    return False
+                sapisid = ""
+                for part in cookie_hdr.split(";"):
+                    part = part.strip()
+                    if part.startswith("SAPISID="):
+                        sapisid = part[len("SAPISID=") :]
+                        break
+                if not sapisid:
+                    return False
+                first_tok = auth_hdr.split()[1] if len(auth_hdr.split()) >= 2 else ""
+                if "_" not in first_tok:
+                    return False
+                ts_str, digest = first_tok.split("_", 1)
+                expected = hashlib.sha1(f"{ts_str} {sapisid} {origin}".encode("utf-8")).hexdigest()
+                return digest == expected
+
+            def _send_jspb(self, status: int, jspb_obj):
+                raw = (")]}'\n" + json.dumps(jspb_obj)).encode("utf-8")
+                self.send_response(status)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json+protobuf; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
             def do_POST(self):
+                import base64
+
                 path = urlparse(self.path).path
                 content_len = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(content_len) if content_len > 0 else b""
                 prefix = "/exa.language_server_pb.LanguageServerService/"
+                relay_prefix = "/$rpc/devtools_jetski_boq_api_proto.ApiService/"
+
+                if path.startswith(relay_prefix):
+                    relay_method = path[len(relay_prefix) :]
+                    if not self._verify_sapisidhash():
+                        self._send_json(401, {"error": "Missing or invalid SAPISIDHASH Authorization"})
+                        return
+
+                    auth_user = self.headers.get("X-Goog-AuthUser", "0")
+                    if relay_method == "ListInstances":
+                        outer_state.record("ApiService/ListInstances", {"authUser": auth_user})
+                        # Simulate multi-account session where authuser=2 owns the active Desktop instance
+                        if auth_user == "2":
+                            instances_jspb = [
+                                [
+                                    [
+                                        "0f5819ac-9308-40d8-a308-98b55122c533-v2",
+                                        ["lt74xt6l0m-golden-star", "2.32.0", 1],
+                                        1,
+                                        [1794406100, 0],
+                                    ]
+                                ],
+                                5,
+                            ]
+                        else:
+                            instances_jspb = [[], 5]
+                        self._send_jspb(200, instances_jspb)
+                        return
+
+                    if relay_method == "ProxyCommand":
+                        arr = json.loads(body.decode("utf-8"))
+                        target_uuid = arr[0]
+                        rpc_path = arr[1]
+                        inner_b64 = arr[2] or ""
+                        inner_headers = {k.lower(): v for k, v in (arr[3] or [])}
+                        if target_uuid != "0f5819ac-9308-40d8-a308-98b55122c533-v2":
+                            self._send_json(404, {"error": f"Unknown instance UUID {target_uuid}"})
+                            return
+                        inner_method = rpc_path[len(prefix) :] if rpc_path.startswith(prefix) else rpc_path
+                        inner_bytes = base64.b64decode(inner_b64) if inner_b64 else b""
+                        inner_ct = inner_headers.get("content-type", "application/json")
+                        outer_state.record(f"ApiService/ProxyCommand:{inner_method}", {"contentType": inner_ct})
+
+                        if inner_method == "GetCascadeTrajectorySteps" and "application/proto" in inner_ct:
+                            proto_out = build_sample_binary_steps_response(total_steps=605)
+                            self._send_jspb(
+                                200,
+                                [
+                                    base64.b64encode(proto_out).decode("ascii"),
+                                    [["content-type", "application/proto"]],
+                                ],
+                            )
+                            return
+
+                        inner_req = json.loads(inner_bytes.decode("utf-8")) if inner_bytes else {}
+                        if inner_method == "GetWorkspaceInfos":
+                            payload_obj = {
+                                "workspaceInfos": [
+                                    {
+                                        "workspaceFolderAbsoluteUri": "file:///Users/dev/code/ledger-svc",
+                                        "gitBranch": "main",
+                                    }
+                                ]
+                            }
+                        elif inner_method == "GetAllCascadeTrajectories":
+                            payload_obj = {
+                                "trajectorySummaries": {
+                                    "cas-rate-limiter": {
+                                        "summary": "Add rate limiter to /transfers",
+                                        "stepCount": 7,
+                                        "status": "CASCADE_RUN_STATUS_RUNNING",
+                                        "workspaces": [
+                                            {"workspaceFolderAbsoluteUri": "file:///Users/dev/code/ledger-svc"}
+                                        ],
+                                    }
+                                }
+                            }
+                        elif inner_method == "StartCascade":
+                            # Enforce strict protojson (reject companion-only unknown fields)
+                            if "modelId" in inner_req or "initialUserInput" in inner_req:
+                                self._send_json(400, {"code": "invalid_argument", "message": 'unknown field "modelId"'})
+                                return
+                            payload_obj = {"cascadeId": "cas-cloud-relay-01"}
+                        else:
+                            payload_obj = {"ok": True, "method": inner_method}
+
+                        encoded_inner = base64.b64encode(json.dumps(payload_obj).encode("utf-8")).decode("ascii")
+                        self._send_jspb(
+                            200,
+                            [
+                                encoded_inner,
+                                [["accept-encoding", "gzip"], ["content-type", "application/json"]],
+                            ],
+                        )
+                        return
 
                 if not path.startswith(prefix):
                     self._send_json(404, {"error": f"Unknown service path: {path}"})
