@@ -41,6 +41,26 @@ from pathlib import Path
 SERVICE_PREFIX = "/exa.language_server_pb.LanguageServerService/"
 
 
+def make_unverified_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def urlopen_direct(req: urllib.request.Request, timeout: float = 15.0, ssl_ctx: ssl.SSLContext = None):
+    """Opens HTTP/HTTPS requests while bypassing system/env HTTP proxies for loopback (`127.0.0.1`/`localhost`)."""
+    parsed = urllib.parse.urlparse(req.full_url)
+    host = (parsed.hostname or "").lower()
+    handlers = []
+    if host in ("127.0.0.1", "localhost", "::1"):
+        handlers.append(urllib.request.ProxyHandler({}))
+    if parsed.scheme == "https" and ssl_ctx is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=ssl_ctx))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(req, timeout=timeout)
+
+
 def detect_lan_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -51,9 +71,11 @@ def detect_lan_ip() -> str:
 
 
 def discover_local_language_server():
-    """Discovers a running Antigravity `language_server` PID, CSRF token, and port."""
+    """Discovers a running Antigravity `language_server` PID, CSRF token, and port with bounded timeouts."""
     try:
-        ps_out = subprocess.check_output(["ps", "aux"], text=True, stderr=subprocess.DEVNULL)
+        ps_out = subprocess.check_output(
+            ["ps", "aux"], text=True, stderr=subprocess.DEVNULL, timeout=2.5
+        )
     except Exception:
         return None
 
@@ -69,25 +91,39 @@ def discover_local_language_server():
             continue
         pid = int(parts[1])
         csrf_token = csrf_match.group(1)
-        candidates.append((pid, csrf_token))
+        hinted_ports = [
+            int(p)
+            for p in re.findall(r"--[A-Za-z0-9_]*port[=\s]+(\d+)", line)
+            if 1024 <= int(p) <= 65535
+        ]
+        candidates.append((pid, csrf_token, hinted_ports))
 
-    for pid, csrf_token in candidates:
-        ports = []
+    ctx = make_unverified_ssl_context()
+    deadline = time.monotonic() + 6.0
+
+    for pid, csrf_token, hinted_ports in candidates:
+        if time.monotonic() > deadline:
+            break
+        ports = list(dict.fromkeys(hinted_ports))
         try:
             lsof_out = subprocess.check_output(
                 ["lsof", "-nP", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN"],
                 text=True,
                 stderr=subprocess.DEVNULL,
+                timeout=2.5,
             )
             for row in lsof_out.splitlines():
                 m = re.search(r":(\d+)\s+\(LISTEN\)", row)
                 if m:
-                    ports.append(int(m.group(1)))
+                    p = int(m.group(1))
+                    if p not in ports:
+                        ports.append(p)
         except Exception:
-            continue
+            pass
 
-        ctx = ssl._create_unverified_context()
         for port in ports:
+            if time.monotonic() > deadline:
+                break
             for scheme in ("https", "http"):
                 probe_url = f"{scheme}://127.0.0.1:{port}{SERVICE_PREFIX}GetAllCascadeTrajectories"
                 req = urllib.request.Request(
@@ -101,10 +137,10 @@ def discover_local_language_server():
                     },
                 )
                 try:
-                    with urllib.request.urlopen(
+                    with urlopen_direct(
                         req,
-                        timeout=1.5,
-                        context=ctx if scheme == "https" else None,
+                        timeout=0.8,
+                        ssl_ctx=ctx if scheme == "https" else None,
                     ) as resp:
                         if 200 <= resp.status < 300:
                             return {
@@ -276,7 +312,7 @@ def query_upstream_default_model(upstream_url: str, upstream_csrf: str, api_key:
     """Queries `GetCascadeModelConfigData` on real `language_server` to resolve valid model enum IDs."""
     if not upstream_url:
         return "", set()
-    ctx = ssl._create_unverified_context()
+    ctx = make_unverified_ssl_context()
     meta = {"ideName": "antigravity", "extensionName": "antigravity", "locale": "en"}
     if api_key:
         meta["apiKey"] = api_key
@@ -291,10 +327,10 @@ def query_upstream_default_model(upstream_url: str, upstream_csrf: str, api_key:
         },
     )
     try:
-        with urllib.request.urlopen(
+        with urlopen_direct(
             req,
-            timeout=2.5,
-            context=ctx if upstream_url.startswith("https://") else None,
+            timeout=1.5,
+            ssl_ctx=ctx if upstream_url.startswith("https://") else None,
         ) as resp:
             obj = json.loads(resp.read().decode("utf-8") or "{}")
             valid_models = set()
@@ -320,7 +356,7 @@ def create_bridge_server(
     workspace_root: str = None,
 ):
     state = CompanionState(workspace_root or os.getcwd())
-    ssl_ctx = ssl._create_unverified_context()
+    ssl_ctx = make_unverified_ssl_context()
     desktop_api_key = discover_desktop_oauth_token() if upstream_url else ""
     upstream_default_model, upstream_valid_models = (
         query_upstream_default_model(upstream_url, upstream_csrf or bridge_csrf, desktop_api_key)
@@ -575,14 +611,64 @@ def create_bridge_server(
                 attempts += 1
                 req = urllib.request.Request(target, data=forward_body, method="POST", headers=headers)
                 try:
-                    with urllib.request.urlopen(
+                    with urlopen_direct(
                         req,
                         timeout=30,
-                        context=ssl_ctx if is_https else None,
+                        ssl_ctx=ssl_ctx if is_https else None,
                     ) as resp:
                         resp_bytes = resp.read()
                         resp_ct = resp.headers.get("Content-Type", "application/json")
-                        if is_json and method == "GetWorkspaceInfos":
+                        if is_json and method == "StartCascade":
+                            sc_obj = self._parse_json(resp_bytes)
+                            new_cid = sc_obj.get("cascadeId")
+                            if new_cid:
+                                uris = req_obj.get("workspaceUris") or []
+                                ws_uri = uris[0] if uris else state.workspaces[0]["workspaceUri"]
+                                slug = Path(ws_uri.replace("file://", "")).name or "workspace"
+                                with state.lock:
+                                    state.trajectories.setdefault(
+                                        new_cid,
+                                        {
+                                            "cascadeId": new_cid,
+                                            "title": "New iOS Remote Session",
+                                            "projectSlug": slug,
+                                            "workspaceUri": ws_uri,
+                                            "branchName": "main",
+                                            "status": "CORTEX_STEP_STATUS_DONE",
+                                            "stepCount": 0,
+                                            "statusSubtitle": "Ready for instructions",
+                                            "isPinned": False,
+                                            "isArchived": False,
+                                            "isUnread": False,
+                                        },
+                                    )
+                                    state.steps_by_cascade.setdefault(new_cid, [])
+                        elif is_json and method == "SendUserCascadeMessage":
+                            cid = req_obj.get("cascadeId", "")
+                            if cid:
+                                items = req_obj.get("items") or []
+                                text_val = next(
+                                    (i.get("text", "") for i in items if isinstance(i, dict) and "text" in i),
+                                    "",
+                                )
+                                with state.lock:
+                                    local_steps = state.steps_by_cascade.setdefault(cid, [])
+                                    if not local_steps and text_val:
+                                        local_steps.append(
+                                            {
+                                                "stepIndex": 0,
+                                                "type": "CORTEX_STEP_TYPE_USER_INPUT",
+                                                "status": "CORTEX_STEP_STATUS_DONE",
+                                                "userInput": {"userResponse": text_val, "items": items},
+                                            }
+                                        )
+                                    if cid in state.trajectories:
+                                        if text_val and state.trajectories[cid]["title"].startswith("New "):
+                                            state.trajectories[cid]["title"] = text_val[:48]
+                                        state.trajectories[cid]["stepCount"] = max(
+                                            state.trajectories[cid]["stepCount"], len(local_steps)
+                                        )
+                        elif is_json and method == "GetWorkspaceInfos":
                             resp_bytes = self._normalize_workspace_infos_response(resp_bytes)
                         elif is_json and method == "GetAllCascadeTrajectories":
                             resp_bytes = self._merge_local_trajectories_response(resp_bytes)
@@ -605,8 +691,16 @@ def create_bridge_server(
                             req_obj.pop(m.group(1), None)
                             forward_body = json.dumps(req_obj).encode("utf-8")
                             continue
-                    # Graceful fallback to local companion state if Desktop is signed out / offline on SendUserCascadeMessage
-                    if is_json and method in ("StartCascade", "SendUserCascadeMessage") and e.code in (401, 403, 500, 503):
+                    # Graceful fallback to local companion state if Desktop rejects model/auth/offline
+                    if is_json and method in ("StartCascade", "SendUserCascadeMessage") and e.code in (
+                        400,
+                        401,
+                        403,
+                        404,
+                        500,
+                        502,
+                        503,
+                    ):
                         sys.stderr.write(
                             f"[Bridge] Upstream {method} returned HTTP {e.code} ({err_text[:120]}); falling back to companion session store.\n"
                         )
@@ -620,6 +714,12 @@ def create_bridge_server(
                     self.wfile.write(err_body)
                     return
                 except Exception as exc:
+                    if is_json and method in ("StartCascade", "SendUserCascadeMessage"):
+                        sys.stderr.write(
+                            f"[Bridge] Upstream {method} transport error ({exc}); falling back to companion session store.\n"
+                        )
+                        self._handle_standalone_rpc(method, raw_body, content_type)
+                        return
                     self._write_json(502, {"error": f"Upstream language_server error: {exc}"})
                     return
 
@@ -918,7 +1018,11 @@ def create_bridge_server(
             self.end_headers()
             self.wfile.write(encoded)
 
-    return ThreadingHTTPServer((bind_host, bind_port), BridgeHandler)
+    class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    return ReusableThreadingHTTPServer((bind_host, bind_port), BridgeHandler)
 
 
 def main():
@@ -939,14 +1043,24 @@ def main():
     upstream_csrf = args.upstream_csrf
 
     if not args.standalone_sandbox and not upstream_url:
+        print("[*] Scanning for local Antigravity Desktop `language_server`...", flush=True)
         discovered = discover_local_language_server()
         if discovered:
             upstream_url = discovered["upstream_url"]
             upstream_csrf = discovered["upstream_csrf"]
-            print(f"[+] Auto-discovered Antigravity Desktop language_server (PID {discovered['pid']}) at {upstream_url}")
+            print(
+                f"[+] Auto-discovered Antigravity Desktop language_server (PID {discovered['pid']}) at {upstream_url}",
+                flush=True,
+            )
         else:
-            print("[!] No running Antigravity Desktop `language_server` detected; starting in Stateful Companion Sandbox mode.")
-            print("    (Open Antigravity Desktop on macOS and re-run to proxy real desktop sessions automatically.)")
+            print(
+                "[!] No running Antigravity Desktop `language_server` detected; starting in Stateful Companion Sandbox mode.",
+                flush=True,
+            )
+            print(
+                "    (Open Antigravity Desktop on macOS and re-run to proxy real desktop sessions automatically.)",
+                flush=True,
+            )
 
     bridge_csrf = args.csrf or upstream_csrf or f"agy-ios-{secrets.token_hex(12)}"
     lan_ip = detect_lan_ip()
@@ -967,22 +1081,22 @@ def main():
         upstream_csrf=upstream_csrf,
     )
 
-    print("\n" + "=" * 74)
-    print("  iOSAntigravity — Connect-RPC Backend Bridge Ready")
-    print("=" * 74)
-    print(f"  Mode          : {'LIVE DESKTOP PROXY -> ' + upstream_url if upstream_url else 'STATEFUL SANDBOX'}")
-    print(f"  LAN Endpoint  : {endpoint}")
-    print(f"  CSRF Token    : {bridge_csrf}")
-    print(f"  iOS Deep Link : {pair_uri}")
-    print("-" * 74)
-    print("  Quick CLI Verification (Login + StartCascade + SendUserCascadeMessage):")
-    print(f"    python3 verification/verify-live-rpc-flow.py --url {endpoint} --csrf {bridge_csrf}")
-    print("=" * 74 + "\n")
+    print("\n" + "=" * 74, flush=True)
+    print("  iOSAntigravity — Connect-RPC Backend Bridge Ready", flush=True)
+    print("=" * 74, flush=True)
+    print(f"  Mode          : {'LIVE DESKTOP PROXY -> ' + upstream_url if upstream_url else 'STATEFUL SANDBOX'}", flush=True)
+    print(f"  LAN Endpoint  : {endpoint}", flush=True)
+    print(f"  CSRF Token    : {bridge_csrf}", flush=True)
+    print(f"  iOS Deep Link : {pair_uri}", flush=True)
+    print("-" * 74, flush=True)
+    print("  Quick CLI Verification (Login + StartCascade + SendUserCascadeMessage):", flush=True)
+    print(f"    python3 verification/verify-live-rpc-flow.py --url {endpoint} --csrf {bridge_csrf}", flush=True)
+    print("=" * 74 + "\n", flush=True)
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down bridge...")
+        print("\nShutting down bridge...", flush=True)
         server.shutdown()
 
 

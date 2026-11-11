@@ -41,6 +41,29 @@ def load_bridge_module():
     return mod
 
 
+import time
+import urllib.parse
+
+
+def make_unverified_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def urlopen_direct(req: urllib.request.Request, timeout: float = 15.0):
+    parsed = urllib.parse.urlparse(req.full_url)
+    host = (parsed.hostname or "").lower()
+    handlers = []
+    if host in ("127.0.0.1", "localhost", "::1"):
+        handlers.append(urllib.request.ProxyHandler({}))
+    if parsed.scheme == "https":
+        handlers.append(urllib.request.HTTPSHandler(context=make_unverified_ssl_context()))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(req, timeout=timeout)
+
+
 def call_rpc_json(base_url: str, method: str, body: dict, csrf_token: str = None):
     url = f"{base_url.rstrip('/')}{SERVICE_PREFIX}{method}"
     headers = {
@@ -55,27 +78,35 @@ def call_rpc_json(base_url: str, method: str, body: dict, csrf_token: str = None
         method="POST",
         headers=headers,
     )
-    ctx = ssl._create_unverified_context() if url.startswith("https://") else None
-    try:
-        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-            raw = resp.read()
-            return resp.status, json.loads(raw.decode("utf-8")) if raw else {}
-    except urllib.error.HTTPError as e:
-        raw = e.read()
+    last_err = None
+    for attempt in range(16):
         try:
-            parsed = json.loads(raw.decode("utf-8"))
-        except Exception:
-            parsed = {"raw": raw.decode("utf-8", errors="replace")}
-        return e.code, parsed
+            with urlopen_direct(req, timeout=15) as resp:
+                raw = resp.read()
+                return resp.status, json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except Exception:
+                parsed = {"raw": raw.decode("utf-8", errors="replace")}
+            return e.code, parsed
+        except urllib.error.URLError as e:
+            last_err = e
+            if isinstance(getattr(e, "reason", None), ConnectionRefusedError) and attempt < 15:
+                time.sleep(0.5)
+                continue
+            raise
+    raise last_err
 
 
 def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
-    print(f"[*] Target Backend : {base_url}")
+    print(f"[*] Target Backend : {base_url}", flush=True)
 
     # 1. Auth Gate & Login Handshake
     bad_status, _ = call_rpc_json(base_url, "GetWorkspaceInfos", {}, csrf_token="invalid-token")
     assert bad_status in (401, 403), f"Expected 401/403 with invalid token, got {bad_status}"
-    print(f"  [PASS] 1a. Auth Gate rejected invalid CSRF token ({bad_status})")
+    print(f"  [PASS] 1a. Auth Gate rejected invalid CSRF token ({bad_status})", flush=True)
 
     ws_status, ws_res = call_rpc_json(base_url, "GetWorkspaceInfos", {}, csrf_token=csrf_token)
     assert ws_status == 200, f"GetWorkspaceInfos failed: {ws_status} {ws_res}"
@@ -130,23 +161,34 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
     assert send_status == 200, f"SendUserCascadeMessage failed: {send_status} {send_res}"
     print(f"  [PASS] 3a. Sent Message (`SendUserCascadeMessage`) to {cascade_id}")
 
-    list_status, list_res = call_rpc_json(base_url, "GetAllCascadeTrajectories", {}, csrf_token=csrf_token)
-    assert list_status == 200
-    in_map = cascade_id in (list_res.get("trajectorySummaries") or {})
-    in_arr = any(t.get("cascadeId") == cascade_id for t in (list_res.get("trajectories") or []))
+    in_map = False
+    in_arr = False
+    for _ in range(6):
+        list_status, list_res = call_rpc_json(base_url, "GetAllCascadeTrajectories", {}, csrf_token=csrf_token)
+        assert list_status == 200
+        in_map = cascade_id in (list_res.get("trajectorySummaries") or {})
+        in_arr = any(t.get("cascadeId") == cascade_id for t in (list_res.get("trajectories") or []))
+        if in_map or in_arr:
+            break
+        time.sleep(0.25)
     assert in_map or in_arr, "Newly created cascadeId not found in GetAllCascadeTrajectories"
-    print(f"  [PASS] 3b. Session confirmed in `GetAllCascadeTrajectories` (trajectorySummaries={in_map})")
+    print(f"  [PASS] 3b. Session confirmed in `GetAllCascadeTrajectories` (trajectorySummaries={in_map})", flush=True)
 
-    steps_status, steps_res = call_rpc_json(
-        base_url,
-        "GetCascadeTrajectorySteps",
-        {"cascadeId": cascade_id, "startIndex": 0, "endIndex": 50},
-        csrf_token=csrf_token,
-    )
-    assert steps_status == 200, f"GetCascadeTrajectorySteps failed: {steps_status}"
-    steps = steps_res.get("steps", [])
+    steps = []
+    for _ in range(8):
+        steps_status, steps_res = call_rpc_json(
+            base_url,
+            "GetCascadeTrajectorySteps",
+            {"cascadeId": cascade_id, "startIndex": 0, "endIndex": 50},
+            csrf_token=csrf_token,
+        )
+        assert steps_status == 200, f"GetCascadeTrajectorySteps failed: {steps_status}"
+        steps = steps_res.get("steps", [])
+        if len(steps) >= 1:
+            break
+        time.sleep(0.25)
     assert len(steps) >= 1, f"Expected >=1 trajectory steps after sending message, got {len(steps)}"
-    print(f"  [PASS] 3c. Synced Trajectory (`GetCascadeTrajectorySteps` JSON) -> {len(steps)} step(s) returned")
+    print(f"  [PASS] 3c. Synced Trajectory (`GetCascadeTrajectorySteps` JSON) -> {len(steps)} step(s) returned", flush=True)
 
     if not live_external:
         # 4. Trigger WAITING command & verify Face ID Interaction Gate
@@ -203,7 +245,7 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
             csrf_token=csrf_token,
         )
         assert bio_status == 200 and bio_res.get("accepted") is True
-        print("  [PASS] 4.  Face ID Approval Gate (`HandleCascadeUserInteraction` 403 -> 200 verified)")
+        print("  [PASS] 4.  Face ID Approval Gate (`HandleCascadeUserInteraction` 403 -> 200 verified)", flush=True)
 
         # 5. Connect 5-byte Envelope Stream (`JetboxSubscribeToSummaries`)
         stream_req = urllib.request.Request(
@@ -216,12 +258,12 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
                 "x-codeium-csrf-token": csrf_token,
             },
         )
-        with urllib.request.urlopen(stream_req, timeout=10) as sresp:
+        with urlopen_direct(stream_req, timeout=10) as sresp:
             raw_stream = sresp.read()
         flags, frame_len = struct.unpack(">BI", raw_stream[:5])
         first_event = json.loads(raw_stream[5 : 5 + frame_len].decode("utf-8"))
         assert flags == 0 and "cascadeId" in first_event
-        print(f"  [PASS] 5.  Connect 5-Byte Envelope Stream (`JetboxSubscribeToSummaries`) -> frame0={first_event['cascadeId']}")
+        print(f"  [PASS] 5.  Connect 5-Byte Envelope Stream (`JetboxSubscribeToSummaries`) -> frame0={first_event['cascadeId']}", flush=True)
 
         # 6. Binary Protobuf >600-step fetch (`application/proto`)
         proto_req = urllib.request.Request(
@@ -235,12 +277,12 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
                 "x-codeium-csrf-token": csrf_token,
             },
         )
-        with urllib.request.urlopen(proto_req, timeout=10) as presp:
+        with urlopen_direct(proto_req, timeout=10) as presp:
             proto_bytes = presp.read()
         assert len(proto_bytes) > 10000
-        print(f"  [PASS] 6.  Binary Protobuf `GetCascadeTrajectorySteps` (>600 steps) -> {len(proto_bytes)} bytes")
+        print(f"  [PASS] 6.  Binary Protobuf `GetCascadeTrajectorySteps` (>600 steps) -> {len(proto_bytes)} bytes", flush=True)
 
-    print("\nALL LIVE CONNECT-RPC FLOW CHECKS PASSED.")
+    print("\nALL LIVE CONNECT-RPC FLOW CHECKS PASSED.", flush=True)
 
 
 def main():
