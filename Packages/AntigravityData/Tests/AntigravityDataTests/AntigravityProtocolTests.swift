@@ -351,4 +351,88 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(decodedIdle.relativeTimeLabel, "2h")
         XCTAssertEqual(decodedIdle.statusSubtitle, "Idle · 11 steps")
     }
+
+    @MainActor
+    func testDesktopStepDecodingAndLiveRouteSelection() throws {
+        // 1. UserInput where `userResponse` is empty string "" and `items` carries prompt + file URI
+        let rawUserStep: JSONValue = .object([
+            "stepIndex": .int(0),
+            "type": .string("CORTEX_STEP_TYPE_USER_INPUT"),
+            "status": .string("CORTEX_STEP_STATUS_DONE"),
+            "userInput": .object([
+                "userResponse": .string(""),
+                "items": .array([
+                    .object(["text": .string("请帮我梳理 Slardar Tag 核心逻辑")]),
+                    .object([
+                        "item": .object([
+                            "file": .object([
+                                "absoluteUri": .string("file:///Users/dev/slardar_app_ai/internal/tag/manager.go")
+                            ])
+                        ])
+                    ])
+                ])
+            ])
+        ])
+        let userStep = try XCTUnwrap(
+            AntigravityRPCClient.decodeJSONStep(rawUserStep, cascadeId: "cid-1", fallbackIndex: 0)
+        )
+        XCTAssertEqual(userStep.type, .userInput)
+        XCTAssertEqual(userStep.userInput, "请帮我梳理 Slardar Tag 核心逻辑")
+        XCTAssertEqual(userStep.attachedMentions, ["@manager.go"])
+        XCTAssertTrue(userStep.hasRenderableChatContent)
+
+        // 2. Housekeeping `CORTEX_STEP_TYPE_CHECKPOINT` should be excluded from displayItems
+        let rawCheckpoint: JSONValue = .object([
+            "stepIndex": .int(1),
+            "type": .string("CORTEX_STEP_TYPE_CHECKPOINT"),
+            "status": .string("CORTEX_STEP_STATUS_DONE")
+        ])
+        let checkpointStep = try XCTUnwrap(
+            AntigravityRPCClient.decodeJSONStep(rawCheckpoint, cascadeId: "cid-1", fallbackIndex: 1)
+        )
+        XCTAssertFalse(checkpointStep.hasRenderableChatContent)
+
+        // 3. PlannerResponse where `modifiedResponse` is "" must NOT shadow `response`
+        let rawPlanner: JSONValue = .object([
+            "stepIndex": .int(2),
+            "type": .string("CORTEX_STEP_TYPE_PLANNER_RESPONSE"),
+            "status": .string("CORTEX_STEP_STATUS_DONE"),
+            "plannerResponse": .object([
+                "modifiedResponse": .string(""),
+                "response": .string("已完成梳理：Tag 校验链路位于 RegisterTagValidator。"),
+                "thinking": .string("Inspected manager.go and validator registry."),
+                "thinkingDuration": .string("6.4s")
+            ])
+        ])
+        let plannerStep = try XCTUnwrap(
+            AntigravityRPCClient.decodeJSONStep(rawPlanner, cascadeId: "cid-1", fallbackIndex: 2)
+        )
+        XCTAssertEqual(plannerStep.type, .plannerResponse)
+        XCTAssertEqual(plannerStep.plannerResponse?.response, "已完成梳理：Tag 校验链路位于 RegisterTagValidator。")
+        XCTAssertEqual(plannerStep.plannerResponse?.thinkingDurationSeconds ?? 0, 6.4, accuracy: 0.01)
+
+        // 4. `CORTEX_STEP_TYPE_NOTIFY_USER` renders as assistant message
+        let rawNotify: JSONValue = .object([
+            "stepIndex": .int(3),
+            "type": .string("CORTEX_STEP_TYPE_NOTIFY_USER"),
+            "status": .string("CORTEX_STEP_STATUS_DONE"),
+            "notifyUser": .object([
+                "notificationContent": .string("Implementation plan is ready for review.")
+            ])
+        ])
+        let notifyStep = try XCTUnwrap(
+            AntigravityRPCClient.decodeJSONStep(rawNotify, cascadeId: "cid-1", fallbackIndex: 3)
+        )
+        XCTAssertEqual(notifyStep.type, .notifyUser)
+        XCTAssertTrue(notifyStep.hasRenderableChatContent)
+
+        let items = CascadeDisplayItem.buildDisplayItems(from: [userStep, checkpointStep, plannerStep, notifyStep])
+        XCTAssertEqual(items.count, 3, "Housekeeping checkpoint step must be filtered out of displayItems")
+
+        // 5. Selecting a cascade updates activeRoute to .cascadeChat(id) and clears unread badge
+        let store = AntigravitySessionStore.makeESDDVerificationStore()
+        store.selectCascade("cas-upgrade-go")
+        XCTAssertEqual(store.activeRoute, .cascadeChat("cas-upgrade-go"))
+        XCTAssertEqual(store.summaries.first(where: { $0.cascadeId == "cas-upgrade-go" })?.isUnread, false)
+    }
 }

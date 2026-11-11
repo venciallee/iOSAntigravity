@@ -41,15 +41,17 @@ public struct UserPromptContextBubbleView: View {
                         .foregroundStyle(AntigravityTheme.inkReading)
                 }
 
-                HStack(spacing: 6) {
-                    ForEach(contextChips, id: \.self) { chip in
-                        Text(chip)
-                            .font(.system(size: 12, weight: .medium, design: chip.hasPrefix("@") ? .monospaced : .default))
-                            .foregroundStyle(AntigravityTheme.inkLabel)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.white.opacity(0.08))
-                            .clipShape(Capsule())
+                if !contextChips.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(contextChips, id: \.self) { chip in
+                            Text(chip)
+                                .font(.system(size: 12, weight: .medium, design: chip.hasPrefix("@") ? .monospaced : .default))
+                                .foregroundStyle(AntigravityTheme.inkLabel)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Capsule())
+                        }
                     }
                 }
             }
@@ -423,6 +425,17 @@ public struct CascadeEvidenceGroupCardView: View {
         store.expandedEvidenceGroupIds.contains(groupId)
     }
 
+    private var summaryTitle: String {
+        let editCount = steps.filter { $0.codeAction != nil }.count
+        if editCount == steps.count && editCount > 0 {
+            return "Edited \(editCount) workspace file\(editCount == 1 ? "" : "s")"
+        } else if editCount > 0 {
+            return "Inspected & edited \(steps.count) workspace items"
+        } else {
+            return "Inspected \(steps.count) workspace file\(steps.count == 1 ? "" : "s")"
+        }
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
@@ -433,7 +446,7 @@ public struct CascadeEvidenceGroupCardView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "doc.on.doc")
                         .foregroundStyle(StepCardPalette.periwinkle)
-                    Text("Edited \(steps.count) workspace files")
+                    Text(summaryTitle)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(AntigravityTheme.inkReading)
                     Spacer()
@@ -442,6 +455,7 @@ public struct CascadeEvidenceGroupCardView: View {
                         .foregroundStyle(AntigravityTheme.inkSecondary)
                 }
                 .frame(minHeight: AntigravityTheme.minTouchTargetPt)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -453,17 +467,55 @@ public struct CascadeEvidenceGroupCardView: View {
                             store.currentRoute = .turnDiffReview
                         } label: {
                             HStack {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(StepCardPalette.periwinkle)
                                 Text(ca.fileName)
                                     .font(.system(size: 13, design: .monospaced))
                                     .foregroundStyle(AntigravityTheme.inkReading)
+                                    .lineLimit(1)
                                 Spacer()
-                                Text("+\(ca.additions) -\(ca.deletions)")
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(StepCardPalette.emeraldDone)
+                                if ca.additions > 0 || ca.deletions > 0 {
+                                    Text("+\(ca.additions) -\(ca.deletions)")
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .foregroundStyle(StepCardPalette.emeraldDone)
+                                }
                             }
-                            .frame(minHeight: AntigravityTheme.minTouchTargetPt)
+                            .frame(minHeight: 34)
                         }
                         .buttonStyle(.plain)
+                    } else if let vf = step.viewFile {
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.text.magnifyingglass")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(AntigravityTheme.inkSecondary)
+                            Text(vf.fileName)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(AntigravityTheme.inkReading)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("L\(vf.startLine)–\(vf.endLine)")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(AntigravityTheme.inkSecondary)
+                        }
+                        .frame(minHeight: 30)
+                    } else if let sc = step.search {
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(AntigravityTheme.inkSecondary)
+                            Text(sc.query)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(AntigravityTheme.inkReading)
+                                .lineLimit(1)
+                            Spacer()
+                            if sc.matchCount > 0 {
+                                Text("\(sc.matchCount) matches")
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(AntigravityTheme.inkSecondary)
+                            }
+                        }
+                        .frame(minHeight: 30)
                     }
                 }
             }
@@ -490,11 +542,12 @@ public struct CascadeStepCellView: View {
                 promptText: step.userInput,
                 contextChips: step.attachedMentions
             )
-        case .plannerResponse:
+            .accessibilityIdentifier("step-user-\(step.stepIndex)")
+        case .plannerResponse, .notifyUser:
             VStack(alignment: .leading, spacing: 8) {
-                if let thinking = step.plannerResponse?.thinking {
+                if let thinking = step.plannerResponse?.thinking, !thinking.isEmpty {
                     CollapsibleThoughtRowView(
-                        durationSeconds: Int(step.plannerResponse?.thinkingDurationSeconds ?? 14),
+                        durationSeconds: max(1, Int(step.plannerResponse?.thinkingDurationSeconds ?? 4)),
                         reasoningSummary: thinking
                     )
                 }
@@ -503,14 +556,89 @@ public struct CascadeStepCellView: View {
                         .font(.system(size: 15.5))
                         .foregroundStyle(AntigravityTheme.inkReading)
                         .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("step-prose-\(step.stepIndex)")
                 }
             }
+        case .taskBoundary:
+            if let tb = step.taskBoundary {
+                SevenSegmentTaskProgressCardView(
+                    completedCount: tb.completedCount,
+                    totalCount: max(1, tb.totalCount),
+                    elapsedLabel: tb.elapsedLabel
+                )
+            }
         case .runCommand:
-            if let cmd = step.runCommand, step.status == .waiting {
-                InlineCommandApprovalCardView(store: store, commandLine: cmd.commandLine)
+            if let cmd = step.runCommand {
+                if step.status == .waiting {
+                    InlineCommandApprovalCardView(store: store, commandLine: cmd.commandLine)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "terminal")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(StepCardPalette.periwinkle)
+                            Text(cmd.commandLine)
+                                .font(.system(size: 12.5, design: .monospaced))
+                                .foregroundStyle(AntigravityTheme.inkReading)
+                                .lineLimit(2)
+                            Spacer()
+                            if let code = cmd.exitCode {
+                                Text(code == 0 ? "exit 0" : "exit \(code)")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(code == 0 ? StepCardPalette.emeraldDone : AntigravityTheme.statusError)
+                            }
+                        }
+                        if let out = cmd.outputPreview, !out.isEmpty {
+                            Text(out)
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(AntigravityTheme.inkSecondary)
+                                .lineLimit(4)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(StepCardPalette.codeBlockBg)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                    }
+                    .padding(11)
+                    .background(StepCardPalette.cardSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+            }
+        case .codeAction:
+            if let ca = step.codeAction {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc.badge.gearshape")
+                        .font(.system(size: 14))
+                        .foregroundStyle(StepCardPalette.periwinkle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(ca.fileName)
+                            .font(.system(size: 13.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(AntigravityTheme.inkReading)
+                        Text(ca.description)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(AntigravityTheme.inkSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    if ca.additions > 0 || ca.deletions > 0 {
+                        Text("+\(ca.additions) -\(ca.deletions)")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(StepCardPalette.emeraldDone)
+                    }
+                }
+                .padding(12)
+                .background(StepCardPalette.cardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         default:
-            EmptyView()
+            if let prose = step.plannerResponse?.response, !prose.isEmpty {
+                Text(prose)
+                    .font(.system(size: 15.5))
+                    .foregroundStyle(AntigravityTheme.inkReading)
+                    .lineSpacing(3)
+            }
         }
     }
 }

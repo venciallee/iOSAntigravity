@@ -129,3 +129,31 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
+
+  AntigravityUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: iOSUITests
+    dependencies:
+      - target: Antigravity
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ANTIGRAVITY_BUNDLE_PREFIX).app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Antigravity
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  Antigravity:
+    build:
+      targets:
+        Antigravity: all
+        AntigravityUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: AntigravityUITests

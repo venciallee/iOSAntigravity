@@ -19,12 +19,12 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 0
 fi
 
-echo "=== [1/4] Swift 6 Package Compilation & XCTest Suite (AntigravityData) ==="
+echo "=== [1/5] Swift 6 Package Compilation & XCTest Suite (AntigravityData) ==="
 swift --version
 swift test --package-path Packages/AntigravityData
 
 echo ""
-echo "=== [2/4] Live Antigravity Desktop Companion Bridge & Connect-RPC Handshake ==="
+echo "=== [2/5] Live Antigravity Desktop Companion Bridge & Connect-RPC Handshake ==="
 BRIDGE_CSRF="agy-mac-verify-$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -d'-' -f1)"
 BRIDGE_PORT="$(python3 -c '
 import socket
@@ -75,7 +75,7 @@ else
 fi
 
 echo ""
-echo "=== [3/4] Generating Xcode Project & Building Antigravity.app (Simulator) ==="
+echo "=== [3/5] Generating Xcode Project & Booting Simulator ==="
 if ! command -v xcodegen >/dev/null 2>&1; then
   if command -v brew >/dev/null 2>&1; then
     echo "[*] Installing xcodegen via Homebrew..."
@@ -160,21 +160,7 @@ fi
 
 IFS='|' read -r SIM_UDID SIM_NAME SIM_RUNTIME <<< "$SIM_INFO"
 echo "[*] Selected Simulator: ${SIM_NAME} (${SIM_RUNTIME}, UDID=${SIM_UDID})"
-DERIVED_DATA="$ROOT_DIR/.build/DerivedData"
 
-xcodebuild \
-  -project iOSAntigravity.xcodeproj \
-  -scheme Antigravity \
-  -sdk iphonesimulator \
-  -destination "id=${SIM_UDID}" \
-  -derivedDataPath "$DERIVED_DATA" \
-  CODE_SIGNING_ALLOWED=NO \
-  -quiet \
-  build
-echo "[PASS] Antigravity.app compiled for ${SIM_NAME}"
-
-echo ""
-echo "=== [4/4] Booting Simulator, Installing Antigravity.app & Connecting Live ==="
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
 DEV_DIR="$(xcode-select -p)"
 DEVICE_HUB_APP="$(dirname "$DEV_DIR")/Applications/DeviceHub.app"
@@ -189,6 +175,27 @@ if [[ -d "$DEVICE_HUB_APP" ]]; then
   open "devices://device/open?id=${SIM_UDID}" >/dev/null 2>&1 || true
 fi
 
+echo ""
+echo "=== [4/5] Compiling Antigravity.app & Running Real XCUITest UI Tap Suite (AntigravityUITests) ==="
+DERIVED_DATA="$ROOT_DIR/.build/DerivedData"
+mkdir -p verification/output/real-simulator
+rm -rf verification/output/real-simulator/AntigravityUITests.xcresult
+
+xcodebuild test \
+  -project iOSAntigravity.xcodeproj \
+  -scheme Antigravity \
+  -sdk iphonesimulator \
+  -destination "id=${SIM_UDID}" \
+  -derivedDataPath "$DERIVED_DATA" \
+  -only-testing:AntigravityUITests \
+  -resultBundlePath "verification/output/real-simulator/AntigravityUITests.xcresult" \
+  CODE_SIGN_IDENTITY="-" \
+  CODE_SIGNING_REQUIRED=NO \
+  AD_HOC_CODE_SIGNING_ALLOWED=YES
+echo "[PASS] Real Simulator XCUITest UI Tap Suite (row tap -> detail -> project -> compose/send) passed on ${SIM_NAME}"
+
+echo ""
+echo "=== [5/5] Installing & Connecting Antigravity.app Live to Your Antigravity Desktop ==="
 APP_PATH="$(find "$DERIVED_DATA/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name "Antigravity.app" | head -n 1)"
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
   echo "[!] Built Antigravity.app bundle not found under $DERIVED_DATA/Build/Products/Debug-iphonesimulator"
@@ -204,11 +211,11 @@ SIMCTL_CHILD_ANTIGRAVITY_HOST_NAME="$(scutil --get ComputerName 2>/dev/null || h
   xcrun simctl launch "$SIM_UDID" dev.antigravity.ios.app
 
 sleep 2.5
-mkdir -p verification/output/real-simulator
 xcrun simctl io "$SIM_UDID" screenshot "verification/output/real-simulator/LIVE_CONNECTED_HOME.png"
 echo "[PASS] Real Simulator screenshot saved to verification/output/real-simulator/LIVE_CONNECTED_HOME.png"
 echo ""
 echo "Simulator (${SIM_NAME}) is now running Antigravity.app connected to http://127.0.0.1:${BRIDGE_PORT}."
+echo "Tap any conversation row or project group in the Simulator window to inspect live sessions!"
 echo "Press Ctrl+C when finished interacting to stop the background Companion Bridge."
 tail -n 6 -f /tmp/antigravity-bridge.log &
 TAIL_PID=$!

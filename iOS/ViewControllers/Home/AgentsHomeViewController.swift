@@ -247,7 +247,7 @@ public struct AgentsHomeViewController: View {
                     onSelectTab?(tab)
                 },
                 onTapFAB: {
-                    onOpenConversation?("new-conversation")
+                    triggerOpenConversation("new-conversation")
                 }
             )
         }
@@ -520,10 +520,8 @@ public struct AgentsHomeViewController: View {
                     }
                 }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(AntigravityTheme.surfaceCard)
-            )
+            .background(AntigravityTheme.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
@@ -540,7 +538,7 @@ public struct AgentsHomeViewController: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button {
-                    onOpenProjectDetail?(project.slug)
+                    triggerOpenProjectDetail(project.slug)
                 } label: {
                     HStack(spacing: 10) {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -569,11 +567,12 @@ public struct AgentsHomeViewController: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("project-header-\(project.slug)")
 
                 Spacer(minLength: 4)
 
                 Button {
-                    onOpenConversation?("new-\(project.slug)")
+                    triggerOpenConversation("new-\(project.slug)")
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 16, weight: .medium))
@@ -603,19 +602,37 @@ public struct AgentsHomeViewController: View {
 
             if !isCollapsed {
                 VStack(spacing: 0) {
-                    ForEach(Array(project.conversations.enumerated()), id: \.element.id) { index, item in
-                        conversationRow(item: item, showProjectSlug: false)
-                        if index < project.conversations.count - 1 {
-                            Divider()
-                                .overlay(UEChromePalette.subtleDivider)
-                                .padding(.leading, 44)
+                    if project.conversations.isEmpty && store.isLiveBackendConnected {
+                        Button {
+                            triggerOpenConversation("new-\(project.slug)")
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "plus.bubble")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(AntigravityTheme.accentPeriwinkle)
+                                Text("No conversations yet · Start one in \(project.slug)")
+                                    .font(.system(size: 14, weight: .regular))
+                                    .foregroundStyle(UEChromePalette.textSecondary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 52)
+                        }
+                        .buttonStyle(AntigravityInteractiveRowButtonStyle())
+                        .accessibilityIdentifier("empty-project-conv-\(project.slug)")
+                    } else {
+                        ForEach(Array(project.conversations.enumerated()), id: \.element.id) { index, item in
+                            conversationRow(item: item, showProjectSlug: false)
+                            if index < project.conversations.count - 1 {
+                                Divider()
+                                    .overlay(UEChromePalette.subtleDivider)
+                                    .padding(.leading, 44)
+                            }
                         }
                     }
                 }
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(AntigravityTheme.surfaceCard)
-                )
+                .background(AntigravityTheme.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
@@ -628,73 +645,89 @@ public struct AgentsHomeViewController: View {
         )
     }
 
-    // MARK: - 6. Conversation Row with Swipe Actions & Rich Context Menu
+    // MARK: - 6. Conversation Row with Full-Width Hit-Testing & Context Menu
+
+    private func triggerOpenConversation(_ id: String) {
+        if let onOpenConversation {
+            onOpenConversation(id)
+            return
+        }
+        if id == "new-conversation" || id.hasPrefix("new-") {
+            let slug = id.hasPrefix("new-") && id != "new-conversation"
+                ? String(id.dropFirst(4))
+                : store.selectedProjectId
+            _ = store.createConversationInProject(slug)
+            return
+        }
+        store.selectCascade(id)
+    }
+
+    private func triggerOpenProjectDetail(_ slug: String) {
+        if let onOpenProjectDetail {
+            onOpenProjectDetail(slug)
+        } else {
+            store.selectProject(slug)
+        }
+    }
 
     private func conversationRow(item: AgentConversationItem, showProjectSlug: Bool) -> some View {
         Button {
-            onOpenConversation?(item.id)
+            triggerOpenConversation(item.id)
         } label: {
-            HStack(alignment: .top, spacing: 11) {
-                leadingStatusIndicator(item.indicator)
-                    .frame(width: 18, height: 20)
-                    .padding(.top, 1)
+            HStack(alignment: .center, spacing: 11) {
+                HStack(alignment: .top, spacing: 11) {
+                    leadingStatusIndicator(item.indicator)
+                        .frame(width: 18, height: 20)
+                        .padding(.top, 1)
 
-                VStack(alignment: .leading, spacing: 2.5) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(item.title)
-                            .font(.system(size: 15.5, weight: .semibold))
-                            .foregroundStyle(UEChromePalette.textPrimary)
-                            .lineLimit(1)
-                        Spacer(minLength: 6)
-                        Text(item.timestampLabel)
-                            .font(.system(size: 12.5, weight: .regular))
-                            .foregroundStyle(UEChromePalette.textMuted)
-                    }
+                    VStack(alignment: .leading, spacing: 2.5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.title)
+                                .font(.system(size: 15.5, weight: .semibold))
+                                .foregroundStyle(UEChromePalette.textPrimary)
+                                .lineLimit(1)
+                            Spacer(minLength: 6)
+                            Text(item.timestampLabel)
+                                .font(.system(size: 12.5, weight: .regular))
+                                .foregroundStyle(UEChromePalette.textMuted)
+                        }
 
-                    HStack(spacing: 5) {
-                        Text(item.statusLine)
-                            .font(.system(size: 13.5, weight: .regular))
-                            .foregroundStyle(statusTextColor(for: item.statusHighlight))
-                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(item.statusLine)
+                                .font(.system(size: 13.5, weight: .regular))
+                                .foregroundStyle(statusTextColor(for: item.statusHighlight))
+                                .lineLimit(1)
 
-                        if let add = item.additions, let del = item.deletions {
-                            Text("+\(add)")
-                                .font(.system(size: 13.5, weight: .medium))
-                                .foregroundStyle(AntigravityTheme.statusDone)
-                            Text("−\(del)")
-                                .font(.system(size: 13.5, weight: .medium))
-                                .foregroundStyle(AntigravityTheme.statusError)
+                            if let add = item.additions, let del = item.deletions {
+                                Text("+\(add)")
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .foregroundStyle(AntigravityTheme.statusDone)
+                                Text("−\(del)")
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .foregroundStyle(AntigravityTheme.statusError)
+                            }
+                        }
+
+                        if showProjectSlug {
+                            Text(item.projectSlug)
+                                .font(.system(size: 12.5, weight: .regular))
+                                .foregroundStyle(UEChromePalette.textMuted)
                         }
                     }
+                }
 
-                    if showProjectSlug {
-                        Text(item.projectSlug)
-                            .font(.system(size: 12.5, weight: .regular))
-                            .foregroundStyle(UEChromePalette.textMuted)
-                    }
+                if store.isLiveBackendConnected {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(UEChromePalette.textMuted.opacity(0.65))
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(minHeight: 58)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button {
-                archiveConversation(id: item.id)
-            } label: {
-                Label("Archive", systemImage: "archivebox")
-            }
-            .tint(Color(red: 0x38 / 255.0, green: 0x3A / 255.0, blue: 0x43 / 255.0))
-
-            Button {
-                togglePinConversation(id: item.id)
-            } label: {
-                Label(item.isPinned ? "Unpin" : "Pin", systemImage: "pin")
-            }
-            .tint(AntigravityTheme.accentPeriwinkle)
-        }
+        .buttonStyle(AntigravityInteractiveRowButtonStyle())
+        .accessibilityIdentifier("conv-row-\(item.id)")
         .contextMenu {
             Button {
                 togglePinConversation(id: item.id)
@@ -716,7 +749,7 @@ public struct AgentsHomeViewController: View {
                 Label("Rename", systemImage: "pencil")
             }
             Button {
-                onOpenProjectDetail?(item.projectSlug)
+                triggerOpenProjectDetail(item.projectSlug)
             } label: {
                 Label("Move to Project", systemImage: "folder")
             }
@@ -732,7 +765,6 @@ public struct AgentsHomeViewController: View {
                 Label("Delete", systemImage: "trash")
             }
         }
-        .accessibilityIdentifier("conv-row-\(item.id)")
     }
 
     @ViewBuilder

@@ -145,6 +145,8 @@ public final class AntigravitySessionStore {
     public var connectionStatusText: String = "Demo Sandbox · Offline ESDD Fixtures"
     public var connectionErrorText: String? = nil
     public var lastPingLatencyMs: Int? = nil
+    public var isLoadingSteps: Bool = false
+    public var stepLoadErrorText: String? = nil
 
     // MARK: - Dependencies
     private let projectionStore: LocalProjectionStore
@@ -419,12 +421,24 @@ public final class AntigravitySessionStore {
 
     public var totalDiffAdditions: Int {
         let sum = activeTurnDiffs.reduce(0) { $0 + $1.additions }
-        return sum > 0 ? sum : (activeSummary?.totalAdditions ?? 128)
+        if sum > 0 { return sum }
+        let stepSum = activeSteps.compactMap(\.codeAction).reduce(0) { $0 + $1.additions }
+        if stepSum > 0 { return stepSum }
+        if isLiveBackendConnected {
+            return activeSummary?.totalAdditions ?? 0
+        }
+        return activeSummary?.totalAdditions ?? 128
     }
 
     public var totalDiffDeletions: Int {
         let sum = activeTurnDiffs.reduce(0) { $0 + $1.deletions }
-        return sum > 0 ? sum : (activeSummary?.totalDeletions ?? 14)
+        if sum > 0 { return sum }
+        let stepSum = activeSteps.compactMap(\.codeAction).reduce(0) { $0 + $1.deletions }
+        if stepSum > 0 { return stepSum }
+        if isLiveBackendConnected {
+            return activeSummary?.totalDeletions ?? 0
+        }
+        return activeSummary?.totalDeletions ?? 14
     }
 
     // MARK: - Composer Suggestions (`UE07`)
@@ -719,7 +733,12 @@ public final class AntigravitySessionStore {
         }
         activeCascadeId = sortedSummaries.first?.cascadeId ?? ""
 
-        // Clear offline ESDD demo automations when connected to a live backend and sync live Companion automations
+        // Clear offline ESDD demo state when connected to a live backend
+        stepsByCascadeId = [:]
+        activeTurnDiffs = []
+        composerDraftText = ""
+        composerAttachments = []
+        stepLoadErrorText = nil
         automations = []
         Task { [weak self] in
             if let liveAutos = try? await client.listAutomations() {
@@ -780,38 +799,68 @@ public final class AntigravitySessionStore {
         }
     }
 
-    /// Synchronizes `GetCascadeTrajectorySteps` (JSON `<600`, Binary Protobuf `>=600`) for `cascadeId`,
+    /// Synchronizes `GetCascadeTrajectorySteps` (50-step JSON batches `<600`, Binary Protobuf `>=600`) for `cascadeId`,
     /// polling every 450ms while the agent turn is actively streaming (`inProgress` or `pending`).
     public func syncStepsForCascade(_ cascadeId: String, pollUntilIdle: Bool = true) {
         stepPollingTask?.cancel()
         guard isLiveBackendConnected, let client = rpcClient, !cascadeId.isEmpty else { return }
 
+        stepLoadErrorText = nil
+        if (stepsByCascadeId[cascadeId] ?? []).isEmpty {
+            isLoadingSteps = true
+        }
+
         stepPollingTask = Task { [weak self] in
+            defer {
+                if self?.activeCascadeId == cascadeId {
+                    self?.isLoadingSteps = false
+                }
+            }
             var attempts = 0
             let maxAttempts = pollUntilIdle ? 90 : 1
             while !Task.isCancelled && attempts < maxAttempts {
                 attempts += 1
-                let knownCount = max(200, (self?.summaries.first(where: { $0.cascadeId == cascadeId })?.stepCount ?? 50) + 20)
-                if let remoteSteps = try? await client.fetchTrajectorySteps(
-                    cascadeId: cascadeId,
-                    startIndex: 0,
-                    endIndex: knownCount
-                ), !remoteSteps.isEmpty {
-                    guard let self else { return }
-                    self.stepsByCascadeId[cascadeId] = remoteSteps
-                    if let sumIdx = self.summaries.firstIndex(where: { $0.cascadeId == cascadeId }) {
-                        self.summaries[sumIdx].stepCount = remoteSteps.count
-                        if let lastStatus = remoteSteps.last?.status {
-                            self.summaries[sumIdx].status = lastStatus
-                            self.summaries[sumIdx].statusSubtitle = lastStatus == .inProgress
-                                ? "Running · Step \(remoteSteps.count)"
-                                : lastStatus.displayBadgeText
-                        }
+                let knownCount = self?.summaries.first(where: { $0.cascadeId == cascadeId })?.stepCount ?? 0
+                do {
+                    let remoteSteps = try await client.fetchAllTrajectorySteps(
+                        cascadeId: cascadeId,
+                        knownStepCount: knownCount
+                    )
+                    guard let self, !Task.isCancelled else { return }
+                    self.stepLoadErrorText = nil
+                    if self.activeCascadeId == cascadeId {
+                        self.isLoadingSteps = false
                     }
-                    let stillActive = remoteSteps.contains { $0.status == .inProgress || $0.status == .pending }
-                    if !pollUntilIdle || !stillActive {
+                    if !remoteSteps.isEmpty {
+                        self.stepsByCascadeId[cascadeId] = remoteSteps
+                        if let sumIdx = self.summaries.firstIndex(where: { $0.cascadeId == cascadeId }) {
+                            self.summaries[sumIdx].stepCount = max(self.summaries[sumIdx].stepCount, remoteSteps.count)
+                            if remoteSteps.contains(where: { $0.status == .waiting }) {
+                                self.summaries[sumIdx].status = .waiting
+                            } else if remoteSteps.contains(where: { $0.status == .inProgress || $0.status == .pending }) {
+                                self.summaries[sumIdx].status = .inProgress
+                            } else if self.summaries[sumIdx].status == .inProgress || self.summaries[sumIdx].status == .pending {
+                                self.summaries[sumIdx].status = .done
+                            }
+                            self.summaries[sumIdx].statusSubtitle = AntigravityRPCClient.buildLiveStatusSubtitle(
+                                status: self.summaries[sumIdx].status,
+                                stepCount: self.summaries[sumIdx].stepCount,
+                                isUnread: self.summaries[sumIdx].isUnread
+                            )
+                        }
+                        let stillActive = remoteSteps.contains { $0.status == .inProgress || $0.status == .pending }
+                            || self.summaries.first(where: { $0.cascadeId == cascadeId })?.status == .inProgress
+                        if !pollUntilIdle || !stillActive {
+                            break
+                        }
+                    } else if knownCount == 0 || !pollUntilIdle {
                         break
                     }
+                } catch {
+                    if !Task.isCancelled, self?.activeCascadeId == cascadeId, (self?.stepsByCascadeId[cascadeId] ?? []).isEmpty {
+                        self?.stepLoadErrorText = error.localizedDescription
+                    }
+                    if !pollUntilIdle { break }
                 }
                 if !pollUntilIdle { break }
                 try? await Task.sleep(nanoseconds: 450_000_000)
@@ -1384,20 +1433,22 @@ public final class AntigravitySessionStore {
         )
         currentSteps.append(userStep)
 
-        let assistantStep = CascadeStep(
-            cascadeId: activeCascadeId,
-            stepIndex: nextIndex + 1,
-            type: .plannerResponse,
-            status: .inProgress,
-            createdAt: Date(),
-            plannerResponse: PlannerResponsePayload(
-                response: "Running in `\(selectedModelConfig.mode.rawValue)` mode with `\(selectedModelConfig.displayName)` (`\(selectedModelConfig.agentPersona)` agent)...",
-                thinking: "Evaluating prompt with \(mentionLabels.count) context chips on branch \(activeSummary?.branchName ?? "main").",
-                thinkingDurationSeconds: 2.0,
-                referencedFiles: composerAttachments.map(\.targetUri)
+        if !isLiveBackendConnected {
+            let assistantStep = CascadeStep(
+                cascadeId: activeCascadeId,
+                stepIndex: nextIndex + 1,
+                type: .plannerResponse,
+                status: .inProgress,
+                createdAt: Date(),
+                plannerResponse: PlannerResponsePayload(
+                    response: "Running in `\(selectedModelConfig.mode.rawValue)` mode with `\(selectedModelConfig.displayName)` (`\(selectedModelConfig.agentPersona)` agent)...",
+                    thinking: "Evaluating prompt with \(mentionLabels.count) context chips on branch \(activeSummary?.branchName ?? "main").",
+                    thinkingDurationSeconds: 2.0,
+                    referencedFiles: composerAttachments.map(\.targetUri)
+                )
             )
-        )
-        currentSteps.append(assistantStep)
+            currentSteps.append(assistantStep)
+        }
         stepsByCascadeId[activeCascadeId] = currentSteps
 
         if let sumIdx = summaries.firstIndex(where: { $0.cascadeId == activeCascadeId }) {
@@ -1406,6 +1457,9 @@ public final class AntigravitySessionStore {
             summaries[sumIdx].lastMessagePreview = messageBody
             summaries[sumIdx].relativeTimeLabel = "now"
             summaries[sumIdx].updatedAt = Date()
+            if summaries[sumIdx].title == "New Conversation" {
+                summaries[sumIdx].title = String(messageBody.prefix(48))
+            }
             if displayOptions.autoPinOnMessage {
                 summaries[sumIdx].isPinned = true
             }
@@ -1431,14 +1485,34 @@ public final class AntigravitySessionStore {
             await storeRef.saveProjectedSteps(currentSteps, for: cid)
 
             var targetCascadeId = cid
-            if liveConnected, targetCascadeId.isEmpty, let clientRef,
+            if liveConnected, targetCascadeId.hasPrefix("cas-") {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if let upgraded = self?.activeCascadeId, !upgraded.isEmpty, !upgraded.hasPrefix("cas-") {
+                    targetCascadeId = upgraded
+                }
+            }
+            if liveConnected, (targetCascadeId.isEmpty || targetCascadeId.hasPrefix("cas-")), let clientRef,
                let createdId = try? await clientRef.startCascade(
                    workspaceUri: workspaceUri,
                    initialPrompt: "",
                    modelId: cfg.modelId
                ) {
+                if let self {
+                    let existing = self.stepsByCascadeId.removeValue(forKey: targetCascadeId) ?? currentSteps
+                    self.stepsByCascadeId[createdId] = existing.map { step in
+                        var copy = step
+                        copy.cascadeId = createdId
+                        return copy
+                    }
+                    if let idx = self.summaries.firstIndex(where: { $0.cascadeId == targetCascadeId }) {
+                        self.summaries[idx].cascadeId = createdId
+                    }
+                    if self.activeCascadeId == targetCascadeId || self.activeCascadeId.isEmpty {
+                        self.activeCascadeId = createdId
+                        self.activeRoute = .cascadeChat(createdId)
+                    }
+                }
                 targetCascadeId = createdId
-                self?.activeCascadeId = createdId
             }
 
             try? await clientRef?.sendUserCascadeMessage(

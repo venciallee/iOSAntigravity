@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -116,33 +117,11 @@ def main():
     out_dir = repo_root / "verification" / "output" / "real-simulator"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=== [1/4] Generating Xcode Project via XcodeGen ===")
+    print("=== [1/5] Generating Xcode Project via XcodeGen ===")
     subprocess.run(["xcodegen", "generate"], cwd=repo_root, check=True)
 
     udid, sim_name, sim_runtime = select_iphone_simulator()
-    print(f"=== [2/4] Building Antigravity.app for {sim_name} ({sim_runtime}, UDID={udid}) ===")
-    derived = repo_root / ".build" / "DerivedData"
-    subprocess.run(
-        [
-            "xcodebuild",
-            "-project",
-            "iOSAntigravity.xcodeproj",
-            "-scheme",
-            "Antigravity",
-            "-sdk",
-            "iphonesimulator",
-            "-destination",
-            f"id={udid}",
-            "-derivedDataPath",
-            str(derived),
-            "CODE_SIGNING_ALLOWED=NO",
-            "build",
-        ],
-        cwd=repo_root,
-        check=True,
-    )
-
-    print(f"=== [3/4] Booting Simulator {sim_name} & Verifying Live Connect-RPC App Handshake ===")
+    print(f"=== [2/5] Booting Simulator {sim_name} ({sim_runtime}, UDID={udid}) ===")
     subprocess.run(["xcrun", "simctl", "boot", udid], check=False)
     subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], check=True)
     subprocess.run(
@@ -168,6 +147,49 @@ def main():
         check=False,
     )
 
+    print(f"=== [3/5] Building Antigravity.app & Running Real XCUITest Tap Suite (AntigravityUITests) on {sim_name} ===")
+    derived = repo_root / ".build" / "DerivedData"
+    xcresult_path = out_dir / "AntigravityUITests.xcresult"
+    shutil.rmtree(xcresult_path, ignore_errors=True)
+    uitest_log_path = out_dir / "uitests.log"
+    uitest_cmd = [
+        "xcodebuild",
+        "test",
+        "-project",
+        "iOSAntigravity.xcodeproj",
+        "-scheme",
+        "Antigravity",
+        "-sdk",
+        "iphonesimulator",
+        "-destination",
+        f"id={udid}",
+        "-derivedDataPath",
+        str(derived),
+        "-only-testing:AntigravityUITests",
+        "-resultBundlePath",
+        str(xcresult_path),
+        "CODE_SIGN_IDENTITY=-",
+        "CODE_SIGNING_REQUIRED=NO",
+        "AD_HOC_CODE_SIGNING_ALLOWED=YES",
+    ]
+    with uitest_log_path.open("w", encoding="utf-8") as log_fp:
+        proc = subprocess.Popen(
+            uitest_cmd,
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            log_fp.write(line)
+        ret = proc.wait()
+        if ret != 0:
+            raise subprocess.CalledProcessError(ret, uitest_cmd)
+    print("  [PASS] Real XCUITest Interactive UI Tap Suite (AntigravityUITests) succeeded.")
+
+    print(f"=== [4/5] Verifying Live Connect-RPC App Handshake on {sim_name} ===")
     app_path = next((derived / "Build" / "Products" / "Debug-iphonesimulator").glob("Antigravity.app"))
     subprocess.run(["xcrun", "simctl", "install", udid, str(app_path)], check=True)
 
@@ -197,6 +219,7 @@ def main():
     try:
         subprocess.run(["xcrun", "simctl", "terminate", udid, "dev.antigravity.ios.app"], check=False)
         launch_env = os.environ.copy()
+        launch_env["SIMCTL_CHILD_NO_PROXY"] = "127.0.0.1,localhost,::1"
         launch_env["SIMCTL_CHILD_ANTIGRAVITY_BACKEND_URL"] = f"http://127.0.0.1:{bridge_port}"
         launch_env["SIMCTL_CHILD_ANTIGRAVITY_CSRF_TOKEN"] = csrf_token
         launch_env["SIMCTL_CHILD_ANTIGRAVITY_HOST_NAME"] = "Cloud Mac Runner"
@@ -226,7 +249,7 @@ def main():
         bridge_srv.shutdown()
         bridge_srv.server_close()
 
-    print("=== [4/4] Capturing All 13 Native SwiftUI UE Screens (UE01 .. UE13) on iOS Simulator ===")
+    print("=== [5/5] Capturing All 13 Native SwiftUI UE Screens (UE01 .. UE13) on iOS Simulator ===")
     state_ids = []
     for state in ir["states"]:
         state_id = state["id"]
@@ -262,11 +285,12 @@ def main():
         "simulatorName": sim_name,
         "simulatorRuntime": sim_runtime,
         "simulatorUDID": udid,
+        "uiTestsPassed": True,
         "liveConnectRPCHits": rpc_hits,
         "capturedStates": state_ids,
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print("\nALL 13 REAL IOS SIMULATOR SCREENS + LIVE CONNECT-RPC HANDSHAKE VERIFIED.")
+    print("\nALL REAL XCUITEST UI TAPS + 13 IOS SIMULATOR SCREENS + LIVE CONNECT-RPC HANDSHAKE VERIFIED.")
 
 
 if __name__ == "__main__":

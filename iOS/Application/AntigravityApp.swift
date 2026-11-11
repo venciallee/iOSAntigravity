@@ -43,6 +43,7 @@ public struct AntigravityApp: App {
                         return
                     }
                     if url.scheme?.lowercased() == "antigravity" && url.host?.lowercased() == "pair" {
+                        activeVerifyCase = nil
                         Task {
                             let ok = await store.connectWithPairingURI(url.absoluteString)
                             if ok {

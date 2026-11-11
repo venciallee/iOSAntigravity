@@ -377,6 +377,36 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
         self.search = search
         self.requestedInteraction = requestedInteraction
     }
+
+    /// Returns true if this step carries user-visible chat, tool evidence, task progress, or approval UI.
+    /// Filters out internal Desktop housekeeping steps (`CHECKPOINT`, `EPHEMERAL_MESSAGE`, empty tool-call wrappers).
+    public var hasRenderableChatContent: Bool {
+        if status == .waiting || requestedInteraction != nil {
+            return true
+        }
+        switch type {
+        case .userInput:
+            let hasText = !(userInput ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return hasText || !attachedMentions.isEmpty
+        case .plannerResponse, .notifyUser:
+            let hasResponse = !(plannerResponse?.response ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasThinking = !(plannerResponse?.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return hasResponse || hasThinking
+        case .taskBoundary:
+            return taskBoundary != nil
+        case .runCommand:
+            return runCommand != nil
+        case .codeAction:
+            return codeAction != nil
+        case .viewFile, .viewContentChunk:
+            return viewFile != nil
+        case .search, .listDirectory:
+            return search != nil || viewFile != nil
+        default:
+            let hasResponse = !(plannerResponse?.response ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return hasResponse
+        }
+    }
 }
 
 /// Groups consecutive file reads, searches, and edits into a single collapsible evidence card
@@ -411,7 +441,7 @@ public enum CascadeDisplayItem: Identifiable, Sendable, Equatable {
             buffer.removeAll()
         }
 
-        for step in steps {
+        for step in steps where step.hasRenderableChatContent {
             if step.type == .taskBoundary {
                 flushBuffer()
                 result.append(.single(step))

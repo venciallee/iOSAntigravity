@@ -162,6 +162,23 @@ public struct AntigravityFloatingTabBar: View {
     }
 }
 
+/// Full-bleed card row `ButtonStyle` ensuring 100% solid pixel hit-testing across
+/// text, spacers, and padding on both iOS Simulator (`DeviceHub` mouse clicks) and physical touch,
+/// with instant tactile press feedback and zero `PlainButtonStyle` transparent dead zones.
+public struct AntigravityInteractiveRowButtonStyle: ButtonStyle {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                AntigravityTheme.surfaceCard
+                    .overlay(Color.white.opacity(configuration.isPressed ? 0.09 : 0.0))
+            )
+            .contentShape(Rectangle())
+    }
+}
+
 /// Adaptive shell container (`AntigravityShellController`) routing all 13 UE v2.0 flows
 /// interactively or rendering deterministic isolated ESDD verification scenes (`UE01`..`UE13`).
 public struct AntigravityRootContainerView: View {
@@ -169,20 +186,8 @@ public struct AntigravityRootContainerView: View {
     @Binding public var activeVerifyCase: ESDDVerifySceneCase?
 
     @State private var selectedTab: ShellTab = .agents
-    @State private var activePushedScreen: PushedDestination?
     @State private var activeModalSheet: ModalSheetDestination?
-
-    private enum PushedDestination: Identifiable, Equatable {
-        case projectDetail(String)
-        case chat(String)
-
-        var id: String {
-            switch self {
-            case .projectDetail(let slug): return "project-\(slug)"
-            case .chat(let convId):        return "chat-\(convId)"
-            }
-        }
-    }
+    @State private var chatReturnProjectSlug: String?
 
     private enum ModalSheetDestination: String, Identifiable {
         case displayOptions
@@ -216,34 +221,39 @@ public struct AntigravityRootContainerView: View {
     @ViewBuilder
     private var interactiveNavigationView: some View {
         ZStack {
-            if store.activeRoute == .planReview {
+            switch store.activeRoute {
+            case .planReview:
                 ImplementationPlanReviewViewController(store: store)
-            } else if store.activeRoute == .turnDiffReview {
+            case .turnDiffReview:
                 TurnDiffReviewViewController(store: store)
-            } else if let pushed = activePushedScreen {
-                switch pushed {
-                case .projectDetail(let projectSlug):
-                    ProjectDetailViewController(
-                        store: store,
-                        projectSlug: projectSlug,
-                        onBack: {
+            case .projectDetail(let projectSlug):
+                ProjectDetailViewController(
+                    store: store,
+                    projectSlug: projectSlug,
+                    onBack: {
+                        chatReturnProjectSlug = nil
+                        store.activeRoute = .tabRoot
+                    },
+                    onOpenConversation: { convId in
+                        chatReturnProjectSlug = projectSlug
+                        openOrCreateConversation(convId, defaultProjectSlug: projectSlug)
+                    }
+                )
+            case .cascadeChat:
+                CascadeChatViewController(
+                    store: store,
+                    onBack: {
+                        if let returnSlug = chatReturnProjectSlug {
+                            chatReturnProjectSlug = nil
+                            store.activeRoute = .projectDetail(returnSlug)
+                        } else {
                             store.activeRoute = .tabRoot
-                            activePushedScreen = nil
-                        },
-                        onOpenConversation: { convId in
-                            openOrCreateConversation(convId, defaultProjectSlug: projectSlug)
                         }
-                    )
-                case .chat:
-                    CascadeChatViewController(
-                        store: store,
-                        onBack: {
-                            store.activeRoute = .tabRoot
-                            activePushedScreen = nil
-                        }
-                    )
-                }
-            } else {
+                    }
+                )
+            case .pairingSettings:
+                settingsTabContainerView
+            case .tabRoot:
                 switch selectedTab {
                 case .agents:
                     AgentsHomeViewController(
@@ -252,11 +262,12 @@ public struct AntigravityRootContainerView: View {
                         onOpenDisplayOptions: { activeModalSheet = .displayOptions },
                         onOpenNewProject: { activeModalSheet = .createProject },
                         onOpenProjectDetail: { slug in
+                            chatReturnProjectSlug = nil
                             store.selectProject(slug)
-                            activePushedScreen = .projectDetail(slug)
                         },
                         onOpenContextMenuPreview: { activeModalSheet = .contextMenuPreview },
                         onOpenConversation: { convId in
+                            chatReturnProjectSlug = nil
                             openOrCreateConversation(convId, defaultProjectSlug: store.selectedProjectId)
                         }
                     )
@@ -267,19 +278,7 @@ public struct AntigravityRootContainerView: View {
                         onOpenDisplayOptions: { activeModalSheet = .displayOptions }
                     )
                 case .settings:
-                    VStack(spacing: 0) {
-                        RemotePairingViewController(
-                            store: store,
-                            onConnected: { selectedTab = .agents }
-                        )
-                        Spacer(minLength: 0)
-                        AntigravityFloatingTabBar(
-                            selectedTab: .settings,
-                            onSelectTab: { tab in selectedTab = tab },
-                            onTapFAB: { selectedTab = .agents }
-                        )
-                    }
-                    .background(AntigravityTheme.canvasObsidian)
+                    settingsTabContainerView
                 }
             }
         }
@@ -304,13 +303,37 @@ public struct AntigravityRootContainerView: View {
         }
     }
 
+    private var settingsTabContainerView: some View {
+        VStack(spacing: 0) {
+            RemotePairingViewController(
+                store: store,
+                onConnected: {
+                    store.activeRoute = .tabRoot
+                    selectedTab = .agents
+                }
+            )
+            Spacer(minLength: 0)
+            AntigravityFloatingTabBar(
+                selectedTab: .settings,
+                onSelectTab: { tab in
+                    store.activeRoute = .tabRoot
+                    selectedTab = tab
+                },
+                onTapFAB: {
+                    store.activeRoute = .tabRoot
+                    selectedTab = .agents
+                }
+            )
+        }
+        .background(AntigravityTheme.canvasObsidian)
+    }
+
     private func openOrCreateConversation(_ rawId: String, defaultProjectSlug: String) {
         if rawId == "new-conversation" || rawId.hasPrefix("new-") {
             let slug = rawId.hasPrefix("new-") && rawId != "new-conversation"
                 ? String(rawId.dropFirst(4))
                 : defaultProjectSlug
-            let createdId = store.createConversationInProject(slug)
-            activePushedScreen = .chat(createdId)
+            _ = store.createConversationInProject(slug)
             return
         }
         let mappedId: String = {
@@ -323,7 +346,6 @@ public struct AntigravityRootContainerView: View {
             }
         }()
         store.selectCascade(mappedId)
-        activePushedScreen = .chat(mappedId)
     }
 
     // MARK: - Isolated Deterministic ESDD Scenes (UE01 .. UE13)

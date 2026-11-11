@@ -123,7 +123,11 @@ public struct ProjectDetailViewController: View {
     private var topNavigationBar: some View {
         HStack {
             Button {
-                onBack?()
+                if let onBack {
+                    onBack()
+                } else {
+                    store.activeRoute = .tabRoot
+                }
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "chevron.left")
@@ -319,11 +323,23 @@ public struct ProjectDetailViewController: View {
         }
     }
 
+    private func triggerOpenConversation(_ id: String) {
+        if let onOpenConversation {
+            onOpenConversation(id)
+            return
+        }
+        if id == "new-conversation" || id.hasPrefix("new-") {
+            _ = store.createConversationInProject(projectSlug)
+            return
+        }
+        store.selectCascade(id)
+    }
+
     // MARK: - 4. Full-Width Periwinkle CTA
 
     private var newConversationButton: some View {
         Button {
-            onOpenConversation?("new-\(projectSlug)")
+            triggerOpenConversation("new-\(projectSlug)")
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "pencil")
@@ -467,48 +483,56 @@ public struct ProjectDetailViewController: View {
             VStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                     Button {
-                        onOpenConversation?(row.id)
+                        triggerOpenConversation(row.id)
                     } label: {
-                        HStack(alignment: .top, spacing: 11) {
-                            rowIndicator(row.indicator)
-                                .frame(width: 18, height: 20)
-                                .padding(.top, 1)
+                        HStack(alignment: .center, spacing: 11) {
+                            HStack(alignment: .top, spacing: 11) {
+                                rowIndicator(row.indicator)
+                                    .frame(width: 18, height: 20)
+                                    .padding(.top, 1)
 
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(row.title)
-                                        .font(.system(size: 15.5, weight: .semibold))
-                                        .foregroundStyle(Color.white)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text(row.timestamp)
-                                        .font(.system(size: 12.5, weight: .regular))
-                                        .foregroundStyle(UEChromePalette.textMuted)
-                                }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(row.title)
+                                            .font(.system(size: 15.5, weight: .semibold))
+                                            .foregroundStyle(Color.white)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text(row.timestamp)
+                                            .font(.system(size: 12.5, weight: .regular))
+                                            .foregroundStyle(UEChromePalette.textMuted)
+                                    }
 
-                                HStack(spacing: 5) {
-                                    Text(row.subtitle)
-                                        .font(.system(size: 13.5, weight: .regular))
-                                        .foregroundStyle(subtitleColor(for: row.indicator))
-                                        .lineLimit(1)
+                                    HStack(spacing: 5) {
+                                        Text(row.subtitle)
+                                            .font(.system(size: 13.5, weight: .regular))
+                                            .foregroundStyle(subtitleColor(for: row.indicator))
+                                            .lineLimit(1)
 
-                                    if let add = row.additions, let del = row.deletions {
-                                        Text("+\(add)")
-                                            .font(.system(size: 13.5, weight: .medium))
-                                            .foregroundStyle(AntigravityTheme.statusDone)
-                                        Text("−\(del)")
-                                            .font(.system(size: 13.5, weight: .medium))
-                                            .foregroundStyle(AntigravityTheme.statusError)
+                                        if let add = row.additions, let del = row.deletions {
+                                            Text("+\(add)")
+                                                .font(.system(size: 13.5, weight: .medium))
+                                                .foregroundStyle(AntigravityTheme.statusDone)
+                                            Text("−\(del)")
+                                                .font(.system(size: 13.5, weight: .medium))
+                                                .foregroundStyle(AntigravityTheme.statusError)
+                                        }
                                     }
                                 }
+                            }
+
+                            if store.isLiveBackendConnected {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(UEChromePalette.textMuted.opacity(0.65))
                             }
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 11)
                         .frame(minHeight: 58)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AntigravityInteractiveRowButtonStyle())
+                    .accessibilityIdentifier("project-conv-row-\(row.id)")
 
                     if index < rows.count - 1 {
                         Divider()
@@ -517,10 +541,8 @@ public struct ProjectDetailViewController: View {
                     }
                 }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(AntigravityTheme.surfaceCard)
-            )
+            .background(AntigravityTheme.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)

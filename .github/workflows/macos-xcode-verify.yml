@@ -7,7 +7,7 @@ on:
 
 jobs:
   macos-simulator-e2e:
-    name: Swift 6 XCTest + Xcode Simulator Build + 13-Screen Native Capture
+    name: Swift 6 XCTest + Real Simulator XCUITest UI Taps + 13-Screen Capture
     runs-on: macos-15
     timeout-minutes: 30
 
@@ -42,7 +42,7 @@ jobs:
           set -euo pipefail
           python3 verification/verify-live-rpc-flow.py 2>&1 | tee verification/output/real-simulator/live-rpc-flow.log
 
-      - name: "[Gate 3 & 4] Xcode Simulator Build + Live App-to-Backend RPC + 13 Native SwiftUI Screenshots"
+      - name: "[Gate 3-5] Real Simulator XCUITest UI Taps (AntigravityUITests) + Live App RPC + 13 Native Screenshots"
         run: |
           set -euo pipefail
           python3 verification/ios-simulator-runner.py 2>&1 | tee verification/output/real-simulator/simulator-runner.log

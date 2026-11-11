@@ -42,7 +42,7 @@ public struct CascadeChatViewController: View {
                     if isStaticESDDFixtureView {
                         staticRateLimiterShowcaseBody
                     } else if store.displayItems.isEmpty {
-                        emptyNewSessionPromptCard
+                        emptyOrLoadingSessionCard
                     } else {
                         ForEach(store.displayItems) { item in
                             switch item {
@@ -76,6 +76,11 @@ public struct CascadeChatViewController: View {
                 .padding(.bottom, 6)
         }
         .background(AntigravityTheme.canvasObsidian)
+        .task(id: store.activeCascadeId) {
+            if store.isLiveBackendConnected && !store.activeCascadeId.isEmpty && store.activeSteps.isEmpty {
+                store.syncStepsForCascade(store.activeCascadeId, pollUntilIdle: true)
+            }
+        }
     }
 
     @ViewBuilder
@@ -109,56 +114,128 @@ public struct CascadeChatViewController: View {
         InlineCommandApprovalCardView(store: store)
     }
 
-    private var emptyNewSessionPromptCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(store.isLiveBackendConnected ? Self.emeraldDone : Self.periwinkle)
-                    .frame(width: 8, height: 8)
-                Text(store.isLiveBackendConnected ? "Session Created via StartCascade" : "New Session Ready")
-                    .font(.system(size: 14.5, weight: .semibold))
-                    .foregroundStyle(AntigravityTheme.inkReading)
+    @ViewBuilder
+    private var emptyOrLoadingSessionCard: some View {
+        if store.isLiveBackendConnected && store.isLoadingSteps {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .tint(Self.periwinkle)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Loading conversation history...")
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundStyle(AntigravityTheme.inkReading)
+                    Text("Syncing trajectory steps from \(store.activeHost.hostname)")
+                        .font(.system(size: 13))
+                        .foregroundStyle(AntigravityTheme.inkSecondary)
+                }
+                Spacer()
             }
-            Text("Session `\(store.activeCascadeId)` is bound to `\(store.selectedProject?.name ?? "ledger-svc")`. Type a message below to dispatch `SendUserCascadeMessage` and stream `GetCascadeTrajectorySteps` live.")
-                .font(.system(size: 13.5))
-                .foregroundStyle(AntigravityTheme.inkSecondary)
-                .lineSpacing(2)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AntigravityTheme.surfaceCard)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.top, 12)
+            .accessibilityIdentifier("chat-loading-steps")
+        } else if store.isLiveBackendConnected, let err = store.stepLoadErrorText {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Self.coralError)
+                        .frame(width: 8, height: 8)
+                    Text("Could not load trajectory steps")
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundStyle(AntigravityTheme.inkReading)
+                }
+                Text(err)
+                    .font(.system(size: 13))
+                    .foregroundStyle(AntigravityTheme.inkSecondary)
+                Button {
+                    store.syncStepsForCascade(store.activeCascadeId, pollUntilIdle: true)
+                } label: {
+                    Text("Retry")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(Self.periwinkle)
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 36)
+                        .background(Self.pillBg)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AntigravityTheme.surfaceCard)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.top, 12)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(store.isLiveBackendConnected ? Self.emeraldDone : Self.periwinkle)
+                        .frame(width: 8, height: 8)
+                    Text(store.isLiveBackendConnected ? "Ready for Prompt" : "New Session Ready")
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundStyle(AntigravityTheme.inkReading)
+                }
+                Text("Bound to `\(store.activeSummary?.projectSlug ?? store.selectedProject?.name ?? "workspace")` on `\(store.activeHost.hostname)`. Send a message below to run on Antigravity Desktop.")
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(AntigravityTheme.inkSecondary)
+                    .lineSpacing(2)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AntigravityTheme.surfaceCard)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.top, 12)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AntigravityTheme.surfaceCard)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .padding(.top, 12)
     }
 
     // MARK: - Top Navigation Bar
 
     private var chatTopNavigationBar: some View {
-        HStack(spacing: 8) {
+        let navTitle = store.activeSummary?.title ?? (store.isLiveBackendConnected ? "Conversation" : "Add rate limiter to /transfers")
+        let projectLabel = store.activeSummary?.projectSlug ?? store.selectedProject?.name ?? "ledger-svc"
+        let branchLabel = store.activeSummary?.branchName ?? store.selectedProject?.activeBranch ?? "main"
+        let showDiffPill = !store.isLiveBackendConnected || store.totalDiffAdditions > 0 || store.totalDiffDeletions > 0
+
+        return HStack(spacing: 8) {
             Button {
-                store.currentRoute = .tabRoot
-                onBack?()
+                if let onBack {
+                    onBack()
+                } else {
+                    store.currentRoute = .tabRoot
+                }
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Self.periwinkle)
                     .frame(width: AntigravityTheme.minTouchTargetPt, height: AntigravityTheme.minTouchTargetPt)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("btn-back-sessions")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(store.activeSummary?.title ?? "Add rate limiter to /transfers")
+                Text(navTitle)
                     .font(.system(size: 15.5, weight: .bold))
                     .foregroundStyle(AntigravityTheme.inkReading)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .accessibilityIdentifier("chat-nav-title")
 
-                Text("\(store.activeSummary?.projectSlug ?? "ledger-svc") · \(store.activeSummary?.branchName ?? "main") · \(store.activeHost.hostname)")
+                Text("\(projectLabel) · \(branchLabel) · \(store.activeHost.hostname)")
                     .font(.system(size: 12))
                     .foregroundStyle(AntigravityTheme.inkSecondary)
                     .lineLimit(1)
@@ -166,28 +243,29 @@ public struct CascadeChatViewController: View {
 
             Spacer(minLength: 4)
 
-            // `+128 -14` Diff Pill -> `.turnDiffReview`
-            Button {
-                store.currentRoute = .turnDiffReview
-            } label: {
-                HStack(spacing: 5) {
-                    Text("+\(store.totalDiffAdditions)")
-                        .foregroundStyle(Self.emeraldDone)
-                    Text("-\(store.totalDiffDeletions)")
-                        .foregroundStyle(Self.coralError)
+            if showDiffPill {
+                Button {
+                    store.currentRoute = .turnDiffReview
+                } label: {
+                    HStack(spacing: 5) {
+                        Text("+\(store.totalDiffAdditions)")
+                            .foregroundStyle(Self.emeraldDone)
+                        Text("-\(store.totalDiffDeletions)")
+                            .foregroundStyle(Self.coralError)
+                    }
+                    .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 11)
+                    .frame(minWidth: AntigravityTheme.minTouchTargetPt, minHeight: AntigravityTheme.minTouchTargetPt)
+                    .background(Self.pillBg)
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+                    .clipShape(Capsule())
                 }
-                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
-                .padding(.horizontal, 11)
-                .frame(minWidth: AntigravityTheme.minTouchTargetPt, minHeight: AntigravityTheme.minTouchTargetPt)
-                .background(Self.pillBg)
-                .overlay(
-                    Capsule()
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-                .clipShape(Capsule())
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("chat-diff-pill")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("chat-diff-pill")
 
             // `•••` Overflow Menu
             Menu {

@@ -13,8 +13,8 @@ public struct ChatComposerView: View {
     @Bindable public var store: AntigravitySessionStore
     @FocusState private var isInputFocused: Bool
 
-    @State private var attachedChipLabels: [String] = ["@ratelimit.go"]
-    @State private var draftMessageText: String = "Use 1000/s instead — staging is smaller than prod."
+    @State private var attachedChipLabels: [String]
+    @State private var draftMessageText: String
     @State private var activeModeLabel: String = "Planning"
     @State private var activeModelLabel: String = "Gemini 3.1 Pro"
     @State private var isShowingAddContextSheet: Bool = false
@@ -27,6 +27,13 @@ public struct ChatComposerView: View {
 
     public init(store: AntigravitySessionStore) {
         self.store = store
+        if store.isLiveBackendConnected {
+            self._attachedChipLabels = State(initialValue: store.composerAttachments.map(\.label))
+            self._draftMessageText = State(initialValue: store.composerDraftText)
+        } else {
+            self._attachedChipLabels = State(initialValue: ["@ratelimit.go"])
+            self._draftMessageText = State(initialValue: "Use 1000/s instead — staging is smaller than prod.")
+        }
     }
 
     public var body: some View {

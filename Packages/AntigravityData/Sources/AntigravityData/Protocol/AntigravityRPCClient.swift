@@ -255,6 +255,58 @@ public actor AntigravityRPCClient {
         )
     }
 
+    /// Fetches the complete trajectory for a live session in safe 50-step JSON batches
+    /// (avoiding `language_server` wrap-around / truncation on large `endIndex` ranges)
+    /// and switches to Binary Protobuf (`application/proto`) when `knownStepCount >= 600`.
+    public func fetchAllTrajectorySteps(
+        cascadeId: String,
+        knownStepCount: Int = 0
+    ) async throws -> [CascadeStep] {
+        if knownStepCount >= Self.protobufStepThreshold {
+            return try await fetchTrajectoryStepsProtobuf(
+                cascadeId: cascadeId,
+                startIndex: 0,
+                endIndex: knownStepCount
+            )
+        }
+
+        let batchSize = 50
+        let maxTarget = max(batchSize, min(Self.protobufStepThreshold, knownStepCount + batchSize))
+        var offset = 0
+        var seenIndices = Set<Int>()
+        var collected: [CascadeStep] = []
+
+        while offset < maxTarget {
+            let batchEnd = offset + batchSize
+            let res = try await callUnaryJSON(
+                method: "GetCascadeTrajectorySteps",
+                body: [
+                    "cascadeId": .string(cascadeId),
+                    "startIndex": .int(offset),
+                    "endIndex": .int(batchEnd)
+                ]
+            )
+            guard let rawSteps = res["steps"]?.arrayValue, !rawSteps.isEmpty else {
+                break
+            }
+            var addedNewStep = false
+            for (idxOffset, item) in rawSteps.enumerated() {
+                if let step = Self.decodeJSONStep(item, cascadeId: cascadeId, fallbackIndex: offset + idxOffset) {
+                    if seenIndices.insert(step.stepIndex).inserted {
+                        collected.append(step)
+                        addedNewStep = true
+                    }
+                }
+            }
+            if rawSteps.count < batchSize || !addedNewStep {
+                break
+            }
+            offset += rawSteps.count
+        }
+
+        return collected.sorted { $0.stepIndex < $1.stepIndex }
+    }
+
     /// Fetches trajectory steps over JSON (`GetCascadeTrajectorySteps`) for conversations under 600 steps.
     /// Supports both native Desktop `language_server` step JSON and companion/mock step schemas.
     public func fetchTrajectoryStepsJSON(
@@ -409,19 +461,32 @@ public actor AntigravityRPCClient {
         }
     }
 
+    private static func normalizeProtoModelEnum(_ modelId: String) -> String {
+        let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("MODEL_") {
+            return trimmed
+        }
+        let lower = trimmed.lowercased()
+        if lower.contains("flash") {
+            return "MODEL_PLACEHOLDER_M18"
+        }
+        return "MODEL_PLACEHOLDER_M26"
+    }
+
     /// Creates a new Cascade session (`StartCascade`) on the backend and returns its `cascadeId`.
     public func startCascade(
         workspaceUri: String,
         initialPrompt: String = "",
         modelId: String = "MODEL_PLACEHOLDER_M26"
     ) async throws -> String {
+        let protoModel = Self.normalizeProtoModelEnum(modelId)
         var payload: [String: JSONValue] = [
             "metadata": .object([
                 "ideName": .string("antigravity-ios"),
                 "ideVersion": .string("2.0.0")
             ]),
             "workspaceUris": .array([.string(workspaceUri)]),
-            "modelId": .string(modelId)
+            "modelId": .string(protoModel)
         ]
         if !initialPrompt.isEmpty {
             payload["initialUserInput"] = .string(initialPrompt)
@@ -462,6 +527,7 @@ public actor AntigravityRPCClient {
         let plannerMode = (mode == .planning)
             ? "CONVERSATIONAL_PLANNER_MODE_PLANNING"
             : "CONVERSATIONAL_PLANNER_MODE_DEFAULT"
+        let protoModel = Self.normalizeProtoModelEnum(modelId)
 
         _ = try await callUnaryJSON(
             method: "SendUserCascadeMessage",
@@ -479,7 +545,7 @@ public actor AntigravityRPCClient {
                             "plannerMode": .string(plannerMode)
                         ]),
                         "requestedModel": .object([
-                            "model": .string(modelId)
+                            "model": .string(protoModel)
                         ])
                     ])
                 ]),
@@ -818,60 +884,142 @@ public actor AntigravityRPCClient {
 
     // MARK: - JSON Step Decoder (`language_server` + Companion Schema)
 
-    private static func decodeJSONStep(
+    private static func nonEmptyString(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : raw
+    }
+
+    private static func resolveStepType(_ typeName: String) -> CortexStepType {
+        if let exact = CortexStepType.allCases.first(where: { $0.jsonName == typeName }) {
+            return exact
+        }
+        let upper = typeName.uppercased()
+        if upper.contains("USER_INPUT") { return .userInput }
+        if upper.contains("PLANNER_RESPONSE") { return .plannerResponse }
+        if upper.contains("NOTIFY_USER") { return .notifyUser }
+        if upper.contains("TASK_BOUNDARY") { return .taskBoundary }
+        if upper.contains("RUN_COMMAND") { return .runCommand }
+        if upper.contains("VIEW_FILE") || upper.contains("VIEW_CODE") { return .viewFile }
+        if upper.contains("GREP_SEARCH") || upper.contains("FIND_BY_NAME") || upper.contains("SEARCH") { return .search }
+        if upper.contains("LIST_DIRECTORY") { return .listDirectory }
+        if upper.contains("CODE_ACTION") || upper.contains("REPLACE_FILE") || upper.contains("WRITE_TO_FILE") {
+            return .codeAction
+        }
+        return .unspecified
+    }
+
+    private static func parseDurationSeconds(_ value: JSONValue?) -> Double? {
+        guard let value else { return nil }
+        if let d = value.doubleValue { return d }
+        if let obj = value.objectValue {
+            let secs = obj["seconds"]?.doubleValue ?? Double(obj["seconds"]?.stringValue ?? "") ?? 0
+            let nanos = obj["nanos"]?.doubleValue ?? Double(obj["nanos"]?.stringValue ?? "") ?? 0
+            let total = secs + (nanos / 1_000_000_000.0)
+            return total > 0 ? total : nil
+        }
+        if let str = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            let numeric = str.hasSuffix("s") ? String(str.dropLast()) : str
+            return Double(numeric)
+        }
+        return nil
+    }
+
+    public static func decodeJSONStep(
         _ value: JSONValue,
         cascadeId: String,
         fallbackIndex: Int
     ) -> CascadeStep? {
         guard let obj = value.objectValue else { return nil }
         let stepIndex = obj["stepIndex"]?.intValue ?? fallbackIndex
-        let typeName = obj["type"]?.stringValue ?? "CORTEX_STEP_TYPE_PLANNER_RESPONSE"
+        let typeName = obj["type"]?.stringValue ?? ""
         let statusName = obj["status"]?.stringValue ?? "CORTEX_STEP_STATUS_DONE"
-        let stepType = CortexStepType.allCases.first(where: { $0.jsonName == typeName }) ?? .plannerResponse
+        var stepType = resolveStepType(typeName)
         let stepStatus = CortexStepStatus.from(jsonName: statusName)
 
         // Decode userInput (string or nested object `{"userResponse": ...}` / `{"items": [{"text": ...}]}`)
-        var userText: String? = obj["userInput"]?.stringValue
+        var userText: String? = nonEmptyString(obj["userInput"]?.stringValue)
         var mentions: [String] = obj["attachedMentions"]?.arrayValue?.compactMap(\.stringValue) ?? []
         if let uiObj = obj["userInput"]?.objectValue {
-            userText = uiObj["userResponse"]?.stringValue
-                ?? uiObj["items"]?.arrayValue?.compactMap { $0.objectValue?["text"]?.stringValue }.joined(separator: "\n")
+            let itemsJoined = uiObj["items"]?.arrayValue?
+                .compactMap { nonEmptyString($0.objectValue?["text"]?.stringValue) }
+                .joined(separator: "\n")
+            userText = nonEmptyString(uiObj["userResponse"]?.stringValue)
+                ?? nonEmptyString(itemsJoined)
             if let itemArr = uiObj["items"]?.arrayValue {
                 for item in itemArr {
-                    if let fileLabel = item.objectValue?["item"]?.objectValue?["file"]?.objectValue?["label"]?.stringValue {
-                        mentions.append(fileLabel)
+                    if let fileObj = item.objectValue?["item"]?.objectValue?["file"]?.objectValue {
+                        if let fileLabel = nonEmptyString(fileObj["label"]?.stringValue) {
+                            if !mentions.contains(fileLabel) { mentions.append(fileLabel) }
+                        } else if let uri = nonEmptyString(fileObj["absoluteUri"]?.stringValue) {
+                            let base = (uri.replacingOccurrences(of: "file://", with: "") as NSString).lastPathComponent
+                            let chip = base.hasPrefix("@") ? base : "@\(base)"
+                            if !base.isEmpty && !mentions.contains(chip) { mentions.append(chip) }
+                        }
                     }
                 }
             }
+            if stepType == .unspecified && (userText != nil || !mentions.isEmpty) {
+                stepType = .userInput
+            }
         }
 
-        // Decode plannerResponse
+        // Decode plannerResponse & notifyUser
         var plannerPayload: PlannerResponsePayload?
         if let pr = obj["plannerResponse"]?.objectValue {
-            let text = pr["modifiedResponse"]?.stringValue ?? pr["response"]?.stringValue ?? ""
-            let thinking = pr["thinking"]?.stringValue
-            let duration = pr["thinkingDurationSeconds"]?.doubleValue
-            plannerPayload = PlannerResponsePayload(
-                response: text,
-                thinking: thinking,
-                thinkingDurationSeconds: duration
-            )
+            let text = nonEmptyString(pr["modifiedResponse"]?.stringValue)
+                ?? nonEmptyString(pr["response"]?.stringValue)
+                ?? ""
+            let thinking = nonEmptyString(pr["thinking"]?.stringValue)
+            let duration = parseDurationSeconds(pr["thinkingDurationSeconds"] ?? pr["thinkingDuration"])
+            if !text.isEmpty || thinking != nil {
+                plannerPayload = PlannerResponsePayload(
+                    response: text,
+                    thinking: thinking,
+                    thinkingDurationSeconds: duration
+                )
+                if stepType == .unspecified {
+                    stepType = .plannerResponse
+                }
+            }
+        } else if let nu = obj["notifyUser"]?.objectValue {
+            let notifyText = nonEmptyString(nu["notificationContent"]?.stringValue)
+                ?? nonEmptyString(nu["message"]?.stringValue)
+                ?? nonEmptyString(nu["reviewContent"]?.stringValue)
+            if let notifyText {
+                let paths = nu["pathsToReview"]?.arrayValue?.compactMap(\.stringValue) ?? []
+                plannerPayload = PlannerResponsePayload(
+                    response: notifyText,
+                    referencedFiles: paths
+                )
+                stepType = .notifyUser
+            }
         }
 
         // Decode runCommand + requestedInteraction
         var runCmdPayload: RunCommandPayload?
         var interaction: RequestedInteraction?
         if let rc = obj["runCommand"]?.objectValue {
-            let cmdLine = rc["commandLine"]?.stringValue ?? rc["proposedCommandLine"]?.stringValue ?? ""
-            let cwd = rc["cwd"]?.stringValue ?? "~"
-            runCmdPayload = RunCommandPayload(
-                commandId: rc["commandId"]?.stringValue ?? "cmd-\(stepIndex)",
-                commandLine: cmdLine,
-                proposedCommandLine: rc["proposedCommandLine"]?.stringValue ?? cmdLine,
-                cwd: cwd,
-                exitCode: rc["exitCode"]?.intValue,
-                outputPreview: rc["combinedOutput"]?.objectValue?["full"]?.stringValue ?? rc["outputPreview"]?.stringValue
-            )
+            let cmdLine = nonEmptyString(rc["commandLine"]?.stringValue)
+                ?? nonEmptyString(rc["proposedCommandLine"]?.stringValue)
+                ?? nonEmptyString(rc["command"]?.stringValue)
+                ?? ""
+            let cwd = nonEmptyString(rc["cwd"]?.stringValue) ?? "~"
+            if !cmdLine.isEmpty {
+                runCmdPayload = RunCommandPayload(
+                    commandId: rc["commandId"]?.stringValue ?? "cmd-\(stepIndex)",
+                    commandLine: cmdLine,
+                    proposedCommandLine: nonEmptyString(rc["proposedCommandLine"]?.stringValue) ?? cmdLine,
+                    cwd: cwd,
+                    exitCode: rc["exitCode"]?.intValue,
+                    outputPreview: nonEmptyString(rc["combinedOutput"]?.objectValue?["full"]?.stringValue)
+                        ?? nonEmptyString(rc["outputPreview"]?.stringValue)
+                        ?? nonEmptyString(rc["output"]?.stringValue)
+                )
+                if stepType == .unspecified {
+                    stepType = .runCommand
+                }
+            }
             if stepStatus == .waiting {
                 interaction = RequestedInteraction(
                     kind: .runCommand,
@@ -882,19 +1030,19 @@ public actor AntigravityRPCClient {
 
         if let reqInt = obj["requestedInteraction"]?.objectValue {
             if let rcInt = reqInt["runCommand"]?.objectValue {
-                let cmd = rcInt["proposedCommandLine"]?.stringValue ?? runCmdPayload?.commandLine ?? ""
+                let cmd = nonEmptyString(rcInt["proposedCommandLine"]?.stringValue) ?? runCmdPayload?.commandLine ?? ""
                 interaction = RequestedInteraction(
                     kind: .runCommand,
                     runCommand: RunCommandInteractionSpec(
                         proposedCommandLine: cmd,
-                        cwd: rcInt["cwd"]?.stringValue ?? "~"
+                        cwd: nonEmptyString(rcInt["cwd"]?.stringValue) ?? "~"
                     )
                 )
             } else if let qaInt = reqInt["askQuestion"]?.objectValue {
                 interaction = RequestedInteraction(
                     kind: .askQuestion,
                     askQuestion: AskQuestionInteractionSpec(
-                        question: qaInt["question"]?.stringValue ?? "Input required",
+                        question: nonEmptyString(qaInt["question"]?.stringValue) ?? "Input required",
                         options: qaInt["options"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                         isMultiSelect: qaInt["isMultiSelect"]?.boolValue ?? false
                     )
@@ -910,35 +1058,71 @@ public actor AntigravityRPCClient {
         }
 
         var viewFilePayload: ViewFilePayload?
-        if let vf = obj["viewFile"]?.objectValue,
-           let uri = vf["fileUri"]?.stringValue ?? vf["absolutePathUri"]?.stringValue {
+        let vfCandidate = obj["viewFile"]?.objectValue
+            ?? obj["viewFileOutline"]?.objectValue
+            ?? obj["viewCodeItem"]?.objectValue
+        if let vf = vfCandidate,
+           let uri = nonEmptyString(vf["fileUri"]?.stringValue)
+            ?? nonEmptyString(vf["absolutePathUri"]?.stringValue)
+            ?? nonEmptyString(vf["absolutePath"]?.stringValue) {
             viewFilePayload = ViewFilePayload(
                 fileUri: uri,
                 startLine: vf["startLine"]?.intValue ?? 1,
                 endLine: vf["endLine"]?.intValue ?? 120
             )
+            if stepType == .unspecified { stepType = .viewFile }
+        }
+
+        var searchPayload: SearchPayload?
+        let searchCandidate = obj["grepSearch"]?.objectValue
+            ?? obj["findByName"]?.objectValue
+            ?? obj["search"]?.objectValue
+        if let sc = searchCandidate {
+            let query = nonEmptyString(sc["query"]?.stringValue)
+                ?? nonEmptyString(sc["pattern"]?.stringValue)
+                ?? "workspace"
+            let scope = nonEmptyString(sc["searchPath"]?.stringValue)
+                ?? nonEmptyString(sc["searchDirectory"]?.stringValue)
+                ?? "."
+            let count = sc["results"]?.arrayValue?.count ?? sc["matchCount"]?.intValue ?? 0
+            searchPayload = SearchPayload(query: query, scopeDirectory: scope, matchCount: count)
+            if stepType == .unspecified { stepType = .search }
         }
 
         var codeActionPayload: CodeActionPayload?
-        if let ca = obj["codeAction"]?.objectValue,
-           let uri = ca["targetFileUri"]?.stringValue ?? ca["fileUri"]?.stringValue {
-            codeActionPayload = CodeActionPayload(
-                targetFileUri: uri,
-                description: ca["description"]?.stringValue ?? "Updated file",
-                additions: ca["additions"]?.intValue ?? 0,
-                deletions: ca["deletions"]?.intValue ?? 0
-            )
+        let caCandidate = obj["codeAction"]?.objectValue
+            ?? obj["replaceFileContent"]?.objectValue
+            ?? obj["writeToFile"]?.objectValue
+        if let ca = caCandidate {
+            let actionSpec = ca["actionSpec"]?.objectValue
+            let uri = nonEmptyString(ca["targetFileUri"]?.stringValue)
+                ?? nonEmptyString(ca["fileUri"]?.stringValue)
+                ?? nonEmptyString(ca["targetFile"]?.stringValue)
+                ?? nonEmptyString(actionSpec?["createFile"]?.objectValue?["path"]?.objectValue?["absoluteUri"]?.stringValue)
+                ?? nonEmptyString(actionSpec?["insertBlock"]?.objectValue?["path"]?.objectValue?["absoluteUri"]?.stringValue)
+            if let uri {
+                codeActionPayload = CodeActionPayload(
+                    targetFileUri: uri,
+                    description: nonEmptyString(ca["description"]?.stringValue)
+                        ?? nonEmptyString(ca["instruction"]?.stringValue)
+                        ?? "Updated file",
+                    additions: ca["additions"]?.intValue ?? 0,
+                    deletions: ca["deletions"]?.intValue ?? 0
+                )
+                if stepType == .unspecified { stepType = .codeAction }
+            }
         }
 
         var taskBoundaryPayload: TaskBoundaryPayload?
         if let tb = obj["taskBoundary"]?.objectValue {
             taskBoundaryPayload = TaskBoundaryPayload(
-                taskName: tb["taskName"]?.stringValue ?? "Task",
-                taskStatus: tb["taskStatus"]?.stringValue ?? "",
-                taskSummary: tb["taskSummary"]?.stringValue ?? "",
+                taskName: nonEmptyString(tb["taskName"]?.stringValue) ?? "Task",
+                taskStatus: nonEmptyString(tb["taskStatus"]?.stringValue) ?? "",
+                taskSummary: nonEmptyString(tb["taskSummary"]?.stringValue) ?? "",
                 completedCount: tb["completedCount"]?.intValue ?? 1,
                 totalCount: tb["totalCount"]?.intValue ?? 4
             )
+            if stepType == .unspecified { stepType = .taskBoundary }
         }
 
         return CascadeStep(
@@ -953,6 +1137,7 @@ public actor AntigravityRPCClient {
             runCommand: runCmdPayload,
             codeAction: codeActionPayload,
             viewFile: viewFilePayload,
+            search: searchPayload,
             requestedInteraction: interaction
         )
     }
