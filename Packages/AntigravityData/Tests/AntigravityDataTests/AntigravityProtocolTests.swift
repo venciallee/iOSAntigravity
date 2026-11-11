@@ -41,12 +41,15 @@ final class AntigravityProtocolTests: XCTestCase {
         let sample: [String: JSONValue] = [
             "cascadeId": .string("cas-rate-limiter"),
             "stepCount": .int(28),
+            "thinkingDurationSeconds": .double(14.5),
             "verified": .bool(true),
             "tags": .array([.string("go"), .string("ratelimit")])
         ]
         let raw = try JSONEncoder().encode(sample)
         let roundTrip = try JSONDecoder().decode([String: JSONValue].self, from: raw)
         XCTAssertEqual(roundTrip, sample)
+        XCTAssertEqual(roundTrip["thinkingDurationSeconds"]?.doubleValue, 14.5)
+        XCTAssertEqual(roundTrip["stepCount"]?.doubleValue, 28.0)
     }
 
     func testInteractionBuilderMatchesRequestedOneofFaceIDAndSafeAutoAccept() throws {

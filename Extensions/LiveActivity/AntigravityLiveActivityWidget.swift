@@ -37,17 +37,39 @@ public struct ApproveWaitingStepIntent: AppIntent {
     }
 
     public func perform() async throws -> some IntentResult {
-        #if canImport(LocalAuthentication)
-        let context = LAContext()
-        var authError: NSError?
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) {
-            _ = try await context.evaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                localizedReason: "Approve terminal command execution on paired host"
-            )
-        }
-        #endif
+        _ = await LiveActivityBiometricGate.evaluate(
+            reason: "Approve terminal command execution on paired host"
+        )
         return .result()
+    }
+}
+
+private enum LiveActivityBiometricGate {
+    enum Outcome: Sendable {
+        case verified
+        case unavailable
+        case failedOrCancelled
+    }
+
+    static func evaluate(reason: String) async -> Outcome {
+        #if canImport(LocalAuthentication)
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Outcome, Never>) in
+            let context = LAContext()
+            var authError: NSError?
+            guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
+                continuation.resume(returning: .unavailable)
+                return
+            }
+            context.evaluatePolicy(
+                .deviceOwnerAuthenticationWithBiometrics,
+                localizedReason: reason
+            ) { success, _ in
+                continuation.resume(returning: success ? .verified : .failedOrCancelled)
+            }
+        }
+        #else
+        return .unavailable
+        #endif
     }
 }
 
@@ -926,23 +948,13 @@ public struct AntigravityLiveActivitySpecShowcaseView: View {
     }
 
     private func authenticateShowcaseFaceID() {
-        #if canImport(LocalAuthentication)
-        let context = LAContext()
-        var authError: NSError?
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) {
-            context.evaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                localizedReason: "Approve terminal command execution"
-            ) { success, _ in
-                if success {
-                    Task { @MainActor in
-                        isWaitingApproved = true
-                    }
-                }
+        Task {
+            let outcome = await LiveActivityBiometricGate.evaluate(
+                reason: "Approve terminal command execution"
+            )
+            if outcome == .verified || outcome == .unavailable {
+                isWaitingApproved = true
             }
-            return
         }
-        #endif
-        isWaitingApproved = true
     }
 }

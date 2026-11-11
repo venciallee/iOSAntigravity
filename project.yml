@@ -6,6 +6,12 @@ options:
   xcodeVersion: "16.1"
   generateEmptyDirectories: true
 
+settings:
+  base:
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "6.0"
+
 packages:
   AntigravityData:
     path: Packages/AntigravityData
@@ -16,10 +22,13 @@ targets:
     platform: iOS
     sources:
       - path: iOS
+        excludes:
+          - "**/Info.plist"
       - path: Shared
       - path: Extensions/LiveActivity
         excludes:
           - "**/*Bundle*"
+          - "**/Info.plist"
     dependencies:
       - package: AntigravityData
       - target: AntigravityLiveActivity
@@ -46,6 +55,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app
+        MARKETING_VERSION: "2.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
 
@@ -54,6 +65,8 @@ targets:
     platform: iOS
     sources:
       - path: Extensions/LiveActivity
+        excludes:
+          - "**/Info.plist"
       - path: Shared/LiveActivity
       - path: Shared/DesignSystem
     dependencies:
@@ -66,6 +79,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app.LiveActivity
+        MARKETING_VERSION: "2.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
 
@@ -74,6 +89,8 @@ targets:
     platform: iOS
     sources:
       - path: Extensions/Share
+        excludes:
+          - "**/Info.plist"
       - path: Shared/DesignSystem
     dependencies:
       - package: AntigravityData
@@ -90,5 +107,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.antigravity.ios.app.Share
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) ANTIGRAVITY_SHARE_EXTENSION"
+        MARKETING_VERSION: "2.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic

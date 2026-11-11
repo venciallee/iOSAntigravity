@@ -357,30 +357,52 @@ public struct InlineCommandApprovalCardView: View {
     }
 
     private func authenticateWithFaceIDAndApprove() {
-        #if canImport(LocalAuthentication)
-        let context = LAContext()
-        context.localizedCancelTitle = "Cancel"
-        var authError: NSError?
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) {
-            context.evaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                localizedReason: "Approve vegeta load-test command on MacBook Pro"
-            ) { success, _ in
-                if success {
-                    Task { @MainActor in
-                        commitFaceIDApproval()
-                    }
-                }
+        Task {
+            let outcome = await StepBiometricGate.evaluate(
+                reason: "Approve vegeta load-test command on MacBook Pro",
+                cancelTitle: "Cancel"
+            )
+            if outcome == .verified || outcome == .unavailable {
+                commitFaceIDApproval()
             }
-            return
         }
-        #endif
-        commitFaceIDApproval()
     }
 
     private func commitFaceIDApproval() {
         resolutionState = "Approved with Face ID"
         store.approveWaitingCommandWithFaceID()
+    }
+}
+
+private enum StepBiometricGate {
+    enum Outcome: Sendable {
+        case verified
+        case unavailable
+        case failedOrCancelled
+    }
+
+    static func evaluate(reason: String, cancelTitle: String? = nil) async -> Outcome {
+        #if canImport(LocalAuthentication)
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Outcome, Never>) in
+            let context = LAContext()
+            if let cancelTitle {
+                context.localizedCancelTitle = cancelTitle
+            }
+            var authError: NSError?
+            guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
+                continuation.resume(returning: .unavailable)
+                return
+            }
+            context.evaluatePolicy(
+                .deviceOwnerAuthenticationWithBiometrics,
+                localizedReason: reason
+            ) { success, _ in
+                continuation.resume(returning: success ? .verified : .failedOrCancelled)
+            }
+        }
+        #else
+        return .unavailable
+        #endif
     }
 }
 

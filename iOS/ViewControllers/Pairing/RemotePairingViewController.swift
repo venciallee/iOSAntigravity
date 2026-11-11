@@ -231,29 +231,23 @@ public struct RemotePairingViewController: View {
     }
 
     private func startCloudRelayOAuthLogin() {
-        #if canImport(AuthenticationServices) && os(iOS)
-        guard let authURL = URL(string: relayInstanceInput) else { return }
-        let session = ASWebAuthenticationSession(
-            url: authURL,
-            callbackURLScheme: "antigravity"
-        ) { callbackURL, error in
-            guard error == nil, let callbackURL else { return }
+        Task {
+            #if canImport(AuthenticationServices) && os(iOS)
+            guard let authURL = URL(string: relayInstanceInput) else { return }
+            guard let callbackURL = await WebAuthPresentationContext.shared.authenticate(
+                url: authURL,
+                callbackURLScheme: "antigravity"
+            ) else { return }
             let comps = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)
             let sessionCookie = comps?.queryItems?.first(where: { $0.name == "session" || $0.name == "cookie" })?.value ?? ""
-            Task { @MainActor in
-                let ok = await store.connectCloudRelay(
-                    relayURLString: relayInstanceInput,
-                    sessionCookie: sessionCookie
-                )
-                if ok {
-                    onConnected?()
-                }
+            let ok = await store.connectCloudRelay(
+                relayURLString: relayInstanceInput,
+                sessionCookie: sessionCookie
+            )
+            if ok {
+                onConnected?()
             }
-        }
-        session.prefersEphemeralWebBrowserSession = false
-        session.start()
-        #else
-        Task {
+            #else
             let ok = await store.connectCloudRelay(
                 relayURLString: relayInstanceInput,
                 sessionCookie: manualCSRFToken
@@ -261,7 +255,50 @@ public struct RemotePairingViewController: View {
             if ok {
                 onConnected?()
             }
+            #endif
         }
-        #endif
     }
 }
+
+#if canImport(AuthenticationServices) && os(iOS)
+private final class WebAuthPresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding, @unchecked Sendable {
+    static let shared = WebAuthPresentationContext()
+    @MainActor private var activeSession: ASWebAuthenticationSession?
+
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            if let keyWindow = scenes.flatMap(\.windows).first(where: \.isKeyWindow) {
+                return keyWindow
+            }
+            if let scene = scenes.first {
+                return UIWindow(windowScene: scene)
+            }
+            return UIWindow()
+        }
+    }
+
+    @MainActor
+    func authenticate(url: URL, callbackURLScheme: String) async -> URL? {
+        defer { activeSession = nil }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<URL?, Never>) in
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: callbackURLScheme
+            ) { callbackURL, error in
+                if error == nil, let callbackURL {
+                    continuation.resume(returning: callbackURL)
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = false
+            self.activeSession = session
+            if !session.start() {
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+}
+#endif

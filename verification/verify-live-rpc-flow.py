@@ -80,7 +80,12 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
     ws_status, ws_res = call_rpc_json(base_url, "GetWorkspaceInfos", {}, csrf_token=csrf_token)
     assert ws_status == 200, f"GetWorkspaceInfos failed: {ws_status} {ws_res}"
     workspaces = ws_res.get("workspaces") or ws_res.get("workspaceInfos") or []
-    ws_uri = workspaces[0]["workspaceUri"] if workspaces else "file:///workspace"
+    first_ws = workspaces[0] if workspaces else {}
+    ws_uri = (
+        first_ws.get("workspaceUri")
+        or first_ws.get("workspaceFolderAbsoluteUri")
+        or "file:///workspace"
+    )
     print(f"  [PASS] 1b. Login Handshake (`GetWorkspaceInfos`) -> {len(workspaces)} workspace(s), primary={ws_uri}")
 
     # 2. Create Session (`StartCascade`)
@@ -98,32 +103,25 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
     cascade_id = sc_res["cascadeId"]
     print(f"  [PASS] 2.  Create Session (`StartCascade`) -> cascadeId={cascade_id}")
 
-    list_status, list_res = call_rpc_json(base_url, "GetAllCascadeTrajectories", {}, csrf_token=csrf_token)
-    assert list_status == 200
-    in_map = cascade_id in (list_res.get("trajectorySummaries") or {})
-    in_arr = any(t.get("cascadeId") == cascade_id for t in (list_res.get("trajectories") or []))
-    assert in_map or in_arr, "Newly created cascadeId not found in GetAllCascadeTrajectories"
-    print(f"  [PASS] 2b. Session confirmed in `GetAllCascadeTrajectories` (trajectorySummaries={in_map})")
-
-    # 3. Send Message (`SendUserCascadeMessage`) + Fetch Steps (`GetCascadeTrajectorySteps`)
+    # 3. Send Message (`SendUserCascadeMessage`) + Confirm Summary & Trajectory Steps
     msg_payload = {
         "cascadeId": cascade_id,
         "items": [
-            {"text": "Audit rate limiter concurrency in @ratelimit.go"},
+            {"text": "Reply in one short sentence confirming iOS Connect-RPC handshake."},
             {
                 "item": {
                     "file": {
-                        "absoluteUri": f"{ws_uri}/internal/middleware/ratelimit.go",
-                        "label": "@ratelimit.go",
+                        "absoluteUri": f"{ws_uri}/Packages/AntigravityData/Package.swift",
+                        "label": "@Package.swift",
                     }
                 }
             },
         ],
-        "userResponse": "Audit rate limiter concurrency in @ratelimit.go",
+        "userResponse": "Reply in one short sentence confirming iOS Connect-RPC handshake.",
         "metadata": {"ideName": "antigravity-ios", "ideVersion": "2.0.0"},
         "cascadeConfig": {
             "plannerConfig": {
-                "conversational": {"plannerMode": "CONVERSATIONAL_PLANNER_MODE_PLANNING"},
+                "conversational": {"plannerMode": "CONVERSATIONAL_PLANNER_MODE_DEFAULT"},
                 "requestedModel": {"model": "MODEL_PLACEHOLDER_M26"},
             }
         },
@@ -131,6 +129,13 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
     send_status, send_res = call_rpc_json(base_url, "SendUserCascadeMessage", msg_payload, csrf_token=csrf_token)
     assert send_status == 200, f"SendUserCascadeMessage failed: {send_status} {send_res}"
     print(f"  [PASS] 3a. Sent Message (`SendUserCascadeMessage`) to {cascade_id}")
+
+    list_status, list_res = call_rpc_json(base_url, "GetAllCascadeTrajectories", {}, csrf_token=csrf_token)
+    assert list_status == 200
+    in_map = cascade_id in (list_res.get("trajectorySummaries") or {})
+    in_arr = any(t.get("cascadeId") == cascade_id for t in (list_res.get("trajectories") or []))
+    assert in_map or in_arr, "Newly created cascadeId not found in GetAllCascadeTrajectories"
+    print(f"  [PASS] 3b. Session confirmed in `GetAllCascadeTrajectories` (trajectorySummaries={in_map})")
 
     steps_status, steps_res = call_rpc_json(
         base_url,
@@ -141,7 +146,7 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False):
     assert steps_status == 200, f"GetCascadeTrajectorySteps failed: {steps_status}"
     steps = steps_res.get("steps", [])
     assert len(steps) >= 1, f"Expected >=1 trajectory steps after sending message, got {len(steps)}"
-    print(f"  [PASS] 3b. Synced Trajectory (`GetCascadeTrajectorySteps` JSON) -> {len(steps)} step(s) returned")
+    print(f"  [PASS] 3c. Synced Trajectory (`GetCascadeTrajectorySteps` JSON) -> {len(steps)} step(s) returned")
 
     if not live_external:
         # 4. Trigger WAITING command & verify Face ID Interaction Gate

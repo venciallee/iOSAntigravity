@@ -225,6 +225,92 @@ class CompanionState:
         return bytes(out)
 
 
+def discover_desktop_oauth_token() -> str:
+    """Extracts the active OAuth access token (`ya29.*`) from Antigravity Desktop's `state.vscdb` (read-only)."""
+    env_key = os.environ.get("ANTIGRAVITY_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    if sys.platform != "darwin":
+        return ""
+    db_path = Path.home() / "Library/Application Support/Antigravity/User/globalStorage/state.vscdb"
+    if not db_path.exists():
+        return ""
+    try:
+        import base64
+        import sqlite3
+
+        uri = f"file:{urllib.parse.quote(str(db_path))}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.5)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT value FROM ItemTable WHERE key IN ("
+                "'antigravityUnifiedStateSync.oauthToken', "
+                "'jetskiStateSync.agentManagerInitState'"
+                ")"
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        for (val,) in rows:
+            if not val:
+                continue
+            text = val if isinstance(val, str) else val.decode("utf-8", errors="ignore")
+            m = re.search(r"(ya29\.[A-Za-z0-9._\-]+)", text)
+            if m:
+                return m.group(1)
+            try:
+                decoded = base64.b64decode(text).decode("utf-8", errors="ignore")
+                m2 = re.search(r"(ya29\.[A-Za-z0-9._\-]+)", decoded)
+                if m2:
+                    return m2.group(1)
+            except Exception:
+                continue
+    except Exception:
+        return ""
+    return ""
+
+
+def query_upstream_default_model(upstream_url: str, upstream_csrf: str, api_key: str) -> tuple[str, set[str]]:
+    """Queries `GetCascadeModelConfigData` on real `language_server` to resolve valid model enum IDs."""
+    if not upstream_url:
+        return "", set()
+    ctx = ssl._create_unverified_context()
+    meta = {"ideName": "antigravity", "extensionName": "antigravity", "locale": "en"}
+    if api_key:
+        meta["apiKey"] = api_key
+    req = urllib.request.Request(
+        f"{upstream_url}{SERVICE_PREFIX}GetCascadeModelConfigData",
+        data=json.dumps({"metadata": meta}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+            "x-codeium-csrf-token": upstream_csrf,
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            req,
+            timeout=2.5,
+            context=ctx if upstream_url.startswith("https://") else None,
+        ) as resp:
+            obj = json.loads(resp.read().decode("utf-8") or "{}")
+            valid_models = set()
+            for cfg in obj.get("clientModelConfigs") or []:
+                m = (cfg.get("modelOrAlias") or {}).get("model")
+                if m:
+                    valid_models.add(m)
+            default_model = (
+                ((obj.get("defaultOverrideModelConfig") or {}).get("modelOrAlias") or {}).get("model")
+                or (next(iter(valid_models)) if valid_models else "")
+            )
+            return default_model, valid_models
+    except Exception:
+        return "", set()
+
+
 def create_bridge_server(
     bind_host: str,
     bind_port: int,
@@ -235,6 +321,12 @@ def create_bridge_server(
 ):
     state = CompanionState(workspace_root or os.getcwd())
     ssl_ctx = ssl._create_unverified_context()
+    desktop_api_key = discover_desktop_oauth_token() if upstream_url else ""
+    upstream_default_model, upstream_valid_models = (
+        query_upstream_default_model(upstream_url, upstream_csrf or bridge_csrf, desktop_api_key)
+        if upstream_url
+        else ("", set())
+    )
 
     class BridgeHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -265,6 +357,7 @@ def create_bridge_server(
                         "hostname": socket.gethostname(),
                         "mode": "upstream_proxy" if upstream_url else "standalone_sandbox",
                         "upstream": upstream_url,
+                        "desktopAuthDetected": bool(desktop_api_key),
                     },
                 )
                 return
@@ -300,6 +393,45 @@ def create_bridge_server(
                 if sys.platform == "darwin" and uri:
                     subprocess.Popen(["open", uri])
                 self._write_json(200, {"ok": True})
+                return
+
+            if method == "CreateProjectWorkspace":
+                req_obj = self._parse_json(raw_body)
+                name = req_obj.get("name") or "new-project"
+                runtime = req_obj.get("runtime") or "Local"
+                repo = req_obj.get("repository") or name
+                ws_uri = f"cloud://{repo}" if runtime == "Cloud" else f"file://{Path(state.workspace_root).parent / name}"
+                with state.lock:
+                    state.workspaces.append(
+                        {
+                            "workspaceUri": ws_uri,
+                            "workspaceFolderAbsoluteUri": ws_uri,
+                            "displayName": name,
+                            "activeBranch": "main",
+                            "indexedFiles": [],
+                        }
+                    )
+                self._write_json(200, {"ok": True, "workspaceUri": ws_uri, "name": name})
+                return
+
+            if method == "GetTurnDiff":
+                files = []
+                try:
+                    diff_out = subprocess.check_output(
+                        ["git", "diff", "--numstat"],
+                        cwd=state.workspace_root,
+                        text=True,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    for row in diff_out.splitlines():
+                        parts = row.split("\t")
+                        if len(parts) == 3:
+                            add_c = int(parts[0]) if parts[0].isdigit() else 0
+                            del_c = int(parts[1]) if parts[1].isdigit() else 0
+                            files.append({"filePath": parts[2], "additions": add_c, "deletions": del_c})
+                except Exception:
+                    pass
+                self._write_json(200, {"files": files})
                 return
 
             if method == "ListAutomations":
@@ -341,8 +473,94 @@ def create_bridge_server(
             # 4. Standalone Sandbox Mode (full live Connect-RPC state machine!)
             self._handle_standalone_rpc(method, raw_body, content_type)
 
+        def _build_upstream_metadata(self, existing: dict) -> dict:
+            meta = {}
+            meta["ideName"] = "antigravity"
+            meta["extensionName"] = "antigravity"
+            meta["locale"] = existing.get("locale") or "en"
+            if existing.get("ideVersion"):
+                meta["ideVersion"] = existing["ideVersion"]
+            api_key = existing.get("apiKey") or desktop_api_key or discover_desktop_oauth_token()
+            if api_key:
+                meta["apiKey"] = api_key
+            return meta
+
+        def _sanitize_for_upstream(self, method: str, req_obj: dict) -> tuple[int, dict]:
+            """Sanitizes companion JSON extensions into strict `exa.language_server_pb` protojson."""
+            if method == "StartCascade":
+                sanitized = {
+                    "metadata": self._build_upstream_metadata(req_obj.get("metadata") or {}),
+                    "source": req_obj.get("source") or "CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT",
+                }
+                if req_obj.get("workspaceUris"):
+                    sanitized["workspaceUris"] = req_obj["workspaceUris"]
+                return 200, sanitized
+
+            if method == "SendUserCascadeMessage":
+                fallback_text = req_obj.get("userResponse", "")
+                clean_items = []
+                for entry in req_obj.get("items") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if "text" in entry:
+                        clean_items.append({"text": entry["text"]})
+                    elif isinstance(entry.get("item"), dict) and isinstance(entry["item"].get("file"), dict):
+                        abs_uri = entry["item"]["file"].get("absoluteUri", "")
+                        local_path = abs_uri.replace("file://", "") if abs_uri.startswith("file://") else ""
+                        if abs_uri and (not local_path or os.path.exists(local_path)):
+                            clean_items.append({"item": {"file": {"absoluteUri": abs_uri}}})
+                if not clean_items and fallback_text:
+                    clean_items.append({"text": fallback_text})
+
+                sanitized = {
+                    "cascadeId": req_obj.get("cascadeId", ""),
+                    "items": clean_items,
+                    "metadata": self._build_upstream_metadata(req_obj.get("metadata") or {}),
+                }
+                cascade_cfg = json.loads(json.dumps(req_obj.get("cascadeConfig") or {}))
+                planner_cfg = cascade_cfg.get("plannerConfig")
+                if isinstance(planner_cfg, dict):
+                    req_model = (planner_cfg.get("requestedModel") or {}).get("model", "")
+                    if upstream_valid_models and req_model not in upstream_valid_models:
+                        if upstream_default_model:
+                            planner_cfg["requestedModel"] = {"model": upstream_default_model}
+                        else:
+                            planner_cfg.pop("requestedModel", None)
+                    elif not upstream_valid_models and (" " in req_model or not req_model.startswith("MODEL_")):
+                        if upstream_default_model:
+                            planner_cfg["requestedModel"] = {"model": upstream_default_model}
+                        else:
+                            planner_cfg.pop("requestedModel", None)
+                    sanitized["cascadeConfig"] = cascade_cfg
+                return 200, sanitized
+
+            if method == "HandleCascadeUserInteraction":
+                cloned = json.loads(json.dumps(req_obj))
+                interaction = cloned.get("interaction") or {}
+                rc = interaction.get("runCommand")
+                if isinstance(rc, dict):
+                    if rc.get("confirm") and rc.get("faceIdVerified") is False:
+                        return 403, {"accepted": False, "reason": "Face ID verification required"}
+                    rc.pop("faceIdVerified", None)
+                return 200, cloned
+
+            return 200, req_obj
+
         def _proxy_to_upstream(self, method: str, raw_body: bytes, content_type: str):
             target = f"{upstream_url}{SERVICE_PREFIX}{method}"
+            is_json = "json" in content_type.lower() and "connect+" not in content_type.lower()
+            forward_body = raw_body
+            req_obj = {}
+
+            if is_json:
+                req_obj = self._parse_json(raw_body)
+                gate_status, sanitized = self._sanitize_for_upstream(method, req_obj)
+                if gate_status != 200:
+                    self._write_json(gate_status, sanitized)
+                    return
+                req_obj = sanitized
+                forward_body = json.dumps(req_obj).encode("utf-8")
+
             headers = {
                 "Content-Type": content_type,
                 "Connect-Protocol-Version": self.headers.get("Connect-Protocol-Version", "1"),
@@ -351,34 +569,110 @@ def create_bridge_server(
             if "Accept" in self.headers:
                 headers["Accept"] = self.headers["Accept"]
 
-            req = urllib.request.Request(target, data=raw_body, method="POST", headers=headers)
             is_https = target.startswith("https://")
-            try:
-                with urllib.request.urlopen(
-                    req,
-                    timeout=30,
-                    context=ssl_ctx if is_https else None,
-                ) as resp:
-                    resp_bytes = resp.read()
-                    self.send_response(resp.status)
+            attempts = 0
+            while True:
+                attempts += 1
+                req = urllib.request.Request(target, data=forward_body, method="POST", headers=headers)
+                try:
+                    with urllib.request.urlopen(
+                        req,
+                        timeout=30,
+                        context=ssl_ctx if is_https else None,
+                    ) as resp:
+                        resp_bytes = resp.read()
+                        resp_ct = resp.headers.get("Content-Type", "application/json")
+                        if is_json and method == "GetWorkspaceInfos":
+                            resp_bytes = self._normalize_workspace_infos_response(resp_bytes)
+                        elif is_json and method == "GetAllCascadeTrajectories":
+                            resp_bytes = self._merge_local_trajectories_response(resp_bytes)
+                        elif is_json and method == "GetCascadeTrajectorySteps":
+                            resp_bytes = self._merge_local_steps_response(req_obj, resp_bytes)
+                        self.send_response(resp.status)
+                        self._send_cors()
+                        self.send_header("Content-Type", resp_ct)
+                        self.send_header("Content-Length", str(len(resp_bytes)))
+                        self.end_headers()
+                        self.wfile.write(resp_bytes)
+                        return
+                except urllib.error.HTTPError as e:
+                    err_body = e.read()
+                    err_text = err_body.decode("utf-8", errors="ignore")
+                    # Auto-strip any protojson unknown top-level field if Desktop schema differs
+                    if is_json and e.code == 400 and attempts <= 3:
+                        m = re.search(r'unknown field "([^"]+)"', err_text)
+                        if m and m.group(1) in req_obj:
+                            req_obj.pop(m.group(1), None)
+                            forward_body = json.dumps(req_obj).encode("utf-8")
+                            continue
+                    # Graceful fallback to local companion state if Desktop is signed out / offline on SendUserCascadeMessage
+                    if is_json and method in ("StartCascade", "SendUserCascadeMessage") and e.code in (401, 403, 500, 503):
+                        sys.stderr.write(
+                            f"[Bridge] Upstream {method} returned HTTP {e.code} ({err_text[:120]}); falling back to companion session store.\n"
+                        )
+                        self._handle_standalone_rpc(method, raw_body, content_type)
+                        return
+                    self.send_response(e.code)
                     self._send_cors()
-                    self.send_header(
-                        "Content-Type",
-                        resp.headers.get("Content-Type", "application/json"),
-                    )
-                    self.send_header("Content-Length", str(len(resp_bytes)))
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err_body)))
                     self.end_headers()
-                    self.wfile.write(resp_bytes)
-            except urllib.error.HTTPError as e:
-                err_body = e.read()
-                self.send_response(e.code)
-                self._send_cors()
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(err_body)))
-                self.end_headers()
-                self.wfile.write(err_body)
-            except Exception as exc:
-                self._write_json(502, {"error": f"Upstream language_server error: {exc}"})
+                    self.wfile.write(err_body)
+                    return
+                except Exception as exc:
+                    self._write_json(502, {"error": f"Upstream language_server error: {exc}"})
+                    return
+
+        def _normalize_workspace_infos_response(self, resp_bytes: bytes) -> bytes:
+            obj = self._parse_json(resp_bytes)
+            raw_items = obj.get("workspaceInfos") or obj.get("workspaces") or []
+            normalized = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                uri = item.get("workspaceUri") or item.get("workspaceFolderAbsoluteUri") or ""
+                if not uri:
+                    continue
+                enriched = dict(item)
+                enriched.setdefault("workspaceUri", uri)
+                enriched.setdefault("workspaceFolderAbsoluteUri", uri)
+                enriched.setdefault("displayName", Path(uri.replace("file://", "")).name or "workspace")
+                enriched.setdefault("activeBranch", item.get("gitBranch") or "main")
+                normalized.append(enriched)
+            if not normalized:
+                with state.lock:
+                    normalized = list(state.workspaces)
+            obj["workspaces"] = normalized
+            obj.setdefault("workspaceInfos", normalized)
+            return json.dumps(obj).encode("utf-8")
+
+        def _merge_local_trajectories_response(self, resp_bytes: bytes) -> bytes:
+            obj = self._parse_json(resp_bytes)
+            summaries = obj.setdefault("trajectorySummaries", {})
+            with state.lock:
+                for cid, t in state.trajectories.items():
+                    if cid == "cas-live-welcome":
+                        continue
+                    summaries.setdefault(
+                        cid,
+                        {
+                            "summary": t["title"],
+                            "stepCount": t["stepCount"],
+                            "status": t["status"],
+                            "workspaces": [{"workspaceFolderAbsoluteUri": t["workspaceUri"]}],
+                        },
+                    )
+            return json.dumps(obj).encode("utf-8")
+
+        def _merge_local_steps_response(self, req_obj: dict, resp_bytes: bytes) -> bytes:
+            obj = self._parse_json(resp_bytes)
+            cid = req_obj.get("cascadeId", "")
+            if not obj.get("steps") and cid:
+                with state.lock:
+                    local_steps = state.steps_by_cascade.get(cid)
+                    if local_steps:
+                        obj["steps"] = list(local_steps)
+            return json.dumps(obj).encode("utf-8")
 
         def _handle_standalone_rpc(self, method: str, raw_body: bytes, content_type: str):
             if method == "JetboxSubscribeToSummaries":
