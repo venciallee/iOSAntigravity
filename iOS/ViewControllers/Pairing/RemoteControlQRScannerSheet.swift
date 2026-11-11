@@ -101,14 +101,14 @@ public struct RemoteControlQRScannerSheet: View {
                     .frame(width: 228, height: 228)
                     .allowsHitTesting(false)
             }
-            .frame(height: 300)
+            .frame(height: isCameraAvailable ? 380 : 280)
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
             )
             .padding(.horizontal, 16)
 
-            Text("In Antigravity Desktop on your Mac/PC, click **Remote Control** to open the QR code and point your iPhone camera here.")
+            Text("Open Antigravity on Mac/PC → click **Remote Control** and point your camera at the QR code.")
                 .font(.system(size: 13.5, weight: .regular))
                 .foregroundStyle(UEChromePalette.textSecondary)
                 .multilineTextAlignment(.center)
@@ -123,12 +123,12 @@ public struct RemoteControlQRScannerSheet: View {
             }
 
             #if canImport(PhotosUI)
-            // Pick QR Screenshot from Photos (works on both physical iPhone & Simulator)
+            // Pick QR Screenshot from Photos
             PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                 HStack(spacing: 8) {
-                    Image(systemName: "photo.badge.magnifyingglass")
+                    Image(systemName: "photo.on.rectangle")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("Scan QR from Screenshot / Photo")
+                    Text("Choose QR from Photos")
                         .font(.system(size: 15, weight: .semibold))
                 }
                 .foregroundStyle(UEChromePalette.textPrimary)
@@ -152,13 +152,8 @@ public struct RemoteControlQRScannerSheet: View {
             }
             #endif
 
-            // Direct Link / Slug Entry
-            VStack(alignment: .leading, spacing: 8) {
-                Text("OR ENTER REMOTE CONTROL LINK / HOST ID")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.7)
-                    .foregroundStyle(UEChromePalette.textMuted)
-
+            // Only show manual link input when physical camera is unavailable (e.g. iOS Simulator)
+            if !isCameraAvailable {
                 HStack(spacing: 8) {
                     TextField("https://antigravity.google.com/r/...", text: $manualLinkDraft)
                         .font(.system(size: 13, weight: .regular, design: .monospaced))
@@ -173,7 +168,7 @@ public struct RemoteControlQRScannerSheet: View {
                     Button {
                         handleScannedCandidate(manualLinkDraft)
                     } label: {
-                        Text("Use")
+                        Text("Connect")
                             .font(.system(size: 14.5, weight: .semibold))
                             .foregroundStyle(UEChromePalette.inkOnPrimaryCTA)
                             .padding(.horizontal, 16)
@@ -186,8 +181,8 @@ public struct RemoteControlQRScannerSheet: View {
                     .buttonStyle(.plain)
                     .disabled(manualLinkDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                .padding(.horizontal, 16)
             }
-            .padding(.horizontal, 16)
 
             Spacer(minLength: 8)
         }
