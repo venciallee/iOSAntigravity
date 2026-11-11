@@ -12,6 +12,7 @@ public enum AntigravityNavigationRoute: Sendable, Equatable, Hashable {
 
     // Compatibility aliases
     public static var workspaceHome: AntigravityNavigationRoute { .tabRoot }
+    public static var chatAndComposer: AntigravityNavigationRoute { .cascadeChat("cas-rate-limiter") }
     public static var artifactInspector: AntigravityNavigationRoute { .planReview }
     public static var turnDiffInspector: AntigravityNavigationRoute { .turnDiffReview }
     public static var pairingQR: AntigravityNavigationRoute { .pairingSettings }
@@ -62,7 +63,13 @@ public final class AntigravitySessionStore {
 
     public var currentRoute: AntigravityNavigationRoute {
         get { activeRoute }
-        set { activeRoute = newValue }
+        set {
+            if newValue == .chatAndComposer {
+                activeRoute = .cascadeChat(activeCascadeId)
+            } else {
+                activeRoute = newValue
+            }
+        }
     }
 
     // MARK: - Agents Home, Display Options & Search State (`UE01`, `UE02`, `UE03`)

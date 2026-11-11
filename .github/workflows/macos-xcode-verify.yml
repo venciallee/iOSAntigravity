@@ -33,15 +33,18 @@ jobs:
 
       - name: "[Gate 1] Swift 6 Package Compilation & XCTest Suite (AntigravityData)"
         run: |
+          set -euo pipefail
           mkdir -p verification/output/real-simulator
           swift test --package-path Packages/AntigravityData 2>&1 | tee verification/output/real-simulator/swift-test.log
 
       - name: "[Gate 2] Live Connect-RPC Protocol Flow (Login + StartCascade + SendMessage + Binary Proto + Face ID)"
         run: |
+          set -euo pipefail
           python3 verification/verify-live-rpc-flow.py 2>&1 | tee verification/output/real-simulator/live-rpc-flow.log
 
       - name: "[Gate 3 & 4] Xcode Simulator Build + Live App-to-Backend RPC + 13 Native SwiftUI Screenshots"
         run: |
+          set -euo pipefail
           python3 verification/ios-simulator-runner.py 2>&1 | tee verification/output/real-simulator/simulator-runner.log
 
       - name: Upload Real iOS Simulator Screenshots & Verification Logs
