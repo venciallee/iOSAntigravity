@@ -125,14 +125,11 @@ public actor AntigravityRPCClient {
         if let urlSession {
             self.urlSession = urlSession
         } else {
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 20
-            config.timeoutIntervalForResource = 300
-            let delegate = PinnedTLSURLSessionDelegate(
+            self.urlSession = Self.makeDefaultURLSession(
+                for: host.endpointURL,
                 pinnedFingerprintSHA256: pinnedFingerprintSHA256,
                 allowLocalSelfSignedTOFU: host.channel == .directHost
             )
-            self.urlSession = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         }
     }
 
@@ -149,15 +146,41 @@ public actor AntigravityRPCClient {
         if let urlSession {
             self.urlSession = urlSession
         } else {
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 20
-            config.timeoutIntervalForResource = 300
-            let delegate = PinnedTLSURLSessionDelegate(
+            self.urlSession = Self.makeDefaultURLSession(
+                for: baseURL,
                 pinnedFingerprintSHA256: pinnedFingerprintSHA256,
                 allowLocalSelfSignedTOFU: true
             )
-            self.urlSession = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         }
+    }
+
+    nonisolated private static func makeDefaultURLSession(
+        for endpointURL: URL,
+        pinnedFingerprintSHA256: String?,
+        allowLocalSelfSignedTOFU: Bool
+    ) -> URLSession {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 300
+        let host = (endpointURL.host ?? "").lowercased()
+        let isLocalOrPrivateHost =
+            host == "localhost" ||
+            host == "127.0.0.1" ||
+            host == "::1" ||
+            host.hasSuffix(".local") ||
+            host.hasSuffix(".ts.net") ||
+            host.hasPrefix("192.168.") ||
+            host.hasPrefix("10.") ||
+            host.hasPrefix("100.") ||
+            host.hasPrefix("172.")
+        if isLocalOrPrivateHost {
+            config.connectionProxyDictionary = [:]
+        }
+        let delegate = PinnedTLSURLSessionDelegate(
+            pinnedFingerprintSHA256: pinnedFingerprintSHA256,
+            allowLocalSelfSignedTOFU: allowLocalSelfSignedTOFU
+        )
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
     // MARK: - Handshake & Login Verification

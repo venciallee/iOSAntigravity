@@ -501,6 +501,10 @@ def create_bridge_server(
                 self._write_json(200, {"ok": True, "automationId": aid})
                 return
 
+            if method == "JetboxSubscribeToSummaries":
+                self._handle_standalone_rpc(method, raw_body, content_type)
+                return
+
             # 3. Forward to real Desktop `language_server` when available!
             if upstream_url:
                 self._proxy_to_upstream(method, raw_body, content_type)

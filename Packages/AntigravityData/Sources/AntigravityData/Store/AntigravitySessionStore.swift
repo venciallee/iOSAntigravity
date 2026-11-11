@@ -688,8 +688,35 @@ public final class AntigravitySessionStore {
         }
 
         if !handshake.summaries.isEmpty {
-            summaries = handshake.summaries
-            if let first = handshake.summaries.first {
+            let primarySlug = projects.first?.id
+            summaries = handshake.summaries.sorted { lhs, rhs in
+                let lhsPrimary = (lhs.projectSlug == primarySlug)
+                let rhsPrimary = (rhs.projectSlug == primarySlug)
+                if lhsPrimary != rhsPrimary { return lhsPrimary }
+                if lhs.stepCount != rhs.stepCount { return lhs.stepCount > rhs.stepCount }
+                return lhs.cascadeId < rhs.cascadeId
+            }
+            var knownProjectIds = Set(projects.map(\.id))
+            for summary in summaries where !knownProjectIds.contains(summary.projectSlug) {
+                knownProjectIds.insert(summary.projectSlug)
+                projects.append(
+                    ProjectWorkspace(
+                        id: summary.projectSlug,
+                        name: summary.projectSlug,
+                        pathDisplay: summary.workspaceUri.replacingOccurrences(of: "file://", with: ""),
+                        workspaceUri: summary.workspaceUri,
+                        runtime: summary.workspaceUri.hasPrefix("cloud://") ? .cloud : .macBookPro,
+                        hostName: updatedHost.hostname,
+                        activeBranch: summary.branchName,
+                        worktrees: [summary.branchName],
+                        isExpandedInHome: true
+                    )
+                )
+            }
+            if selectedProjectId.isEmpty, let firstProj = projects.first {
+                selectedProjectId = firstProj.id
+            }
+            if let first = summaries.first {
                 activeCascadeId = first.cascadeId
             }
         }

@@ -83,10 +83,30 @@ fi
 
 xcodegen generate
 
-SIM_INFO="$(xcrun simctl list devices available -j | python3 -c '
-import json, re, sys
+SIM_INFO_FILE="$(mktemp "${TMPDIR:-/tmp}/agy-sim-info.XXXXXX")"
+TAIL_PID=""
+trap 'rm -f "$SIM_INFO_FILE"; [[ -n "$TAIL_PID" ]] && kill "$TAIL_PID" >/dev/null 2>&1 || true; kill "$BRIDGE_PID" >/dev/null 2>&1 || true' EXIT
 
-data = json.load(sys.stdin).get("devices", {})
+python3 - >"$SIM_INFO_FILE" <<'PY'
+import json
+import re
+import subprocess
+import sys
+import time
+
+data = {}
+for _ in range(4):
+    try:
+        raw = subprocess.check_output(
+            ["xcrun", "simctl", "list", "devices", "available", "-j"],
+            text=True,
+        )
+        data = json.loads(raw).get("devices", {})
+        if any("iOS" in rt and data.get(rt) for rt in data.keys()):
+            break
+    except Exception:
+        pass
+    time.sleep(1.0)
 
 def runtime_sort_key(rt: str):
     nums = [int(x) for x in re.findall(r"\d+", rt)]
@@ -98,12 +118,15 @@ ios_runtimes = sorted(
     reverse=True,
 )
 
+def emit(dev: dict, rt: str):
+    print("|".join([str(dev.get("udid", "")), str(dev.get("name", "")), rt]))
+    sys.exit(0)
+
 # 1. Prefer an already Booted iPhone Simulator first (instant attach)
 for rt in ios_runtimes:
     for dev in data.get(rt, []):
         if dev.get("isAvailable") and dev.get("state") == "Booted" and "iPhone" in dev.get("name", ""):
-            print(f"{dev[\"udid\"]}|{dev[\"name\"]}|{rt}")
-            sys.exit(0)
+            emit(dev, rt)
 
 # 2. Prefer modern Pro / standard iPhone models on newest iOS runtime
 preferred = ["iPhone 17 Pro", "iPhone 16 Pro", "iPhone 17", "iPhone 16", "iPhone 15 Pro", "iPhone 15"]
@@ -111,8 +134,7 @@ for target_name in preferred:
     for rt in ios_runtimes:
         for dev in data.get(rt, []):
             if dev.get("isAvailable") and dev.get("name") == target_name:
-                print(f"{dev[\"udid\"]}|{dev[\"name\"]}|{rt}")
-                sys.exit(0)
+                emit(dev, rt)
 
 # 3. Fallback to any available non-SE iPhone, then any iPhone
 for exclude_se in (True, False):
@@ -120,9 +142,10 @@ for exclude_se in (True, False):
         for dev in data.get(rt, []):
             name = dev.get("name", "")
             if dev.get("isAvailable") and "iPhone" in name and (not exclude_se or "SE" not in name):
-                print(f"{dev[\"udid\"]}|{name}|{rt}")
-                sys.exit(0)
-')"
+                emit(dev, rt)
+PY
+
+SIM_INFO="$(tr -d '\r\n' < "$SIM_INFO_FILE")"
 
 if [[ -z "$SIM_INFO" ]]; then
   echo "[!] No available iPhone Simulator runtime found in Xcode."
@@ -141,7 +164,9 @@ xcodebuild \
   -destination "id=${SIM_UDID}" \
   -derivedDataPath "$DERIVED_DATA" \
   CODE_SIGNING_ALLOWED=NO \
+  -quiet \
   build
+echo "[PASS] Antigravity.app compiled for ${SIM_NAME}"
 
 echo ""
 echo "=== [4/4] Booting Simulator, Installing Antigravity.app & Connecting Live ==="
@@ -150,6 +175,10 @@ open -a Simulator || true
 xcrun simctl bootstatus "$SIM_UDID" -b
 
 APP_PATH="$(find "$DERIVED_DATA/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name "Antigravity.app" | head -n 1)"
+if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
+  echo "[!] Built Antigravity.app bundle not found under $DERIVED_DATA/Build/Products/Debug-iphonesimulator"
+  exit 1
+fi
 xcrun simctl install "$SIM_UDID" "$APP_PATH"
 xcrun simctl terminate "$SIM_UDID" dev.antigravity.ios.app >/dev/null 2>&1 || true
 
@@ -166,4 +195,6 @@ echo "[PASS] Real Simulator screenshot saved to verification/output/real-simulat
 echo ""
 echo "Simulator (${SIM_NAME}) is now running Antigravity.app connected to http://127.0.0.1:${BRIDGE_PORT}."
 echo "Press Ctrl+C when finished interacting to stop the background Companion Bridge."
+tail -n 6 -f /tmp/antigravity-bridge.log &
+TAIL_PID=$!
 wait "$BRIDGE_PID"
