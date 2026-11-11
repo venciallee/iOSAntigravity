@@ -136,12 +136,36 @@ def discover_all_local_language_servers() -> list[dict]:
             or "--hub-port" in line
             or ("--standalone" in line and "--workspace_id" not in line)
         )
+        ws_id_m = re.search(r"--workspace_id[=\s]+([^\s]+)", line)
+        ws_id = ws_id_m.group(1) if ws_id_m else ""
+        ws_id_lower = ws_id.lower()
+        is_remote_ws = any(
+            marker in ws_id_lower
+            for marker in (
+                "vscode_remote",
+                "vscode-remote",
+                "vscode_vfs",
+                "vscode-vfs",
+                "ssh_remote",
+                "ssh-remote",
+                "tunnel",
+                "codespace",
+                "dev_container",
+                "dev-container",
+                "antigravity_cloud",
+                "antigravity-cloud",
+                "jetski",
+            )
+        ) or (
+            sys.platform == "darwin"
+            and ws_id_lower.startswith(("file_home_", "file_root_", "file_workspace_", "file_workspaces_"))
+        )
         hinted_ports = [
             int(p)
             for p in re.findall(r"--(?:hub[-_]|extension_server_)?[A-Za-z0-9_]*port[=\s]+(\d+)", line)
             if 1024 <= int(p) <= 65535
         ]
-        candidates.append((0 if is_hub else 1, pid, csrf_token, hinted_ports, is_hub))
+        candidates.append((0 if is_hub else 1, pid, csrf_token, hinted_ports, is_hub, ws_id, is_remote_ws))
 
     candidates.sort(key=lambda item: (item[0], item[1]))
     ctx = make_unverified_ssl_context()
@@ -149,7 +173,7 @@ def discover_all_local_language_servers() -> list[dict]:
     discovered = []
     seen_urls = set()
 
-    for _, pid, csrf_token, hinted_ports, is_hub in candidates:
+    for _, pid, csrf_token, hinted_ports, is_hub, ws_id, is_remote_ws in candidates:
         if time.monotonic() > deadline:
             break
         ports = list(dict.fromkeys(hinted_ports))
@@ -206,6 +230,8 @@ def discover_all_local_language_servers() -> list[dict]:
                                         "upstream_url": base_url,
                                         "upstream_csrf": csrf_token,
                                         "is_hub": is_hub,
+                                        "workspace_id": ws_id,
+                                        "is_remote_workspace": is_remote_ws,
                                     }
                                 )
                                 found_for_pid = True
@@ -246,71 +272,356 @@ def encode_varint_field(field_no: int, value: int) -> bytes:
     return encode_varint((field_no << 3) | 0) + encode_varint(value)
 
 
-def parse_local_project_entry(p_obj: dict) -> dict | None:
+CLOUD_URI_PREFIXES = (
+    "cloud://",
+    "https://github.com/",
+    "http://github.com/",
+    "vscode-remote://",
+    "vscode-vfs://",
+    "ssh://",
+    "remote://",
+    "jetski://",
+    "antigravity-cloud://",
+    "antigravity-remote://",
+    "devbox://",
+    "codespace://",
+)
+
+GENERIC_CLOUD_CONTAINER_ROOTS = {
+    "/home/antigravity",
+    "/workspace",
+    "/workspaces",
+    "/root",
+}
+
+
+def read_desktop_remote_workspaces() -> dict[str, str]:
+    """Reads Antigravity Desktop `workspaceStorage/*/workspace.json` to map remote workspace paths/names to their remote URI."""
+    remote_by_key: dict[str, str] = {}
+    local_basenames: set[str] = set()
+    candidate_dirs = [
+        Path.home() / "Library/Application Support/Antigravity/User/workspaceStorage",
+        Path.home() / ".config/Antigravity/User/workspaceStorage",
+    ]
+    for root_dir in candidate_dirs:
+        try:
+            if not root_dir.is_dir():
+                continue
+            for ws_json in root_dir.glob("*/workspace.json"):
+                try:
+                    obj = json.loads(ws_json.read_text(encoding="utf-8", errors="ignore"))
+                    folder = str(obj.get("folder") or obj.get("workspace") or "").strip()
+                    if not folder:
+                        continue
+                    decoded = urllib.parse.unquote(folder).rstrip("/")
+                    if decoded.startswith("file://"):
+                        local_path = decoded[len("file://") :]
+                        if os.path.exists(local_path):
+                            local_basenames.add(Path(local_path).name.lower())
+                        continue
+                    parsed = urllib.parse.urlparse(decoded)
+                    if parsed.scheme and parsed.scheme != "file":
+                        path_part = parsed.path.rstrip("/")
+                        if path_part:
+                            remote_by_key[f"path:{path_part.lower()}"] = folder
+                            base = Path(path_part).name.lower()
+                            if base:
+                                remote_by_key.setdefault(f"name:{base}", folder)
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    for base in local_basenames:
+        remote_by_key.pop(f"name:{base}", None)
+    return remote_by_key
+
+
+def extract_github_repo_slug(raw_value: str) -> str:
+    text = (raw_value or "").strip()
+    if not text:
+        return ""
+    m = re.search(r"github\.com[:/]+([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+?)(?:\.git)?/?$", text)
+    if m:
+        return m.group(1)
+    if re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", text):
+        return text
+    return ""
+
+
+def classify_workspace_uri(
+    uri: str,
+    cascade_id: str = "",
+    source: str = "",
+    backend: dict | None = None,
+    remote_ws_index: dict[str, str] | None = None,
+    is_live_darwin: bool | None = None,
+) -> tuple[bool, str, str]:
+    """Returns `(is_cloud, normalized_uri, slug_hint)` for a workspace URI and session metadata."""
+    raw_uri = (uri or "").strip()
+    decoded_uri = urllib.parse.unquote(raw_uri).rstrip("/")
+    cid_lower = (cascade_id or "").strip().lower()
+    src_lower = (source or "").strip().lower()
+    check_darwin = (sys.platform == "darwin") if is_live_darwin is None else is_live_darwin
+
+    is_cloud = False
+    if (
+        cid_lower.startswith("v1/")
+        or "jetski_remote_agents" in cid_lower
+        or "remote_agent" in cid_lower
+        or any(tok in src_lower for tok in ("cloud", "remote", "jetski", "github"))
+        or bool((backend or {}).get("is_remote_workspace"))
+    ):
+        is_cloud = True
+
+    lower_uri = decoded_uri.lower()
+    if lower_uri.startswith(CLOUD_URI_PREFIXES):
+        is_cloud = True
+        if lower_uri.startswith(("https://github.com/", "http://github.com/")):
+            gh_slug = extract_github_repo_slug(decoded_uri)
+            if gh_slug:
+                return True, f"cloud://{gh_slug}", gh_slug.split("/")[-1]
+        if lower_uri.startswith("cloud://"):
+            tail = decoded_uri[len("cloud://") :].strip("/")
+            slug = tail.split("/")[-1] if tail else "cloud"
+            return True, f"cloud://{tail}" if tail else "cloud://workspace", slug
+        if lower_uri.startswith("vscode-vfs://"):
+            parsed = urllib.parse.urlparse(decoded_uri)
+            parts = [p for p in parsed.path.split("/") if p]
+            if len(parts) >= 2:
+                gh_slug = f"{parts[0]}/{parts[1]}"
+                return True, f"cloud://{gh_slug}", parts[1]
+        parsed = urllib.parse.urlparse(decoded_uri)
+        slug = Path(parsed.path.rstrip("/")).name or parsed.netloc or "cloud"
+        return True, raw_uri, slug
+
+    if decoded_uri.startswith("file://"):
+        fs_path = decoded_uri[len("file://") :].rstrip("/")
+        # Antigravity Cloud VM container filesystem (`/home/antigravity/<owner>/<repo>`)
+        if fs_path == "/home/antigravity" or fs_path.startswith("/home/antigravity/"):
+            rel = fs_path[len("/home/antigravity") :].strip("/")
+            parts = [p for p in rel.split("/") if p]
+            if len(parts) >= 2:
+                repo_slug = f"{parts[0]}/{parts[1]}"
+                return True, f"cloud://{repo_slug}", parts[1]
+            if len(parts) == 1:
+                return True, f"cloud://{parts[0]}", parts[0]
+            return True, "cloud://antigravity", "antigravity"
+
+        if remote_ws_index:
+            matched_remote = remote_ws_index.get(f"path:{fs_path.lower()}")
+            if not matched_remote and not os.path.exists(fs_path):
+                base = Path(fs_path).name.lower()
+                matched_remote = remote_ws_index.get(f"name:{base}")
+            if matched_remote:
+                return classify_workspace_uri(
+                    matched_remote,
+                    cascade_id=cascade_id,
+                    source=source,
+                    backend=backend,
+                    remote_ws_index=None,
+                    is_live_darwin=check_darwin,
+                )
+
+        if check_darwin and fs_path.startswith(("/home/", "/root/", "/workspace/", "/workspaces/")):
+            if not os.path.exists(fs_path):
+                slug = Path(fs_path).name or "cloud"
+                parts = [p for p in fs_path.strip("/").split("/") if p]
+                if len(parts) >= 3 and parts[0] in ("home", "workspace", "workspaces"):
+                    repo_slug = f"{parts[-2]}/{parts[-1]}"
+                    return True, f"cloud://{repo_slug}", slug
+                return True, f"cloud://{slug}", slug
+
+        slug = Path(fs_path).name or "workspace"
+        if is_cloud:
+            return True, f"cloud://{slug}", slug
+        return False, raw_uri, slug
+
+    if raw_uri:
+        gh_slug = extract_github_repo_slug(raw_uri)
+        if gh_slug:
+            return True, f"cloud://{gh_slug}", gh_slug.split("/")[-1]
+        if is_cloud:
+            clean = raw_uri.strip("/")
+            return True, f"cloud://{clean}", clean.split("/")[-1]
+        return False, raw_uri, Path(raw_uri.rstrip("/")).name or raw_uri
+
+    return is_cloud, "", ""
+
+
+def select_primary_workspace_entry(workspaces: list) -> dict | None:
+    """Picks the most specific repository workspace entry, skipping generic Cloud VM container roots like `/home/antigravity`."""
+    if not isinstance(workspaces, list):
+        return None
+    valid_entries = []
+    for entry in workspaces:
+        if not isinstance(entry, dict):
+            continue
+        uri = (entry.get("workspaceFolderAbsoluteUri") or entry.get("workspaceUri") or "").strip()
+        if uri:
+            valid_entries.append((uri, entry))
+    if not valid_entries:
+        return None
+
+    for uri, entry in valid_entries:
+        decoded = urllib.parse.unquote(uri).rstrip("/")
+        if decoded.startswith("cloud://") or decoded.startswith("vscode-remote://") or decoded.startswith("vscode-vfs://"):
+            return entry
+
+    for uri, entry in valid_entries:
+        decoded = urllib.parse.unquote(uri).rstrip("/")
+        fs_path = decoded[len("file://") :].rstrip("/") if decoded.startswith("file://") else decoded
+        if fs_path not in GENERIC_CLOUD_CONTAINER_ROOTS:
+            return entry
+
+    return valid_entries[0][1]
+
+
+def parse_local_project_entry(p_obj: dict, is_live_darwin: bool | None = None) -> dict | None:
     """Normalizes a project definition from `ReadProject` or `~/.gemini/config/projects/*.json`."""
     if not isinstance(p_obj, dict):
         return None
-    proj_id = (p_obj.get("id") or "").strip()
-    name = (p_obj.get("name") or "").strip()
+    proj_id = str(p_obj.get("id") or p_obj.get("projectId") or "").strip()
+    name = str(p_obj.get("name") or p_obj.get("displayName") or p_obj.get("title") or "").strip()
     folder_uri = ""
-    is_cloud = False
-    branch = "main"
+    is_cloud = bool(p_obj.get("isCloud") or p_obj.get("cloud"))
+    has_local_folder = False
+    branch = str(p_obj.get("activeBranch") or p_obj.get("gitBranch") or p_obj.get("defaultBranch") or "main").strip() or "main"
 
-    resources = (p_obj.get("projectResources") or {}).get("resources") or []
+    for meta_key in ("runtime", "environment", "executionEnvironment", "hostType", "projectType", "target"):
+        meta_val = str(p_obj.get(meta_key) or "").strip().lower()
+        if any(tok in meta_val for tok in ("cloud", "remote", "jetski", "vm", "github")):
+            is_cloud = True
+
+    raw_resources = p_obj.get("projectResources")
+    if isinstance(raw_resources, dict):
+        resources = raw_resources.get("resources") or []
+    elif isinstance(raw_resources, list):
+        resources = raw_resources
+    else:
+        resources = p_obj.get("resources") or []
+
+    cloud_repo_slug = ""
     for res in resources:
         if not isinstance(res, dict):
             continue
-        git_folder = res.get("gitFolder") or {}
-        if isinstance(git_folder, dict) and git_folder.get("folderUri"):
-            folder_uri = git_folder["folderUri"]
-            if git_folder.get("gitBranch"):
-                branch = git_folder["gitBranch"]
-            break
-        gh_repo = res.get("githubRepo") or res.get("githubRepository") or res.get("remoteRepo") or {}
-        if isinstance(gh_repo, dict):
-            owner = gh_repo.get("owner") or ""
-            repo_name = gh_repo.get("name") or gh_repo.get("repo") or ""
-            full_name = gh_repo.get("fullName") or (f"{owner}/{repo_name}".strip("/"))
-            if full_name:
-                folder_uri = f"cloud://{full_name}"
-                if not name:
-                    name = full_name
+        git_folder = res.get("gitFolder") or res.get("localFolder") or res.get("workspaceFolder") or {}
+        if isinstance(git_folder, dict) and (git_folder.get("folderUri") or git_folder.get("workspaceUri") or git_folder.get("path")):
+            candidate_uri = str(git_folder.get("folderUri") or git_folder.get("workspaceUri") or git_folder.get("path")).strip()
+            if candidate_uri.startswith("/"):
+                candidate_uri = f"file://{candidate_uri}"
+            if git_folder.get("gitBranch") or git_folder.get("branch"):
+                branch = str(git_folder.get("gitBranch") or git_folder.get("branch"))
+            c_cloud, norm_uri, _ = classify_workspace_uri(candidate_uri, is_live_darwin=is_live_darwin)
+            if c_cloud:
                 is_cloud = True
+                folder_uri = norm_uri
+            else:
+                has_local_folder = True
+                folder_uri = norm_uri or candidate_uri
                 break
 
-    if not folder_uri:
-        raw_uri = p_obj.get("folderUri") or p_obj.get("workspaceUri") or ""
-        if raw_uri:
-            folder_uri = raw_uri
+        for gh_key in ("githubRepo", "githubRepository", "remoteRepo", "github", "repository", "repo", "pluginResource", "cloudResource"):
+            gh_repo = res.get(gh_key)
+            if isinstance(gh_repo, str):
+                slug = extract_github_repo_slug(gh_repo)
+                if slug:
+                    cloud_repo_slug = slug
+                    is_cloud = True
+            elif isinstance(gh_repo, dict):
+                owner = str(gh_repo.get("owner") or gh_repo.get("org") or "").strip()
+                repo_name = str(
+                    gh_repo.get("name")
+                    or gh_repo.get("repo")
+                    or gh_repo.get("repoName")
+                    or gh_repo.get("repositoryName")
+                    or ""
+                ).strip()
+                full_name = (
+                    extract_github_repo_slug(str(gh_repo.get("fullName") or ""))
+                    or extract_github_repo_slug(str(gh_repo.get("repository") or ""))
+                    or extract_github_repo_slug(str(gh_repo.get("resourceId") or ""))
+                    or extract_github_repo_slug(str(gh_repo.get("url") or gh_repo.get("htmlUrl") or gh_repo.get("cloneUrl") or gh_repo.get("remoteUrl") or ""))
+                    or (f"{owner}/{repo_name}".strip("/") if (owner and repo_name) else "")
+                )
+                if gh_repo.get("defaultBranch") or gh_repo.get("branch"):
+                    branch = str(gh_repo.get("defaultBranch") or gh_repo.get("branch"))
+                if full_name:
+                    cloud_repo_slug = full_name
+                    is_cloud = True
+                elif repo_name:
+                    cloud_repo_slug = repo_name
+                    is_cloud = True
 
-    if name and "/" in name and not folder_uri.startswith("file://"):
+        # Also inspect top-level resource url / uri / repo / resourceId
+        res_uri = str(res.get("uri") or res.get("url") or res.get("repository") or res.get("repo") or res.get("resourceId") or "").strip()
+        slug_from_res = extract_github_repo_slug(res_uri)
+        if slug_from_res:
+            cloud_repo_slug = cloud_repo_slug or slug_from_res
+            is_cloud = True
+
+    if not folder_uri and not cloud_repo_slug:
+        top_repo = extract_github_repo_slug(
+            str(p_obj.get("repository") or p_obj.get("githubRepo") or p_obj.get("repoUrl") or "")
+        )
+        if top_repo:
+            cloud_repo_slug = top_repo
+            is_cloud = True
+
+    if not folder_uri:
+        raw_uri = str(p_obj.get("folderUri") or p_obj.get("workspaceUri") or p_obj.get("path") or "").strip()
+        if raw_uri:
+            if raw_uri.startswith("/"):
+                raw_uri = f"file://{raw_uri}"
+            c_cloud, norm_uri, _ = classify_workspace_uri(raw_uri, is_live_darwin=is_live_darwin)
+            if c_cloud:
+                is_cloud = True
+                folder_uri = norm_uri
+            else:
+                has_local_folder = True
+                folder_uri = norm_uri or raw_uri
+
+    if cloud_repo_slug and not has_local_folder:
+        is_cloud = True
+        folder_uri = f"cloud://{cloud_repo_slug}"
+        if not name:
+            name = cloud_repo_slug.split("/")[-1]
+
+    if name and "/" in name and not has_local_folder:
         is_cloud = True
         if not folder_uri:
             folder_uri = f"cloud://{name}"
-    elif folder_uri.startswith("cloud://") or folder_uri.startswith("https://github.com/"):
+
+    if not has_local_folder and not folder_uri:
+        # Projects registered in Antigravity `ReadProject` without a local gitFolder run in Cloud!
         is_cloud = True
-        if folder_uri.startswith("https://github.com/"):
-            repo_slug = folder_uri.replace("https://github.com/", "").strip("/")
-            folder_uri = f"cloud://{repo_slug}"
-            if not name:
-                name = repo_slug
+        target_slug = cloud_repo_slug or name or proj_id
+        if target_slug:
+            folder_uri = f"cloud://{target_slug}"
+
+    if folder_uri and not has_local_folder:
+        c_cloud, norm_uri, _ = classify_workspace_uri(folder_uri, is_live_darwin=is_live_darwin)
+        if c_cloud:
+            is_cloud = True
+            folder_uri = norm_uri
 
     if not name and folder_uri:
         clean = folder_uri.replace("file://", "").replace("cloud://", "").rstrip("/")
-        name = Path(clean).name if not is_cloud else clean
+        name = Path(clean).name if clean else ""
 
     if not proj_id and not name:
         return None
 
-    if not folder_uri:
-        folder_uri = f"cloud://{name}" if is_cloud else f"file:///{name}"
+    display_name = name or proj_id
+    if display_name and "/" in display_name and is_cloud and not p_obj.get("name"):
+        display_name = display_name.split("/")[-1]
 
     return {
-        "id": proj_id or name,
-        "name": name or proj_id,
+        "id": proj_id or display_name,
+        "name": display_name,
         "workspaceUri": folder_uri,
         "workspaceFolderAbsoluteUri": folder_uri,
-        "displayName": name or proj_id,
+        "displayName": display_name,
         "activeBranch": branch,
         "isCloud": is_cloud,
     }
@@ -621,18 +932,19 @@ class UpstreamFederationManager:
     def refresh_backends(self, force: bool = False):
         now = time.monotonic()
         with self.lock:
-            if not force and (now - self.last_scan_ts) < 6.0 and self.backends:
+            if not force and (now - self.last_scan_ts) < 2.5 and self.backends:
                 return
             self.last_scan_ts = now
 
         if self.auto_discover and not self.explicit_url:
             discovered = discover_all_local_language_servers()
             with self.lock:
-                if discovered:
-                    self.backends = discovered
+                self.backends = discovered
 
         with self.lock:
             current_backends = list(self.backends)
+            if current_backends:
+                self.state.is_live_proxy = True
 
         for b in current_backends:
             url = b["upstream_url"]
@@ -672,6 +984,28 @@ class UpstreamFederationManager:
                 return json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:
             return None
+
+    def is_backend_alive(self, backend: dict, timeout: float = 1.5) -> bool:
+        """Returns True if the upstream backend's TCP/HTTP server is reachable (even if an optional method returns 404)."""
+        target = f"{backend['upstream_url']}{SERVICE_PREFIX}GetAllCascadeTrajectories"
+        is_https = target.startswith("https://")
+        req = urllib.request.Request(
+            target,
+            data=b"{}",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+                "x-codeium-csrf-token": backend.get("upstream_csrf") or "",
+            },
+        )
+        try:
+            with urlopen_direct(req, timeout=timeout, ssl_ctx=self.ssl_ctx if is_https else None) as resp:
+                return 200 <= resp.status < 500
+        except urllib.error.HTTPError as http_err:
+            return http_err.code < 500
+        except Exception:
+            return False
 
     def resolve_project_by_id(self, backend: dict, project_id: str) -> dict | None:
         if not project_id or project_id == "outside-of-project":
@@ -829,8 +1163,14 @@ class UpstreamFederationManager:
             return
 
 
-def enrich_summary_entry(cid: str, summary_obj: dict, projects_by_id: dict[str, dict]) -> dict:
-    """Enriches a trajectory summary with `.pbtxt` annotations and `trajectoryMetadata.projectId` workspace mapping."""
+def enrich_summary_entry(
+    cid: str,
+    summary_obj: dict,
+    projects_by_id: dict[str, dict],
+    backend: dict | None = None,
+    remote_ws_index: dict[str, str] | None = None,
+) -> dict:
+    """Enriches a trajectory summary with `.pbtxt` annotations, Cloud VM / Remote URI classification, and `ReadProject` metadata."""
     enriched = dict(summary_obj)
     pbtxt_ann = read_desktop_annotation_pbtxt(cid)
     if pbtxt_ann:
@@ -839,14 +1179,79 @@ def enrich_summary_entry(cid: str, summary_obj: dict, projects_by_id: dict[str, 
             ann.setdefault(k, v)
         enriched["annotations"] = ann
 
-    traj_meta = enriched.get("trajectoryMetadata")
-    proj_id = traj_meta.get("projectId") if isinstance(traj_meta, dict) else None
+    traj_meta = enriched.get("trajectoryMetadata") if isinstance(enriched.get("trajectoryMetadata"), dict) else {}
+    proj_id = traj_meta.get("projectId")
+    proj = projects_by_id.get(proj_id) if proj_id else None
+
     workspaces = enriched.get("workspaces")
-    has_workspace = isinstance(workspaces, list) and len(workspaces) > 0 and isinstance(workspaces[0], dict) and (
-        workspaces[0].get("workspaceFolderAbsoluteUri") or workspaces[0].get("workspaceUri")
+    primary_ws = select_primary_workspace_entry(workspaces)
+    raw_ws_uri = ""
+    branch = "main"
+    if isinstance(primary_ws, dict):
+        raw_ws_uri = str(primary_ws.get("workspaceFolderAbsoluteUri") or primary_ws.get("workspaceUri") or "").strip()
+        branch = str(primary_ws.get("gitBranch") or primary_ws.get("branchName") or "main").strip() or "main"
+
+    if not raw_ws_uri and proj:
+        raw_ws_uri = str(proj.get("workspaceUri") or "").strip()
+        branch = str(proj.get("activeBranch") or branch or "main")
+
+    source_str = " ".join(
+        str(x)
+        for x in (
+            enriched.get("source"),
+            enriched.get("runtime"),
+            traj_meta.get("runtime"),
+            traj_meta.get("environment"),
+            traj_meta.get("executionEnvironment"),
+            traj_meta.get("source"),
+        )
+        if x
     )
-    if proj_id and proj_id in projects_by_id and not has_workspace:
-        proj = projects_by_id[proj_id]
+    ws_is_cloud, norm_uri, slug_hint = classify_workspace_uri(
+        raw_ws_uri,
+        cascade_id=cid,
+        source=source_str,
+        backend=backend,
+        remote_ws_index=remote_ws_index,
+    )
+    explicit_cloud = (
+        bool(enriched.get("isCloud"))
+        or bool(traj_meta.get("isCloud"))
+        or bool(proj and proj.get("isCloud"))
+        or ws_is_cloud
+    )
+
+    if proj:
+        proj_name = str(proj.get("displayName") or proj.get("name") or "").strip()
+        if proj_name:
+            enriched.setdefault("projectSlug", proj_name)
+        if proj.get("isCloud") and proj.get("workspaceUri"):
+            proj_uri = str(proj["workspaceUri"])
+            if not norm_uri or not norm_uri.startswith("cloud://") or ("/" in proj_uri[len("cloud://") :] and "/" not in norm_uri.replace("cloud://", "")):
+                norm_uri = proj_uri
+
+    if explicit_cloud:
+        enriched["isCloud"] = True
+        enriched["runtime"] = "cloud"
+        final_uri = norm_uri or (proj.get("workspaceUri") if proj else "") or raw_ws_uri
+        if final_uri and not final_uri.lower().startswith(CLOUD_URI_PREFIXES):
+            fallback_slug = slug_hint or (proj.get("displayName") if proj else "") or "cloud"
+            final_uri = f"cloud://{fallback_slug}"
+        if final_uri:
+            enriched["workspaceUri"] = final_uri
+            primary_entry = dict(primary_ws) if isinstance(primary_ws, dict) else {}
+            primary_entry["workspaceFolderAbsoluteUri"] = final_uri
+            primary_entry["workspaceUri"] = final_uri
+            primary_entry.setdefault("gitBranch", branch)
+            other_entries = [
+                w
+                for w in (workspaces if isinstance(workspaces, list) else [])
+                if isinstance(w, dict) and w is not primary_ws
+            ]
+            enriched["workspaces"] = [primary_entry] + other_entries
+        if slug_hint and slug_hint != "antigravity":
+            enriched.setdefault("projectSlug", slug_hint)
+    elif proj and not primary_ws and proj.get("workspaceUri"):
         enriched["workspaces"] = [
             {
                 "workspaceFolderAbsoluteUri": proj["workspaceUri"],
@@ -854,7 +1259,10 @@ def enrich_summary_entry(cid: str, summary_obj: dict, projects_by_id: dict[str, 
                 "gitBranch": proj.get("activeBranch", "main"),
             }
         ]
-        enriched.setdefault("projectSlug", proj["displayName"])
+    elif isinstance(primary_ws, dict) and isinstance(workspaces, list) and len(workspaces) > 1 and workspaces[0] is not primary_ws:
+        other_entries = [w for w in workspaces if isinstance(w, dict) and w is not primary_ws]
+        enriched["workspaces"] = [primary_ws] + other_entries
+
     return enriched
 
 
@@ -916,6 +1324,37 @@ def create_bridge_server(
             parsed_path = urllib.parse.urlparse(self.path).path
             if parsed_path == "/health":
                 backends = federation.get_backends()
+                if state.is_live_proxy:
+                    live_upstreams = [
+                        b
+                        for b in backends
+                        if federation.call_backend_json(b, "GetAllCascadeTrajectories", {}, timeout=1.5) is not None
+                        or federation.call_backend_json(b, "GetUnleashData", {}, timeout=1.2) is not None
+                    ]
+                    if not live_upstreams:
+                        federation.refresh_backends(force=True)
+                        backends = federation.get_backends()
+                        live_upstreams = [
+                            b
+                            for b in backends
+                            if federation.call_backend_json(b, "GetAllCascadeTrajectories", {}, timeout=1.5) is not None
+                            or federation.call_backend_json(b, "GetUnleashData", {}, timeout=1.2) is not None
+                        ]
+                    if not live_upstreams:
+                        self._write_json(
+                            503,
+                            {
+                                "ok": False,
+                                "hostname": socket.gethostname(),
+                                "mode": "desktop_offline",
+                                "message": "Antigravity Desktop is offline",
+                                "upstream": None,
+                                "upstreams": [],
+                                "desktopAuthDetected": bool(desktop_api_key),
+                            },
+                        )
+                        return
+                    backends = live_upstreams
                 self._write_json(
                     200,
                     {
@@ -1113,6 +1552,19 @@ def create_bridge_server(
                 return
 
             backends = federation.get_backends()
+            if not backends and state.is_live_proxy:
+                federation.refresh_backends(force=True)
+                backends = federation.get_backends()
+                if not backends:
+                    self._write_json(
+                        503,
+                        {
+                            "code": "unavailable",
+                            "message": "Antigravity Desktop is offline",
+                        },
+                    )
+                    return
+
             if method == "JetboxSubscribeToSummaries":
                 self._handle_jetbox_subscribe_stream(backends)
                 return
@@ -1134,7 +1586,21 @@ def create_bridge_server(
         def _handle_jetbox_subscribe_stream(self, backends: list[dict]):
             """Emits a Connect 5-byte framed snapshot of current summaries (both `updates` map and `cascadeId` event)."""
             if backends:
-                merged_map = self._collect_federated_summaries_map(backends)
+                merged_map, reachable_count = self._collect_federated_summaries_map(backends)
+                if reachable_count == 0 and state.is_live_proxy:
+                    federation.refresh_backends(force=True)
+                    refreshed = federation.get_backends()
+                    if refreshed:
+                        merged_map, reachable_count = self._collect_federated_summaries_map(refreshed)
+                    if reachable_count == 0:
+                        self._write_json(
+                            503,
+                            {
+                                "code": "unavailable",
+                                "message": "Antigravity Desktop is offline",
+                            },
+                        )
+                        return
                 if merged_map:
                     first_cid, first_obj = next(iter(merged_map.items()))
                     ann = first_obj.get("annotations") if isinstance(first_obj.get("annotations"), dict) else {}
@@ -1172,30 +1638,67 @@ def create_bridge_server(
         def _handle_federated_workspaces(self, backends: list[dict]):
             seen_uris = set()
             normalized = []
+            remote_ws_index = read_desktop_remote_workspaces()
+            reachable_count = 0
 
-            for b in backends:
-                res = federation.call_backend_json(b, "GetWorkspaceInfos", {}, timeout=3.0)
-                if not isinstance(res, dict):
-                    continue
-                raw_items = res.get("workspaceInfos") or res.get("workspaces") or []
-                for item in raw_items:
-                    if not isinstance(item, dict):
+            def query_workspaces_from(target_backends: list[dict]) -> int:
+                alive = 0
+                for b in target_backends:
+                    res = federation.call_backend_json(b, "GetWorkspaceInfos", {}, timeout=3.0)
+                    if isinstance(res, dict):
+                        alive += 1
+                    else:
+                        if federation.is_backend_alive(b, timeout=1.5):
+                            alive += 1
                         continue
-                    uri = item.get("workspaceUri") or item.get("workspaceFolderAbsoluteUri") or ""
-                    if not uri:
-                        continue
-                    dedup_key = urllib.parse.unquote(uri).rstrip("/").lower()
-                    if dedup_key in seen_uris:
-                        continue
-                    seen_uris.add(dedup_key)
-                    clean_path = uri.replace("file://", "").replace("cloud://", "").rstrip("/")
-                    default_name = clean_path if uri.startswith("cloud://") else (Path(clean_path).name or "workspace")
-                    enriched = dict(item)
-                    enriched.setdefault("workspaceUri", uri)
-                    enriched.setdefault("workspaceFolderAbsoluteUri", uri)
-                    enriched.setdefault("displayName", item.get("displayName") or default_name)
-                    enriched.setdefault("activeBranch", item.get("gitBranch") or item.get("activeBranch") or "main")
-                    normalized.append(enriched)
+                    raw_items = res.get("workspaceInfos") or res.get("workspaces") or []
+                    for item in raw_items:
+                        if not isinstance(item, dict):
+                            continue
+                        raw_uri = item.get("workspaceUri") or item.get("workspaceFolderAbsoluteUri") or ""
+                        if not raw_uri:
+                            continue
+                        decoded_raw = urllib.parse.unquote(raw_uri).rstrip("/")
+                        if decoded_raw.startswith("file://") and decoded_raw[len("file://") :] in GENERIC_CLOUD_CONTAINER_ROOTS:
+                            continue
+                        is_cloud, norm_uri, slug_hint = classify_workspace_uri(
+                            raw_uri,
+                            source=str(item.get("runtime") or item.get("source") or ""),
+                            backend=b,
+                            remote_ws_index=remote_ws_index,
+                        )
+                        is_cloud = is_cloud or bool(item.get("isCloud"))
+                        final_uri = norm_uri or raw_uri
+                        dedup_key = urllib.parse.unquote(final_uri).rstrip("/").lower()
+                        if dedup_key in seen_uris:
+                            continue
+                        seen_uris.add(dedup_key)
+                        clean_path = final_uri.replace("file://", "").replace("cloud://", "").rstrip("/")
+                        default_name = slug_hint or (Path(clean_path).name or "workspace")
+                        enriched = dict(item)
+                        enriched["workspaceUri"] = final_uri
+                        enriched["workspaceFolderAbsoluteUri"] = final_uri
+                        enriched["displayName"] = item.get("displayName") or default_name
+                        enriched["activeBranch"] = item.get("gitBranch") or item.get("activeBranch") or "main"
+                        enriched["isCloud"] = is_cloud
+                        normalized.append(enriched)
+                return alive
+
+            reachable_count = query_workspaces_from(backends)
+            if reachable_count == 0:
+                federation.refresh_backends(force=True)
+                refreshed = federation.get_backends()
+                if refreshed:
+                    reachable_count = query_workspaces_from(refreshed)
+                if reachable_count == 0:
+                    self._write_json(
+                        503,
+                        {
+                            "code": "unavailable",
+                            "message": "Antigravity Desktop is offline",
+                        },
+                    )
+                    return
 
             disk_projects = read_disk_project_configs()
             with state.lock:
@@ -1216,18 +1719,16 @@ def create_bridge_server(
                         "workspaceFolderAbsoluteUri": uri,
                         "displayName": proj.get("displayName") or proj.get("name") or "workspace",
                         "activeBranch": proj.get("activeBranch") or "main",
+                        "isCloud": bool(proj.get("isCloud")),
                         "indexedFiles": [],
                     }
                 )
 
-            if not normalized:
-                with state.lock:
-                    normalized = list(state.workspaces)
-
             self._write_json(200, {"workspaces": normalized, "workspaceInfos": normalized})
 
-        def _collect_federated_summaries_map(self, backends: list[dict]) -> dict[str, dict]:
+        def _collect_federated_summaries_map(self, backends: list[dict]) -> tuple[dict[str, dict], int]:
             merged_summaries: dict[str, dict] = {}
+            remote_ws_index = read_desktop_remote_workspaces()
             disk_projects = read_disk_project_configs()
             with state.lock:
                 state.projects_by_id.update(disk_projects)
@@ -1238,20 +1739,27 @@ def create_bridge_server(
             for cid, s_obj in jetbox_snapshot.items():
                 if not isinstance(s_obj, dict) or is_synthetic_probe_summary(s_obj):
                     continue
-                merged_summaries[cid] = enrich_summary_entry(cid, s_obj, projects_snapshot)
+                merged_summaries[cid] = enrich_summary_entry(
+                    cid,
+                    s_obj,
+                    projects_snapshot,
+                    remote_ws_index=remote_ws_index,
+                )
 
             # 2. Query every discovered backend (`agy --hub` + `language_server` instances)
+            reachable_count = 0
             for b in backends:
                 res = federation.call_backend_json(b, "GetAllCascadeTrajectories", {}, timeout=3.5)
                 if not isinstance(res, dict):
                     continue
+                reachable_count += 1
                 b_map = res.get("trajectorySummaries") or {}
                 if isinstance(b_map, dict):
                     for cid, s_obj in b_map.items():
                         if not isinstance(s_obj, dict):
                             continue
                         with state.lock:
-                             is_local_session = cid in state.trajectories and cid != "cas-live-welcome"
+                            is_local_session = cid in state.trajectories and cid != "cas-live-welcome"
                         if is_synthetic_probe_summary(s_obj) and not is_local_session:
                             continue
                         proj_id = (s_obj.get("trajectoryMetadata") or {}).get("projectId")
@@ -1259,7 +1767,13 @@ def create_bridge_server(
                             resolved_p = federation.resolve_project_by_id(b, proj_id)
                             if resolved_p:
                                 projects_snapshot[proj_id] = resolved_p
-                        enriched = enrich_summary_entry(cid, s_obj, projects_snapshot)
+                        enriched = enrich_summary_entry(
+                            cid,
+                            s_obj,
+                            projects_snapshot,
+                            backend=b,
+                            remote_ws_index=remote_ws_index,
+                        )
                         prev = merged_summaries.get(cid)
                         if prev is None:
                             merged_summaries[cid] = enriched
@@ -1272,6 +1786,7 @@ def create_bridge_server(
                                 or "RUNNING" in new_status
                                 or "IN_PROGRESS" in new_status
                                 or "WAITING" in new_status
+                                or (enriched.get("isCloud") and not prev.get("isCloud"))
                             ):
                                 merged_summaries[cid] = enriched
                         with state.lock:
@@ -1284,17 +1799,36 @@ def create_bridge_server(
                         continue
                     merged_summaries.setdefault(
                         cid,
-                        {
-                            "summary": t["title"],
-                            "stepCount": t["stepCount"],
-                            "status": t["status"],
-                            "workspaces": [{"workspaceFolderAbsoluteUri": t["workspaceUri"]}],
-                        },
+                        enrich_summary_entry(
+                            cid,
+                            {
+                                "summary": t["title"],
+                                "stepCount": t["stepCount"],
+                                "status": t["status"],
+                                "workspaces": [{"workspaceFolderAbsoluteUri": t["workspaceUri"]}],
+                            },
+                            projects_snapshot,
+                            remote_ws_index=remote_ws_index,
+                        ),
                     )
-            return merged_summaries
+            return merged_summaries, reachable_count
 
         def _handle_federated_trajectories(self, backends: list[dict]):
-            merged_summaries = self._collect_federated_summaries_map(backends)
+            merged_summaries, reachable_count = self._collect_federated_summaries_map(backends)
+            if reachable_count == 0:
+                federation.refresh_backends(force=True)
+                refreshed = federation.get_backends()
+                if refreshed:
+                    merged_summaries, reachable_count = self._collect_federated_summaries_map(refreshed)
+                if reachable_count == 0:
+                    self._write_json(
+                        503,
+                        {
+                            "code": "unavailable",
+                            "message": "Antigravity Desktop is offline",
+                        },
+                    )
+                    return
             self._write_json(200, {"trajectorySummaries": merged_summaries})
 
         def _build_upstream_metadata(self, existing: dict) -> dict:

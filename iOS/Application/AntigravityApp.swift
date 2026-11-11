@@ -3,6 +3,7 @@ import AntigravityData
 
 @main
 public struct AntigravityApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store: AntigravitySessionStore
     @State private var activeVerifyCase: ESDDVerifySceneCase?
 
@@ -34,6 +35,12 @@ public struct AntigravityApp: App {
                         )
                     } else {
                         _ = await store.restoreSavedBackendSession()
+                    }
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase == .active, activeVerifyCase == nil, store.hasPairedBackend else { return }
+                    Task {
+                        await store.refreshWorkspacesAndSummaries()
                     }
                 }
                 .onOpenURL { url in

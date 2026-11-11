@@ -186,10 +186,10 @@ public actor AntigravityRPCClient {
     // MARK: - Handshake & Login Verification
 
     /// Verifies authentication (`x-codeium-csrf-token` or Google session cookie) and hydrates initial state.
-    public func verifyConnection() async throws -> BackendHandshakeResult {
+    public func verifyConnection(timeoutInterval: TimeInterval = 4.0) async throws -> BackendHandshakeResult {
         let start = Date()
-        async let workspacesTask = getWorkspaceInfos()
-        async let summariesTask = getAllCascadeTrajectories()
+        async let workspacesTask = getWorkspaceInfosOptional(timeoutInterval: timeoutInterval)
+        async let summariesTask = getAllCascadeTrajectories(timeoutInterval: timeoutInterval)
         let workspaces = try await workspacesTask
         let summaries = try await summariesTask
         let elapsedMs = max(1, Int(Date().timeIntervalSince(start) * 1000.0))
@@ -200,17 +200,29 @@ public actor AntigravityRPCClient {
         )
     }
 
+    private func getWorkspaceInfosOptional(timeoutInterval: TimeInterval?) async throws -> [WorkspaceInfo] {
+        do {
+            return try await getWorkspaceInfos(timeoutInterval: timeoutInterval)
+        } catch let AntigravityRPCError.httpError(statusCode, _) where statusCode == 404 {
+            return []
+        }
+    }
+
     // MARK: - Core Unary RPC (`Sendable` JSONValue & Binary Protobuf)
 
     public func callUnaryJSON(
         method: String,
-        body: [String: JSONValue] = [:]
+        body: [String: JSONValue] = [:],
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> [String: JSONValue] {
         let url = endpointURL.appendingPathComponent("\(Self.servicePrefix)/\(method)")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         applyAuthHeaders(to: &request)
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -357,18 +369,29 @@ public actor AntigravityRPCClient {
 
     // MARK: - Workspace & Project Operations (`UE01`, `UE04`, `UE05`)
 
-    public func getWorkspaceInfos() async throws -> [WorkspaceInfo] {
-        let res = try await callUnaryJSON(method: "GetWorkspaceInfos")
+    public func getWorkspaceInfos(timeoutInterval: TimeInterval? = nil) async throws -> [WorkspaceInfo] {
+        let res = try await callUnaryJSON(method: "GetWorkspaceInfos", timeoutInterval: timeoutInterval)
         let items = res["workspaces"]?.arrayValue ?? res["workspaceInfos"]?.arrayValue ?? []
         return items.compactMap { item -> WorkspaceInfo? in
             guard let obj = item.objectValue else { return nil }
-            guard let uri = obj["workspaceUri"]?.stringValue
+            guard let rawUri = obj["workspaceUri"]?.stringValue
                 ?? obj["workspaceFolderAbsoluteUri"]?.stringValue else { return nil }
+            let decodedRaw = (rawUri.removingPercentEncoding ?? rawUri).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if decodedRaw == "file:///home/antigravity" {
+                return nil
+            }
+            let sourceHint = [obj["runtime"]?.stringValue, obj["source"]?.stringValue]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            let isCloud = (obj["isCloud"]?.boolValue ?? false)
+                || AntigravityCloudDetector.isCloudWorkspaceURI(rawUri, sourceHint: sourceHint)
+            let uri = AntigravityCloudDetector.normalizeWorkspaceURI(rawUri, isCloud: isCloud)
             let fallbackName: String
             if uri.hasPrefix("cloud://") {
-                fallbackName = uri.replacingOccurrences(of: "cloud://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            } else if uri.hasPrefix("https://github.com/") {
-                fallbackName = uri.replacingOccurrences(of: "https://github.com/", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let tail = uri.replacingOccurrences(of: "cloud://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                fallbackName = (tail as NSString).lastPathComponent.isEmpty ? tail : (tail as NSString).lastPathComponent
+            } else if uri.contains("://"), let parsedURL = URL(string: uri), !parsedURL.lastPathComponent.isEmpty {
+                fallbackName = parsedURL.lastPathComponent
             } else {
                 fallbackName = (uri.replacingOccurrences(of: "file://", with: "") as NSString).lastPathComponent
             }
@@ -379,7 +402,8 @@ public actor AntigravityRPCClient {
                 workspaceUri: uri,
                 displayName: name,
                 activeBranch: branch,
-                indexedFiles: files
+                indexedFiles: files,
+                isCloud: isCloud
             )
         }
     }
@@ -420,8 +444,8 @@ public actor AntigravityRPCClient {
 
     /// Fetches all sessions from either Desktop `language_server` (`trajectorySummaries` map)
     /// or Companion/Mock (`trajectories` array).
-    public func getAllCascadeTrajectories() async throws -> [CascadeSummary] {
-        let res = try await callUnaryJSON(method: "GetAllCascadeTrajectories")
+    public func getAllCascadeTrajectories(timeoutInterval: TimeInterval? = nil) async throws -> [CascadeSummary] {
+        let res = try await callUnaryJSON(method: "GetAllCascadeTrajectories", timeoutInterval: timeoutInterval)
         let now = Date()
 
         // Format A: Native Desktop `language_server` map `{"trajectorySummaries": {"<cascadeId>": {...}}}`
@@ -443,8 +467,14 @@ public actor AntigravityRPCClient {
             guard let obj = item.objectValue,
                   let id = obj["cascadeId"]?.stringValue,
                   let title = obj["title"]?.stringValue else { return nil }
-            let uri = obj["workspaceUri"]?.stringValue ?? "file:///Users/wl/code/ledger-svc"
-            let slug = obj["projectSlug"]?.stringValue ?? (uri as NSString).lastPathComponent
+            let rawUri = obj["workspaceUri"]?.stringValue ?? "file:///Users/wl/code/ledger-svc"
+            let sourceHint = [obj["runtime"]?.stringValue, obj["source"]?.stringValue]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            let isCloud = (obj["isCloud"]?.boolValue ?? false)
+                || AntigravityCloudDetector.isCloudWorkspaceURI(rawUri, cascadeId: id, sourceHint: sourceHint)
+            let uri = AntigravityCloudDetector.normalizeWorkspaceURI(rawUri, isCloud: isCloud)
+            let slug = obj["projectSlug"]?.stringValue ?? (rawUri as NSString).lastPathComponent
             let statusName = obj["status"]?.stringValue ?? "CORTEX_STEP_STATUS_DONE"
             let stepCount = obj["stepCount"]?.intValue ?? 0
             let branch = obj["branchName"]?.stringValue ?? "main"
@@ -464,7 +494,8 @@ public actor AntigravityRPCClient {
                 statusSubtitle: subtitle,
                 isPinned: obj["isPinned"]?.boolValue ?? false,
                 isArchived: obj["isArchived"]?.boolValue ?? false,
-                isUnread: obj["isUnread"]?.boolValue ?? false
+                isUnread: obj["isUnread"]?.boolValue ?? false,
+                isCloud: isCloud
             )
         }
     }
@@ -1187,33 +1218,57 @@ public actor AntigravityRPCClient {
             return nil
         }
 
-        let firstWorkspace = obj["workspaces"]?.arrayValue?.first?.objectValue
+        let workspaceObjects = (obj["workspaces"]?.arrayValue ?? []).compactMap(\.objectValue)
+        let selectedWorkspace = Self.selectPrimaryWorkspaceObject(from: workspaceObjects)
         let trajMeta = obj["trajectoryMetadata"]?.objectValue
-        let uri = firstWorkspace?["workspaceFolderAbsoluteUri"]?.stringValue
-            ?? firstWorkspace?["workspaceUri"]?.stringValue
+        let rawUri = selectedWorkspace?["workspaceFolderAbsoluteUri"]?.stringValue
+            ?? selectedWorkspace?["workspaceUri"]?.stringValue
             ?? obj["workspaceUri"]?.stringValue
             ?? "file:///Users/wl/code/workspace"
+
+        let sourceHint = [
+            obj["source"]?.stringValue,
+            obj["runtime"]?.stringValue,
+            trajMeta?["runtime"]?.stringValue,
+            trajMeta?["environment"]?.stringValue,
+            trajMeta?["executionEnvironment"]?.stringValue,
+            trajMeta?["source"]?.stringValue
+        ]
+            .compactMap { $0 }
+            .joined(separator: " ")
+
+        let isCloud = (obj["isCloud"]?.boolValue ?? false)
+            || (trajMeta?["isCloud"]?.boolValue ?? false)
+            || AntigravityCloudDetector.isCloudWorkspaceURI(rawUri, cascadeId: cascadeId, sourceHint: sourceHint)
+        let uri = AntigravityCloudDetector.normalizeWorkspaceURI(rawUri, isCloud: isCloud)
+
         let explicitSlug = obj["projectSlug"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let slug: String
         if let explicitSlug, !explicitSlug.isEmpty {
             slug = explicitSlug
-        } else if uri.hasPrefix("cloud://") {
-            let trimmedCloud = uri.replacingOccurrences(of: "cloud://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        } else if rawUri.hasPrefix("cloud://") {
+            let trimmedCloud = rawUri.replacingOccurrences(of: "cloud://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             slug = trimmedCloud.isEmpty ? "cloud-workspace" : trimmedCloud
-        } else if uri.hasPrefix("https://github.com/") {
-            let trimmedGH = uri.replacingOccurrences(of: "https://github.com/", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        } else if rawUri.hasPrefix("https://github.com/") {
+            let trimmedGH = rawUri.replacingOccurrences(of: "https://github.com/", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             slug = trimmedGH.isEmpty ? "github-workspace" : trimmedGH
+        } else if rawUri.contains("://") && !rawUri.hasPrefix("file://") {
+            let decodedRaw = rawUri.removingPercentEncoding ?? rawUri
+            let lastComp = ((URL(string: decodedRaw)?.path ?? decodedRaw) as NSString).lastPathComponent
+            slug = lastComp.isEmpty ? "cloud-workspace" : lastComp
         } else {
-            let cleanPath = uri.replacingOccurrences(of: "file://", with: "")
+            let cleanPath = (rawUri.removingPercentEncoding ?? rawUri)
+                .replacingOccurrences(of: "file://", with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let lastComp = (cleanPath as NSString).lastPathComponent
-            if (!lastComp.isEmpty && lastComp != "workspace") || trajMeta?["projectId"]?.stringValue == nil {
-                slug = lastComp
+            if (!lastComp.isEmpty && lastComp != "workspace" && lastComp != "antigravity") || trajMeta?["projectId"]?.stringValue == nil {
+                slug = lastComp.isEmpty ? "workspace" : lastComp
             } else {
                 slug = trajMeta?["projectId"]?.stringValue ?? "workspace"
             }
         }
-        let branch = firstWorkspace?["gitBranch"]?.stringValue
-            ?? firstWorkspace?["branchName"]?.stringValue
+        let branch = selectedWorkspace?["gitBranch"]?.stringValue
+            ?? selectedWorkspace?["branchName"]?.stringValue
             ?? obj["branchName"]?.stringValue
             ?? "main"
 
@@ -1274,8 +1329,43 @@ public actor AntigravityRPCClient {
             statusSubtitle: subtitle,
             isPinned: isPinned,
             isArchived: isArchived,
-            isUnread: isUnread
+            isUnread: isUnread,
+            isCloud: isCloud
         )
+    }
+
+    private static func selectPrimaryWorkspaceObject(
+        from workspaces: [[String: JSONValue]]
+    ) -> [String: JSONValue]? {
+        guard !workspaces.isEmpty else { return nil }
+        for entry in workspaces {
+            let raw = (entry["workspaceFolderAbsoluteUri"]?.stringValue ?? entry["workspaceUri"]?.stringValue ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = raw.lowercased()
+            if lower.hasPrefix("cloud://")
+                || lower.hasPrefix("vscode-remote://")
+                || lower.hasPrefix("vscode-vfs://")
+                || lower.hasPrefix("https://github.com/") {
+                return entry
+            }
+        }
+        for entry in workspaces {
+            let raw = (entry["workspaceFolderAbsoluteUri"]?.stringValue ?? entry["workspaceUri"]?.stringValue ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else { continue }
+            let decoded = (raw.removingPercentEncoding ?? raw)
+            let fsPath: String
+            if decoded.hasPrefix("file://") {
+                let tail = String(decoded.dropFirst("file://".count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                fsPath = tail.isEmpty ? "/" : "/\(tail)"
+            } else {
+                fsPath = decoded
+            }
+            if !AntigravityCloudDetector.genericContainerRoots.contains(fsPath) {
+                return entry
+            }
+        }
+        return workspaces.first
     }
 
     /// Parses Protobuf `google.protobuf.Timestamp` values encoded either as RFC3339 strings

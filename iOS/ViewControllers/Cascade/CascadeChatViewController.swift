@@ -25,9 +25,31 @@ public struct CascadeChatViewController: View {
     }
 
     private var isStaticESDDFixtureView: Bool {
-        !store.isLiveBackendConnected
+        !store.hasPairedBackend
+            && !store.isLiveBackendConnected
             && store.activeCascadeId == "cas-rate-limiter"
             && store.activeSteps.count == 6
+    }
+
+    private var activeProjectWorkspace: ProjectWorkspace? {
+        if let slug = store.activeSummary?.projectSlug {
+            return store.projects.first(where: { $0.id == slug || $0.name == slug })
+        }
+        return store.selectedProject
+    }
+
+    private var isActiveSessionCloud: Bool {
+        store.activeSummary?.isCloud == true || activeProjectWorkspace?.runtime == .cloud
+    }
+
+    private var effectiveHeaderHostLabel: String {
+        if isActiveSessionCloud {
+            return "Cloud"
+        }
+        if store.hasPairedBackend && (!store.isLiveBackendConnected || !store.activeHost.isOnline) {
+            return "\(store.activeHost.hostname) · Offline"
+        }
+        return store.activeHost.hostname
     }
 
     public var body: some View {
@@ -97,7 +119,7 @@ public struct CascadeChatViewController: View {
         }
         .background(AntigravityTheme.canvasObsidian)
         .task(id: store.activeCascadeId) {
-            if store.isLiveBackendConnected && !store.activeCascadeId.isEmpty {
+            if (store.hasPairedBackend || store.isLiveBackendConnected) && !store.activeCascadeId.isEmpty {
                 store.syncStepsForCascade(store.activeCascadeId, pollUntilIdle: true)
             }
         }
@@ -136,7 +158,7 @@ public struct CascadeChatViewController: View {
 
     @ViewBuilder
     private var emptyOrLoadingSessionCard: some View {
-        if store.isLiveBackendConnected && store.isLoadingSteps {
+        if (store.hasPairedBackend || store.isLiveBackendConnected) && store.isLoadingSteps {
             HStack(spacing: 12) {
                 AntigravityFourDotLoadingView(
                     isAnimated: true,
@@ -148,7 +170,7 @@ public struct CascadeChatViewController: View {
                     Text("Loading conversation history...")
                         .font(.system(size: 14.5, weight: .semibold))
                         .foregroundStyle(AntigravityTheme.inkReading)
-                    Text("Syncing trajectory steps from \(store.activeHost.hostname)")
+                    Text("Syncing trajectory steps from \(effectiveHeaderHostLabel)")
                         .font(.system(size: 13))
                         .foregroundStyle(AntigravityTheme.inkSecondary)
                 }
@@ -164,7 +186,7 @@ public struct CascadeChatViewController: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .padding(.top, 12)
             .accessibilityIdentifier("chat-loading-steps")
-        } else if store.isLiveBackendConnected, let err = store.stepLoadErrorText {
+        } else if (store.hasPairedBackend || store.isLiveBackendConnected), let err = store.stepLoadErrorText {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Circle()
@@ -200,16 +222,17 @@ public struct CascadeChatViewController: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .padding(.top, 12)
         } else {
+            let isOfflinePaired = store.hasPairedBackend && (!store.isLiveBackendConnected || !store.activeHost.isOnline)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(store.isLiveBackendConnected ? Self.emeraldDone : Self.periwinkle)
+                        .fill(isOfflinePaired ? Self.coralError : (store.isLiveBackendConnected ? Self.emeraldDone : Self.periwinkle))
                         .frame(width: 8, height: 8)
-                    Text(store.isLiveBackendConnected ? "Ready for Prompt" : "New Session Ready")
+                    Text(isOfflinePaired ? "Host Offline · Queued Outbox Ready" : (store.isLiveBackendConnected ? "Ready for Prompt" : "New Session Ready"))
                         .font(.system(size: 14.5, weight: .semibold))
                         .foregroundStyle(AntigravityTheme.inkReading)
                 }
-                Text("Bound to `\(store.activeSummary?.projectSlug ?? store.selectedProject?.name ?? "workspace")` on `\(store.activeHost.hostname)`. Send a message below to run on Antigravity Desktop.")
+                Text("Bound to `\(activeProjectWorkspace?.name ?? store.activeSummary?.projectSlug ?? "workspace")` on `\(effectiveHeaderHostLabel)`. Send a message below to run on Antigravity Desktop.")
                     .font(.system(size: 13.5))
                     .foregroundStyle(AntigravityTheme.inkSecondary)
                     .lineSpacing(2)
@@ -229,10 +252,10 @@ public struct CascadeChatViewController: View {
     // MARK: - Top Navigation Bar
 
     private var chatTopNavigationBar: some View {
-        let navTitle = store.activeSummary?.title ?? (store.isLiveBackendConnected ? "Conversation" : "Add rate limiter to /transfers")
-        let projectLabel = store.activeSummary?.projectSlug ?? store.selectedProject?.name ?? "ledger-svc"
-        let branchLabel = store.activeSummary?.branchName ?? store.selectedProject?.activeBranch ?? "main"
-        let showDiffPill = !store.isLiveBackendConnected || store.totalDiffAdditions > 0 || store.totalDiffDeletions > 0
+        let navTitle = store.activeSummary?.title ?? ((store.hasPairedBackend || store.isLiveBackendConnected) ? "Conversation" : "Add rate limiter to /transfers")
+        let projectLabel = activeProjectWorkspace?.name ?? store.activeSummary?.projectSlug ?? "ledger-svc"
+        let branchLabel = store.activeSummary?.branchName ?? activeProjectWorkspace?.activeBranch ?? "main"
+        let showDiffPill = (!store.hasPairedBackend && !store.isLiveBackendConnected) || store.totalDiffAdditions > 0 || store.totalDiffDeletions > 0
 
         return HStack(spacing: 8) {
             Button {
@@ -259,7 +282,7 @@ public struct CascadeChatViewController: View {
                     .truncationMode(.tail)
                     .accessibilityIdentifier("chat-nav-title")
 
-                Text("\(projectLabel) · \(branchLabel) · \(store.activeHost.hostname)")
+                Text("\(projectLabel) · \(branchLabel) · \(effectiveHeaderHostLabel)")
                     .font(.system(size: 12))
                     .foregroundStyle(AntigravityTheme.inkSecondary)
                     .lineLimit(1)

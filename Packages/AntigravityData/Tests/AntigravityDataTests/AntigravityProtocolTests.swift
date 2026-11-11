@@ -472,4 +472,130 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(store.activeRoute, .cascadeChat("cas-upgrade-go"))
         XCTAssertEqual(store.summaries.first(where: { $0.cascadeId == "cas-upgrade-go" })?.isUnread, false)
     }
+
+    func testCloudVMWorkspaceDetectionAndProjectReconciliation() throws {
+        let refNow = try XCTUnwrap(
+            AntigravityRPCClient.parseProtoTimestamp(.string("2026-11-11T09:00:00Z"))
+        )
+
+        // 1. Jetski Cloud VM trajectory includes container home `/home/antigravity` + repo `/home/antigravity/venciallee/iOSAntigravity`
+        let jetskiCloudEntry: JSONValue = .object([
+            "summary": .string("Fix offline host badge and Cloud workspace detection"),
+            "stepCount": .int(12),
+            "status": .string("CASCADE_RUN_STATUS_RUNNING"),
+            "lastModifiedTime": .string("2026-11-11T08:59:30Z"),
+            "workspaces": .array([
+                .object(["workspaceFolderAbsoluteUri": .string("file:///home/antigravity")]),
+                .object([
+                    "workspaceFolderAbsoluteUri": .string("file:///home/antigravity/venciallee/iOSAntigravity"),
+                    "gitBranch": .string("main")
+                ])
+            ])
+        ])
+        let cloudSummary = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "v1/default/jetski_remote_agents_3p/02268caa-6eb1-426b-a5c3-8629460e0111",
+                value: jetskiCloudEntry,
+                now: refNow
+            )
+        )
+        XCTAssertTrue(cloudSummary.isCloud)
+        XCTAssertEqual(cloudSummary.projectSlug, "iOSAntigravity")
+        XCTAssertEqual(cloudSummary.workspaceUri, "cloud://venciallee/iOSAntigravity")
+
+        // 2. Remote-SSH and GitHub URLs also classify as Cloud
+        XCTAssertTrue(AntigravityCloudDetector.isCloudWorkspaceURI("vscode-remote://ssh-remote+devbox/home/dev/iOSAntigravity"))
+        XCTAssertEqual(
+            AntigravityCloudDetector.normalizeWorkspaceURI("https://github.com/venciallee/iOSAntigravity.git", isCloud: true),
+            "cloud://venciallee/iOSAntigravity"
+        )
+
+        // 3. Reconcile projects when a 0-chat local workspace has the same repo name as an active Cloud session
+        let localMacEntry: JSONValue = .object([
+            "summary": .string("Slardar Tag Code Review"),
+            "stepCount": .int(5),
+            "status": .string("CASCADE_RUN_STATUS_DONE"),
+            "lastModifiedTime": .string("2026-11-11T08:50:00Z"),
+            "workspaces": .array([
+                .object([
+                    "workspaceFolderAbsoluteUri": .string("file:///Users/dev/slardar_app_ai"),
+                    "gitBranch": .string("main")
+                ])
+            ])
+        ])
+        let localSummary = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "cid-local-slardar",
+                value: localMacEntry,
+                now: refNow
+            )
+        )
+        XCTAssertFalse(localSummary.isCloud)
+
+        var summaries = [cloudSummary, localSummary]
+        let workspaces = [
+            WorkspaceInfo(workspaceUri: "file:///Users/dev/iOSAntigravity", displayName: "iOSAntigravity", activeBranch: "main", isCloud: false),
+            WorkspaceInfo(workspaceUri: "file:///Users/dev/slardar_app_ai", displayName: "slardar_app_ai", activeBranch: "main", isCloud: false)
+        ]
+        let reconciled = AntigravitySessionStore.reconcileLiveProjects(
+            workspaces: workspaces,
+            summaries: &summaries,
+            existingProjects: [],
+            hostName: "LT74XT6L0M"
+        )
+        XCTAssertEqual(reconciled.count, 2)
+
+        let iosProj = try XCTUnwrap(reconciled.first(where: { $0.name == "iOSAntigravity" }))
+        XCTAssertEqual(iosProj.runtime, .cloud)
+        XCTAssertEqual(iosProj.homeSubtitle(isHostOnline: true), "Cloud · venciallee/iOSAntigravity · main")
+        XCTAssertEqual(iosProj.homeSubtitle(isHostOnline: false), "Cloud · venciallee/iOSAntigravity · main")
+
+        let slardarProj = try XCTUnwrap(reconciled.first(where: { $0.name == "slardar_app_ai" }))
+        XCTAssertEqual(slardarProj.runtime, .macBookPro)
+        XCTAssertEqual(slardarProj.homeSubtitle(isHostOnline: true), "Local · LT74XT6L0M · main")
+        XCTAssertEqual(slardarProj.homeSubtitle(isHostOnline: false), "Offline · LT74XT6L0M · main")
+    }
+
+    @MainActor
+    func testOfflineErrorClassificationAndStoreOfflineStateTransition() {
+        XCTAssertTrue(AntigravitySessionStore.isBackendOfflineError(URLError(.cannotConnectToHost)))
+        XCTAssertTrue(AntigravitySessionStore.isBackendOfflineError(URLError(.timedOut)))
+        XCTAssertTrue(AntigravitySessionStore.isBackendOfflineError(AntigravityRPCError.httpError(statusCode: 503, body: "Antigravity Desktop is offline")))
+        XCTAssertTrue(AntigravitySessionStore.isBackendOfflineError(AntigravityRPCError.unauthorized("CSRF mismatch")))
+        XCTAssertFalse(
+            AntigravitySessionStore.isBackendOfflineError(AntigravityRPCError.httpError(statusCode: 404, body: "unimplemented")),
+            "Optional unimplemented RPCs (HTTP 404) on raw language_server must not mark the host offline"
+        )
+
+        let store = AntigravitySessionStore.makeESDDVerificationStore()
+        store.hasPairedBackend = true
+        store.isLiveBackendConnected = true
+        store.activeHost = RemoteHostInstance(
+            instanceId: "direct-mac",
+            hostname: "LT74XT6L0M",
+            channel: .directHost,
+            endpointURL: URL(string: "http://192.168.1.20:8787")!,
+            isOnline: true
+        )
+        store.hosts = [store.activeHost]
+        store.projects = [
+            ProjectWorkspace(
+                id: "iOSAntigravity",
+                name: "iOSAntigravity",
+                pathDisplay: "cloud://venciallee/iOSAntigravity",
+                workspaceUri: "cloud://venciallee/iOSAntigravity",
+                runtime: .cloud,
+                hostName: "Cloud",
+                activeBranch: "main"
+            )
+        ]
+
+        store.markBackendOffline(error: AntigravityRPCError.httpError(statusCode: 503, body: "Antigravity Desktop is offline"))
+        XCTAssertTrue(store.hasPairedBackend, "Paired host flag must remain true while temporarily offline")
+        XCTAssertFalse(store.isLiveBackendConnected)
+        XCTAssertFalse(store.activeHost.isOnline)
+        XCTAssertEqual(store.hosts.first?.isOnline, false)
+        XCTAssertEqual(store.connectionStatusText, "Offline · LT74XT6L0M")
+        XCTAssertEqual(store.projects.map(\.id), ["iOSAntigravity"])
+    }
 }

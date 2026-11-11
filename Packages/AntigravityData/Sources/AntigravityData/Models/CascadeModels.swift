@@ -480,6 +480,7 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
     public var lastMessagePreview: String?
     public var totalAdditions: Int
     public var totalDeletions: Int
+    public var isCloud: Bool
 
     public init(
         cascadeId: String,
@@ -501,7 +502,8 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         pendingInteractionTitle: String? = nil,
         lastMessagePreview: String? = nil,
         totalAdditions: Int = 0,
-        totalDeletions: Int = 0
+        totalDeletions: Int = 0,
+        isCloud: Bool? = nil
     ) {
         self.cascadeId = cascadeId
         self.title = title
@@ -523,5 +525,61 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         self.lastMessagePreview = lastMessagePreview
         self.totalAdditions = totalAdditions
         self.totalDeletions = totalDeletions
+        self.isCloud = isCloud ?? AntigravityCloudDetector.isCloudWorkspaceURI(workspaceUri, cascadeId: cascadeId)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case cascadeId
+        case title
+        case projectSlug
+        case workspaceUri
+        case branchName
+        case status
+        case stepCount
+        case currentStepIndex
+        case totalSteps
+        case updatedAt
+        case relativeTimeLabel
+        case statusSubtitle
+        case isPinned
+        case isArchived
+        case isUnread
+        case modelLabel
+        case pendingInteractionTitle
+        case lastMessagePreview
+        case totalAdditions
+        case totalDeletions
+        case isCloud
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let cid = try container.decode(String.self, forKey: .cascadeId)
+        let wsUri = try container.decode(String.self, forKey: .workspaceUri)
+        let decodedStatus = try container.decode(CortexStepStatus.self, forKey: .status)
+        let rawSub = try container.decodeIfPresent(String.self, forKey: .statusSubtitle) ?? ""
+
+        self.cascadeId = cid
+        self.title = try container.decode(String.self, forKey: .title)
+        self.projectSlug = try container.decodeIfPresent(String.self, forKey: .projectSlug) ?? "ledger-svc"
+        self.workspaceUri = wsUri
+        self.branchName = try container.decodeIfPresent(String.self, forKey: .branchName) ?? "main"
+        self.status = decodedStatus
+        self.stepCount = try container.decodeIfPresent(Int.self, forKey: .stepCount) ?? 0
+        self.currentStepIndex = try container.decodeIfPresent(Int.self, forKey: .currentStepIndex) ?? 1
+        self.totalSteps = try container.decodeIfPresent(Int.self, forKey: .totalSteps) ?? 7
+        self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        self.relativeTimeLabel = try container.decodeIfPresent(String.self, forKey: .relativeTimeLabel) ?? "now"
+        self.statusSubtitle = rawSub.isEmpty ? decodedStatus.displayBadgeText : rawSub
+        self.isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        self.isArchived = try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        self.isUnread = try container.decodeIfPresent(Bool.self, forKey: .isUnread) ?? false
+        self.modelLabel = try container.decodeIfPresent(String.self, forKey: .modelLabel) ?? "Gemini 3.1 Pro"
+        self.pendingInteractionTitle = try container.decodeIfPresent(String.self, forKey: .pendingInteractionTitle)
+        self.lastMessagePreview = try container.decodeIfPresent(String.self, forKey: .lastMessagePreview)
+        self.totalAdditions = try container.decodeIfPresent(Int.self, forKey: .totalAdditions) ?? 0
+        self.totalDeletions = try container.decodeIfPresent(Int.self, forKey: .totalDeletions) ?? 0
+        self.isCloud = try container.decodeIfPresent(Bool.self, forKey: .isCloud)
+            ?? AntigravityCloudDetector.isCloudWorkspaceURI(wsUri, cascadeId: cid)
     }
 }

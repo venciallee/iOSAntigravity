@@ -9,9 +9,16 @@ private final class EmbeddedDesktopMockServer: @unchecked Sendable {
     private let listenFD: Int32
     private let lock = NSLock()
     private var isStopped = false
+    private var simulatedOffline = false
     private var trajectoriesByCascadeId: [String: [[String: Any]]] = [:]
     private var summariesMap: [String: [String: Any]] = [:]
     private var createdCounter = 0
+
+    func setSimulatedOffline(_ offline: Bool) {
+        lock.lock()
+        simulatedOffline = offline
+        lock.unlock()
+    }
 
     init() throws {
         let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
@@ -87,15 +94,16 @@ private final class EmbeddedDesktopMockServer: @unchecked Sendable {
                     ["workspaceFolderAbsoluteUri": "file:///Users/dev/iOSAntigravity"]
                 ]
             ],
-            // Running Cloud session (`venciallee/iOSAntigravity` -> `Antigravity iOS App Architecture Research` with 2x2 four-dot loading indicator)
+            // Running Cloud VM session (`iOSAntigravity` -> `Cloud · venciallee/iOSAntigravity · main` with 2x2 four-dot loading indicator)
             "cid-arch-research": [
                 "summary": "Antigravity iOS App Architecture Research",
                 "stepCount": 3,
                 "status": "CASCADE_RUN_STATUS_RUNNING",
                 "lastModifiedTime": "2026-11-11T08:58:00.000000000Z",
                 "workspaces": [
+                    ["workspaceFolderAbsoluteUri": "file:///home/antigravity"],
                     [
-                        "workspaceFolderAbsoluteUri": "cloud://venciallee/iOSAntigravity",
+                        "workspaceFolderAbsoluteUri": "file:///home/antigravity/venciallee/iOSAntigravity",
                         "gitBranch": "main"
                     ]
                 ]
@@ -346,6 +354,13 @@ private final class EmbeddedDesktopMockServer: @unchecked Sendable {
     }
 
     private func routeRequest(path: String, bodyData: Data) -> (Int, String, Data) {
+        lock.lock()
+        let isOffline = simulatedOffline
+        lock.unlock()
+        if isOffline {
+            return (503, "application/json", Data("{\"error\":\"Antigravity Desktop is offline\"}".utf8))
+        }
+
         let jsonBody = (try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any]) ?? [:]
 
         if path.hasSuffix("/JetboxSubscribeToSummaries") {
@@ -370,7 +385,7 @@ private final class EmbeddedDesktopMockServer: @unchecked Sendable {
             responseDict = [
                 "workspaceInfos": [
                     [
-                        "workspaceUri": "cloud://venciallee/iOSAntigravity",
+                        "workspaceUri": "file:///Users/dev/iOSAntigravity",
                         "gitBranch": "main"
                     ],
                     [
@@ -481,6 +496,19 @@ final class AntigravityInteractiveUITests: XCTestCase {
             archResearchRow.waitForExistence(timeout: 6),
             "Cloud project conversation 'Antigravity iOS App Architecture Research' must render on Agents Home"
         )
+        let iosCloudHeader = app.buttons["project-header-iOSAntigravity"]
+        XCTAssertTrue(
+            iosCloudHeader.waitForExistence(timeout: 5),
+            "Cloud VM project header 'iOSAntigravity' must render on Agents Home"
+        )
+        XCTAssertTrue(
+            waitForTextContaining("Cloud · venciallee/iOSAntigravity · main", in: app, timeout: 5),
+            "Cloud-opened iOSAntigravity must display 'Cloud · venciallee/iOSAntigravity · main' instead of 'Local'"
+        )
+        XCTAssertTrue(
+            waitForTextContaining("Local · MacBook-Pro-Live · main", in: app, timeout: 5),
+            "Local Mac project slardar_app_ai must display 'Local · MacBook-Pro-Live · main' while host is online"
+        )
         let fourDotIndicator = app.descendants(matching: .any)["loading-four-dots-cid-arch-research"].firstMatch
         XCTAssertTrue(
             fourDotIndicator.waitForExistence(timeout: 5),
@@ -571,6 +599,29 @@ final class AntigravityInteractiveUITests: XCTestCase {
         XCTAssertTrue(backToAgentsButton.waitForExistence(timeout: 5))
         backToAgentsButton.tap()
         XCTAssertTrue(reviewRow.waitForExistence(timeout: 5))
+
+        // 3b. Simulate Desktop / Bridge going offline -> verify top pill & local project subtitle immediately show Offline while Cloud stays Cloud, then auto-recover!
+        server.setSimulatedOffline(true)
+        XCTAssertTrue(
+            waitForTextContaining("MacBook-Pro-Live · Offline", in: app, timeout: 8),
+            "Top host switcher pill must transition to '<hostname> · Offline' when Desktop goes offline"
+        )
+        XCTAssertTrue(
+            waitForTextContaining("Offline · MacBook-Pro-Live · main", in: app, timeout: 6),
+            "Local Mac project subtitle must transition to 'Offline · <hostname> · main' when Desktop goes offline"
+        )
+        XCTAssertTrue(
+            waitForTextContaining("Cloud · venciallee/iOSAntigravity · main", in: app, timeout: 4),
+            "Cloud project subtitle must remain 'Cloud · venciallee/iOSAntigravity · main' even when local Mac is offline"
+        )
+        XCTAssertTrue(reviewRow.exists, "Previously synced sessions must remain browsable while host is offline")
+        attachScreenshot(named: "03b_Offline_Host_And_Cloud_Project")
+
+        server.setSimulatedOffline(false)
+        XCTAssertTrue(
+            waitForTextContaining("Local · MacBook-Pro-Live · main", in: app, timeout: 8),
+            "App must automatically reconnect and restore online status when Desktop returns"
+        )
 
         // 4. Tap Compose FAB -> send live message -> verify StartCascade + SendUserCascadeMessage round-trip
         let composeFAB = app.buttons["fab-compose"]

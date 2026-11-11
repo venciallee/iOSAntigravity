@@ -176,12 +176,20 @@ public struct ProjectDetailViewController: View {
         }
     }
 
+    private var usesPairedStoreData: Bool {
+        store.hasPairedBackend || store.isLiveBackendConnected
+    }
+
+    private var isPairedHostOnline: Bool {
+        !store.hasPairedBackend || (store.isLiveBackendConnected && store.activeHost.isOnline)
+    }
+
     private var liveProject: ProjectWorkspace? {
         store.projects.first(where: { $0.id == projectSlug || $0.name == projectSlug })
     }
 
     private var effectivePathDisplay: String {
-        guard store.isLiveBackendConnected else { return "~/code/\(projectSlug)" }
+        guard usesPairedStoreData else { return "~/code/\(projectSlug)" }
         let raw = liveProject?.pathDisplay ?? "~/workspace/\(projectSlug)"
         if raw.hasPrefix("/Users/") {
             let parts = raw.split(separator: "/", omittingEmptySubsequences: true)
@@ -193,14 +201,30 @@ public struct ProjectDetailViewController: View {
         return raw
     }
 
+    private var effectiveHostBadgeDotColor: Color {
+        guard usesPairedStoreData else { return AntigravityTheme.statusDone }
+        if liveProject?.runtime == .cloud {
+            return AntigravityTheme.accentPeriwinkle
+        }
+        return isPairedHostOnline ? AntigravityTheme.statusDone : AntigravityTheme.statusError
+    }
+
     private var effectiveHostBadgeText: String {
-        guard store.isLiveBackendConnected else { return "Local · MacBook Pro" }
-        let prefix = liveProject?.runtime == .cloud ? "Cloud" : "Local"
+        guard usesPairedStoreData else { return "Local · MacBook Pro" }
+        if liveProject?.runtime == .cloud {
+            if let uri = liveProject?.workspaceUri,
+               let cloudLabel = AntigravityCloudDetector.extractCloudLocationLabel(uri),
+               cloudLabel.caseInsensitiveCompare(liveProject?.name ?? projectSlug) != .orderedSame {
+                return "Cloud · \(cloudLabel)"
+            }
+            return "Cloud"
+        }
+        let prefix = isPairedHostOnline ? "Local" : "Offline"
         return "\(prefix) · \(store.activeHost.hostname)"
     }
 
     private var effectiveBranchName: String {
-        guard store.isLiveBackendConnected else { return "main" }
+        guard usesPairedStoreData else { return "main" }
         return liveProject?.activeBranch ?? "main"
     }
 
@@ -226,21 +250,21 @@ public struct ProjectDetailViewController: View {
     }
 
     private var effectiveActiveRows: [ProjectConversationRowModel] {
-        guard store.isLiveBackendConnected else { return activeRows }
+        guard usesPairedStoreData else { return activeRows }
         return store.summaries
-            .filter { $0.projectSlug == projectSlug && !$0.isArchived }
+            .filter { ($0.projectSlug == projectSlug || $0.projectSlug == liveProject?.id) && !$0.isArchived }
             .map(mapLiveSummaryToRow)
     }
 
     private var effectiveArchivedRows: [ProjectConversationRowModel] {
-        guard store.isLiveBackendConnected else { return archivedRows }
+        guard usesPairedStoreData else { return archivedRows }
         return store.summaries
-            .filter { $0.projectSlug == projectSlug && $0.isArchived }
+            .filter { ($0.projectSlug == projectSlug || $0.projectSlug == liveProject?.id) && $0.isArchived }
             .map(mapLiveSummaryToRow)
     }
 
     private var effectiveProjectAutomations: [AutomationItem] {
-        store.automations.filter { $0.projectSlug == projectSlug }
+        store.automations.filter { $0.projectSlug == projectSlug || $0.projectSlug == liveProject?.name }
     }
 
     // MARK: - 2. Hero Header ([Folder] ledger-svc + ~/code/ledger-svc)
@@ -255,13 +279,13 @@ public struct ProjectDetailViewController: View {
                         .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                 )
                 .overlay(
-                    Image(systemName: (store.isLiveBackendConnected && liveProject?.runtime == .cloud) ? "cloud" : "folder")
+                    Image(systemName: (usesPairedStoreData && liveProject?.runtime == .cloud) ? "cloud" : "folder")
                         .font(.system(size: 23, weight: .medium))
                         .foregroundStyle(UEChromePalette.textBody)
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(projectSlug)
+                Text(liveProject?.name ?? projectSlug)
                     .font(.system(size: 28, weight: .bold))
                     .tracking(-0.4)
                     .foregroundStyle(Color.white)
@@ -281,14 +305,14 @@ public struct ProjectDetailViewController: View {
     // MARK: - 3. Metadata Pills
 
     private var metadataPillsRow: some View {
-        let totalConvCount = store.isLiveBackendConnected
+        let totalConvCount = usesPairedStoreData
             ? (effectiveActiveRows.count + effectiveArchivedRows.count)
             : 5
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(AntigravityTheme.statusDone)
+                        .fill(effectiveHostBadgeDotColor)
                         .frame(width: 7, height: 7)
                     Text(effectiveHostBadgeText)
                         .font(.system(size: 12.5, weight: .medium))
@@ -620,10 +644,10 @@ public struct ProjectDetailViewController: View {
                             .frame(width: 22)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(store.isLiveBackendConnected ? (firstAuto?.title ?? "Project automations") : "Nightly dependency audit")
+                            Text(usesPairedStoreData ? (firstAuto?.title ?? "Project automations") : "Nightly dependency audit")
                                 .font(.system(size: 15.5, weight: .medium))
                                 .foregroundStyle(UEChromePalette.textPrimary)
-                            Text(store.isLiveBackendConnected ? (firstAuto?.scheduleSummary ?? "0 active · Tap to inspect") : "Daily 02:00 · Next run in 6h")
+                            Text(usesPairedStoreData ? (firstAuto?.scheduleSummary ?? "0 active · Tap to inspect") : "Daily 02:00 · Next run in 6h")
                                 .font(.system(size: 13, weight: .regular))
                                 .foregroundStyle(UEChromePalette.textMuted)
                         }
@@ -655,7 +679,7 @@ public struct ProjectDetailViewController: View {
                             .foregroundStyle(UEChromePalette.textSecondary)
                             .frame(width: 22)
 
-                        Text(finderFeedbackBanner ? "Opened in Finder on \(store.isLiveBackendConnected ? store.activeHost.hostname : "MacBook Pro")" : "Reveal in Finder on Mac")
+                        Text(finderFeedbackBanner ? "Opened in Finder on \(usesPairedStoreData ? store.activeHost.hostname : "MacBook Pro")" : "Reveal in Finder on Mac")
                             .font(.system(size: 15.5, weight: .medium))
                             .foregroundStyle(UEChromePalette.textPrimary)
 

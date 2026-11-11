@@ -42,46 +42,75 @@ public struct RemotePairingViewController: View {
                 }
 
                 // Live Connection Status & QR Pairing Card
+                let isOfflinePaired = store.hasPairedBackend && (!store.isLiveBackendConnected || !store.activeHost.isOnline)
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(AntigravityTheme.surfaceCard)
                     .frame(minHeight: 184)
                     .overlay(
                         RoundedRectangle(cornerRadius: 22, style: .continuous)
                             .strokeBorder(
-                                store.isLiveBackendConnected
+                                store.isLiveBackendConnected && store.activeHost.isOnline
                                     ? AntigravityTheme.statusDone.opacity(0.45)
-                                    : UEChromePalette.cardBorder,
+                                    : (isOfflinePaired ? AntigravityTheme.statusError.opacity(0.50) : UEChromePalette.cardBorder),
                                 lineWidth: 1
                             )
                     )
                     .overlay(
                         VStack(spacing: 10) {
-                            Image(systemName: store.isLiveBackendConnected ? "checkmark.shield.fill" : "qrcode.viewfinder")
-                                .font(.system(size: 44, weight: .light))
-                                .foregroundStyle(
-                                    store.isLiveBackendConnected
-                                        ? AntigravityTheme.statusDone
-                                        : AntigravityTheme.accentPeriwinkle
-                                )
+                            Image(
+                                systemName: (store.isLiveBackendConnected && store.activeHost.isOnline)
+                                    ? "checkmark.shield.fill"
+                                    : (isOfflinePaired ? "wifi.slash" : "qrcode.viewfinder")
+                            )
+                            .font(.system(size: 44, weight: .light))
+                            .foregroundStyle(
+                                (store.isLiveBackendConnected && store.activeHost.isOnline)
+                                    ? AntigravityTheme.statusDone
+                                    : (isOfflinePaired ? AntigravityTheme.statusError : AntigravityTheme.accentPeriwinkle)
+                            )
 
                             Text(
-                                store.isLiveBackendConnected
+                                (store.isLiveBackendConnected && store.activeHost.isOnline)
                                     ? "Live Backend: \(store.activeHost.hostname)"
-                                    : store.connectionStatusText
+                                    : (isOfflinePaired ? "Host Offline: \(store.activeHost.hostname)" : store.connectionStatusText)
                             )
                             .font(.system(size: 15.5, weight: .semibold))
                             .foregroundStyle(Color.white)
                             .multilineTextAlignment(.center)
 
                             Text(
-                                store.isLiveBackendConnected
+                                (store.isLiveBackendConnected && store.activeHost.isOnline)
                                     ? "\(store.activeHost.endpointURL.absoluteString) · \(store.lastPingLatencyMs ?? store.activeHost.latencyMs)ms · \(store.summaries.count) sessions"
-                                    : "Run `python3 scripts/mac-companion-bridge.py` on your Mac or scan Remote Control QR"
+                                    : (isOfflinePaired
+                                        ? "\(store.activeHost.endpointURL.absoluteString) · Auto-reconnecting every 2s"
+                                        : "Run `python3 scripts/mac-companion-bridge.py` on your Mac or scan Remote Control QR")
                             )
                             .font(.system(size: 12, weight: .regular, design: .monospaced))
                             .foregroundStyle(UEChromePalette.textSecondary)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
+
+                            if isOfflinePaired {
+                                Button {
+                                    Task {
+                                        await store.refreshWorkspacesAndSummaries()
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "arrow.clockwise")
+                                            .font(.system(size: 12.5, weight: .semibold))
+                                        Text("Reconnect Now")
+                                            .font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .foregroundStyle(AntigravityTheme.accentPeriwinkle)
+                                    .padding(.horizontal, 14)
+                                    .frame(minHeight: 36)
+                                    .background(Capsule().fill(UEChromePalette.surfacePill))
+                                    .overlay(Capsule().strokeBorder(UEChromePalette.cardBorder, lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("btn-retry-connection")
+                            }
                         }
                         .padding(16)
                     )
@@ -208,7 +237,7 @@ public struct RemotePairingViewController: View {
                     }
                     .buttonStyle(.plain)
 
-                    if store.isLiveBackendConnected {
+                    if store.hasPairedBackend || store.isLiveBackendConnected {
                         Button {
                             Task {
                                 await store.disconnectBackendAndClearKeychain()
@@ -220,6 +249,7 @@ public struct RemotePairingViewController: View {
                                 .frame(maxWidth: .infinity, minHeight: AntigravityTheme.minTouchTargetPt)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("btn-disconnect-host")
                     }
                 }
             }

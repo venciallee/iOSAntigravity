@@ -266,16 +266,45 @@ public struct AgentsHomeViewController: View {
 
     // MARK: - 1. Top Bar (Host Switcher + Display Options + New Project)
 
+    private var isPairedHostOnline: Bool {
+        store.isLiveBackendConnected && store.activeHost.isOnline
+    }
+
+    private var hostSwitcherDotColor: Color {
+        if selectedHost == .cloud {
+            return AntigravityTheme.accentPeriwinkle
+        }
+        if store.hasPairedBackend {
+            return isPairedHostOnline ? AntigravityTheme.statusDone : AntigravityTheme.statusError
+        }
+        return AntigravityTheme.statusDone
+    }
+
+    private var hostSwitcherLabelText: String {
+        if store.hasPairedBackend {
+            if selectedHost == .cloud {
+                return "Cloud"
+            }
+            return isPairedHostOnline
+                ? store.activeHost.hostname
+                : "\(store.activeHost.hostname) · Offline"
+        }
+        return selectedHost.rawValue
+    }
+
     private var topHeaderToolbar: some View {
         HStack(spacing: 8) {
             Menu {
-                if store.isLiveBackendConnected {
+                if store.hasPairedBackend {
                     Button {
                         Task {
                             await store.refreshWorkspacesAndSummaries()
                         }
                     } label: {
-                        Label("Sync Desktop Sessions Now", systemImage: "arrow.clockwise")
+                        Label(
+                            isPairedHostOnline ? "Sync Desktop Sessions Now" : "Reconnect \(store.activeHost.hostname)",
+                            systemImage: isPairedHostOnline ? "arrow.clockwise" : "bolt.horizontal.circle"
+                        )
                     }
                     Button {
                         onSelectTab?(.settings)
@@ -292,11 +321,14 @@ public struct AgentsHomeViewController: View {
                     Divider()
                 }
                 ForEach(HostFilterTarget.allCases) { target in
+                    let optionTitle = (target == .macBookPro && store.hasPairedBackend)
+                        ? store.activeHost.hostname
+                        : target.rawValue
                     Button {
                         selectedHost = target
                     } label: {
                         Label(
-                            target.rawValue,
+                            optionTitle,
                             systemImage: selectedHost == target ? "checkmark.circle.fill" : (target == .cloud ? "cloud" : "laptopcomputer")
                         )
                     }
@@ -304,9 +336,9 @@ public struct AgentsHomeViewController: View {
             } label: {
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(selectedHost == .cloud ? AntigravityTheme.accentPeriwinkle : AntigravityTheme.statusDone)
+                        .fill(hostSwitcherDotColor)
                         .frame(width: 8, height: 8)
-                    Text(store.isLiveBackendConnected ? store.activeHost.hostname : selectedHost.rawValue)
+                    Text(hostSwitcherLabelText)
                         .font(.system(size: 14.5, weight: .medium))
                         .foregroundStyle(UEChromePalette.textPrimary)
                         .lineLimit(1)
@@ -425,9 +457,10 @@ public struct AgentsHomeViewController: View {
     // MARK: - 3. Filter Pills Strip
 
     private var filterPillStrip: some View {
-        let runningBadge = store.isLiveBackendConnected ? store.runningCount : 2
-        let needsYouBadge = store.isLiveBackendConnected ? store.needsYouCount : 1
-        let unreadBadge = store.isLiveBackendConnected ? store.unreadCount : 3
+        let usesPairedCounts = store.hasPairedBackend || store.isLiveBackendConnected
+        let runningBadge = usesPairedCounts ? store.runningCount : 2
+        let needsYouBadge = usesPairedCounts ? store.needsYouCount : 1
+        let unreadBadge = usesPairedCounts ? store.unreadCount : 3
 
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
@@ -535,12 +568,12 @@ public struct AgentsHomeViewController: View {
     // MARK: - 5. Collapsible Project Group Sections
 
     private func projectSectionView(_ project: AgentProjectSection) -> some View {
-        let isCollapsed = collapsedProjects.contains(project.slug)
+        let isCollapsed = collapsedProjects.contains(project.id)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button {
-                    triggerOpenProjectDetail(project.slug)
+                    triggerOpenProjectDetail(project.id)
                 } label: {
                     HStack(spacing: 10) {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -574,7 +607,7 @@ public struct AgentsHomeViewController: View {
                 Spacer(minLength: 4)
 
                 Button {
-                    triggerOpenConversation("new-\(project.slug)")
+                    triggerOpenConversation("new-\(project.id)")
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 16, weight: .medium))
@@ -587,9 +620,9 @@ public struct AgentsHomeViewController: View {
 
                 Button {
                     if isCollapsed {
-                        collapsedProjects.remove(project.slug)
+                        collapsedProjects.remove(project.id)
                     } else {
-                        collapsedProjects.insert(project.slug)
+                        collapsedProjects.insert(project.id)
                     }
                 } label: {
                     Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
@@ -604,9 +637,9 @@ public struct AgentsHomeViewController: View {
 
             if !isCollapsed {
                 VStack(spacing: 0) {
-                    if project.conversations.isEmpty && store.isLiveBackendConnected {
+                    if project.conversations.isEmpty && (store.hasPairedBackend || store.isLiveBackendConnected) {
                         Button {
-                            triggerOpenConversation("new-\(project.slug)")
+                            triggerOpenConversation("new-\(project.id)")
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "plus.bubble")
@@ -817,7 +850,7 @@ public struct AgentsHomeViewController: View {
     // MARK: - Filtering & Live Store Binding
 
     private var usesLiveStoreData: Bool {
-        store.isLiveBackendConnected || store.summaries.contains(where: { summary in
+        store.hasPairedBackend || store.isLiveBackendConnected || store.summaries.contains(where: { summary in
             ![
                 "cas-rate-limiter",
                 "cas-release-checklist",
@@ -871,6 +904,7 @@ public struct AgentsHomeViewController: View {
     private var filteredProjectSections: [AgentProjectSection] {
         let sourceSections: [AgentProjectSection]
         if usesLiveStoreData {
+            let hostOnline = !store.hasPairedBackend || isPairedHostOnline
             sourceSections = store.projects.map { proj in
                 let convs = store.summaries
                     .filter { !$0.isPinned && $0.projectSlug == proj.id }
@@ -878,7 +912,7 @@ public struct AgentsHomeViewController: View {
                 return AgentProjectSection(
                     id: proj.id,
                     slug: proj.name,
-                    subtitle: proj.homeSubtitle,
+                    subtitle: proj.homeSubtitle(isHostOnline: hostOnline),
                     isCloud: proj.runtime == .cloud,
                     conversations: convs
                 )

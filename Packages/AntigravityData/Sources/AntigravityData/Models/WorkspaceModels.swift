@@ -196,6 +196,134 @@ public struct NewProjectDraft: Codable, Sendable, Equatable {
     }
 }
 
+/// Pure Swift 6 detector & URI normalizer for Antigravity Cloud VM (`Jetski Remote Agents`),
+/// GitHub Cloud Projects (`cloud://`, `vscode-vfs://`), and Remote-SSH / Tunnel / Devbox workspaces (`vscode-remote://`).
+public enum AntigravityCloudDetector {
+    public static let cloudURIPrefixes: [String] = [
+        "cloud://",
+        "https://github.com/",
+        "http://github.com/",
+        "vscode-remote://",
+        "vscode-vfs://",
+        "ssh://",
+        "remote://",
+        "jetski://",
+        "antigravity-cloud://",
+        "antigravity-remote://",
+        "devbox://",
+        "codespace://"
+    ]
+
+    public static let genericContainerRoots: Set<String> = [
+        "/home/antigravity",
+        "/workspace",
+        "/workspaces",
+        "/root"
+    ]
+
+    public static func isCloudWorkspaceURI(
+        _ rawURI: String,
+        cascadeId: String = "",
+        sourceHint: String = ""
+    ) -> Bool {
+        let cid = cascadeId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if cid.hasPrefix("v1/") || cid.contains("jetski_remote_agents") || cid.contains("remote_agent") {
+            return true
+        }
+        let src = sourceHint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if src.contains("cloud") || src.contains("remote") || src.contains("jetski") || src.contains("github") {
+            return true
+        }
+        let trimmed = rawURI.trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoded = (trimmed.removingPercentEncoding ?? trimmed)
+        let lower = decoded.lowercased()
+        if cloudURIPrefixes.contains(where: { lower.hasPrefix($0) }) {
+            return true
+        }
+        if decoded == "file:///home/antigravity" || decoded.hasPrefix("file:///home/antigravity/") {
+            return true
+        }
+        return false
+    }
+
+    public static func normalizeWorkspaceURI(_ rawURI: String, isCloud: Bool) -> String {
+        let trimmed = rawURI.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return isCloud ? "cloud://workspace" : "" }
+        let decoded = (trimmed.removingPercentEncoding ?? trimmed)
+        let lower = decoded.lowercased()
+
+        if lower.hasPrefix("https://github.com/") || lower.hasPrefix("http://github.com/") {
+            let prefixLen = lower.hasPrefix("https://") ? "https://github.com/".count : "http://github.com/".count
+            var tail = String(decoded.dropFirst(prefixLen)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if tail.hasSuffix(".git") {
+                tail = String(tail.dropLast(4))
+            }
+            let parts = tail.split(separator: "/").map(String.init)
+            if parts.count >= 2 {
+                return "cloud://\(parts[0])/\(parts[1])"
+            }
+            return tail.isEmpty ? "cloud://github" : "cloud://\(tail)"
+        }
+
+        if lower.hasPrefix("vscode-vfs://") {
+            if let url = URL(string: decoded) {
+                let parts = url.pathComponents.filter { $0 != "/" && !$0.isEmpty }
+                if parts.count >= 2 {
+                    return "cloud://\(parts[0])/\(parts[1])"
+                }
+            }
+            return trimmed
+        }
+
+        if decoded == "file:///home/antigravity" || decoded.hasPrefix("file:///home/antigravity/") {
+            let suffix = String(decoded.dropFirst("file:///home/antigravity".count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let parts = suffix.split(separator: "/").map(String.init)
+            if parts.count >= 2 {
+                return "cloud://\(parts[0])/\(parts[1])"
+            }
+            if let first = parts.first, !first.isEmpty {
+                return "cloud://\(first)"
+            }
+            return "cloud://antigravity"
+        }
+
+        if isCloud && decoded.hasPrefix("file://") {
+            let fsPath = String(decoded.dropFirst("file://".count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let parts = fsPath.split(separator: "/").map(String.init)
+            if let slug = parts.last, !slug.isEmpty {
+                return "cloud://\(slug)"
+            }
+            return "cloud://workspace"
+        }
+
+        return trimmed
+    }
+
+    public static func extractCloudLocationLabel(_ workspaceUri: String) -> String? {
+        let decoded = (workspaceUri.removingPercentEncoding ?? workspaceUri)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = decoded.lowercased()
+        if lower.hasPrefix("cloud://") {
+            let tail = String(decoded.dropFirst("cloud://".count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !tail.isEmpty, tail != "workspace", tail != "antigravity" else { return nil }
+            return tail
+        }
+        if lower.hasPrefix("https://github.com/") || lower.hasPrefix("http://github.com/") {
+            let norm = normalizeWorkspaceURI(decoded, isCloud: true)
+            return extractCloudLocationLabel(norm)
+        }
+        if lower.hasPrefix("vscode-remote://") {
+            let afterScheme = String(decoded.dropFirst("vscode-remote://".count))
+            if let authority = afterScheme.split(separator: "/").first, !authority.isEmpty {
+                return String(authority)
+            }
+        }
+        return nil
+    }
+}
+
 /// Represents a local or cloud project workspace group (`UE01`, `UE04`, `UE05`).
 public struct ProjectWorkspace: Codable, Sendable, Equatable, Identifiable {
     public var id: String
@@ -234,10 +362,19 @@ public struct ProjectWorkspace: Codable, Sendable, Equatable, Identifiable {
     }
 
     public var homeSubtitle: String {
+        homeSubtitle(isHostOnline: true)
+    }
+
+    public func homeSubtitle(isHostOnline: Bool) -> String {
         switch runtime {
         case .macBookPro:
-            return "Local · \(hostName) · \(activeBranch)"
+            let statePrefix = isHostOnline ? "Local" : "Offline"
+            return "\(statePrefix) · \(hostName) · \(activeBranch)"
         case .cloud:
+            if let cloudLabel = AntigravityCloudDetector.extractCloudLocationLabel(workspaceUri),
+               cloudLabel.caseInsensitiveCompare(name) != .orderedSame {
+                return "Cloud · \(cloudLabel) · \(activeBranch)"
+            }
             return "Cloud · \(activeBranch)"
         }
     }
@@ -329,6 +466,7 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
     public var worktrees: [String]
     public var activeCascadeCount: Int
     public var indexedFiles: [String]
+    public var isCloud: Bool
 
     public init(
         workspaceUri: String,
@@ -336,7 +474,8 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
         activeBranch: String = "main",
         worktrees: [String] = ["main"],
         activeCascadeCount: Int = 0,
-        indexedFiles: [String] = []
+        indexedFiles: [String] = [],
+        isCloud: Bool? = nil
     ) {
         self.workspaceUri = workspaceUri
         self.displayName = displayName
@@ -344,6 +483,30 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
         self.worktrees = worktrees
         self.activeCascadeCount = activeCascadeCount
         self.indexedFiles = indexedFiles
+        self.isCloud = isCloud ?? AntigravityCloudDetector.isCloudWorkspaceURI(workspaceUri)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case workspaceUri
+        case displayName
+        case activeBranch
+        case worktrees
+        case activeCascadeCount
+        case indexedFiles
+        case isCloud
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let uri = try container.decode(String.self, forKey: .workspaceUri)
+        self.workspaceUri = uri
+        self.displayName = try container.decode(String.self, forKey: .displayName)
+        self.activeBranch = try container.decodeIfPresent(String.self, forKey: .activeBranch) ?? "main"
+        self.worktrees = try container.decodeIfPresent([String].self, forKey: .worktrees) ?? ["main"]
+        self.activeCascadeCount = try container.decodeIfPresent(Int.self, forKey: .activeCascadeCount) ?? 0
+        self.indexedFiles = try container.decodeIfPresent([String].self, forKey: .indexedFiles) ?? []
+        self.isCloud = try container.decodeIfPresent(Bool.self, forKey: .isCloud)
+            ?? AntigravityCloudDetector.isCloudWorkspaceURI(uri)
     }
 }
 

@@ -305,6 +305,81 @@ def run_flow(base_url: str, csrf_token: str, live_external: bool = False, read_o
     print("\nALL LIVE CONNECT-RPC FLOW CHECKS PASSED.", flush=True)
 
 
+def verify_cloud_and_offline_federation(bridge_mod):
+    # 7a. Verify Cloud VM (`/home/antigravity/<owner>/<repo>`) + `v1/...` trajectory classification
+    enriched_cloud = bridge_mod.enrich_summary_entry(
+        "v1/default/jetski_remote_agents_3p/02268caa-6eb1-426b-a5c3-8629460e0111",
+        {
+            "summary": "Cloud Agent Session",
+            "stepCount": 6,
+            "status": "CASCADE_RUN_STATUS_RUNNING",
+            "workspaces": [
+                {"workspaceFolderAbsoluteUri": "file:///home/antigravity"},
+                {"workspaceFolderAbsoluteUri": "file:///home/antigravity/venciallee/iOSAntigravity", "gitBranch": "main"},
+            ],
+        },
+        {},
+    )
+    assert enriched_cloud.get("isCloud") is True, f"Expected isCloud=True, got {enriched_cloud}"
+    assert enriched_cloud.get("workspaceUri") == "cloud://venciallee/iOSAntigravity", f"Unexpected cloud URI: {enriched_cloud}"
+    assert enriched_cloud.get("projectSlug") == "iOSAntigravity", f"Unexpected projectSlug: {enriched_cloud}"
+
+    # 7b. Verify folderless Antigravity `ReadProject` / `config/projects/*.json` Cloud project classification
+    parsed_proj = bridge_mod.parse_local_project_entry(
+        {
+            "name": "iOSAntigravity",
+            "resources": [{"repo": "venciallee/iOSAntigravity"}],
+            "branch": "main",
+        }
+    )
+    assert parsed_proj is not None and parsed_proj.get("isCloud") is True, f"Expected Cloud project, got {parsed_proj}"
+    assert parsed_proj.get("workspaceUri") == "cloud://venciallee/iOSAntigravity", f"Unexpected project URI: {parsed_proj}"
+    print("  [PASS] 7a. Cloud VM & folderless GitHub project classification (`cloud://venciallee/iOSAntigravity`)", flush=True)
+
+    # 7c. Verify live proxy bridge returns HTTP 503 immediately when upstream Desktop goes offline
+    upstream_csrf = f"up-csrf-{secrets.token_hex(6)}"
+    upstream_srv = bridge_mod.create_bridge_server(
+        bind_host="127.0.0.1",
+        bind_port=0,
+        bridge_csrf=upstream_csrf,
+        workspace_root=str(ROOT),
+    )
+    up_port = upstream_srv.server_port
+    up_thread = threading.Thread(target=upstream_srv.serve_forever, daemon=True)
+    up_thread.start()
+
+    proxy_csrf = f"proxy-csrf-{secrets.token_hex(6)}"
+    proxy_srv = bridge_mod.create_bridge_server(
+        bind_host="127.0.0.1",
+        bind_port=0,
+        bridge_csrf=proxy_csrf,
+        upstream_url=f"http://127.0.0.1:{up_port}",
+        upstream_csrf=upstream_csrf,
+        workspace_root=str(ROOT),
+    )
+    proxy_port = proxy_srv.server_port
+    proxy_thread = threading.Thread(target=proxy_srv.serve_forever, daemon=True)
+    proxy_thread.start()
+    proxy_base = f"http://127.0.0.1:{proxy_port}"
+
+    try:
+        st_online, _ = call_rpc_json(proxy_base, "GetAllCascadeTrajectories", {}, csrf_token=proxy_csrf)
+        assert st_online == 200, f"Expected 200 while upstream Desktop is alive, got {st_online}"
+
+        # Simulate Antigravity Desktop quitting on Mac
+        upstream_srv.shutdown()
+        upstream_srv.server_close()
+
+        st_offline_traj, err_traj = call_rpc_json(proxy_base, "GetAllCascadeTrajectories", {}, csrf_token=proxy_csrf)
+        st_offline_ws, _ = call_rpc_json(proxy_base, "GetWorkspaceInfos", {}, csrf_token=proxy_csrf)
+        assert st_offline_traj == 503, f"Expected 503 when upstream Desktop is offline, got {st_offline_traj} ({err_traj})"
+        assert st_offline_ws == 503, f"Expected 503 on GetWorkspaceInfos when upstream Desktop is offline, got {st_offline_ws}"
+        print("  [PASS] 7b. Offline Host Detection (Proxy Bridge returns HTTP 503 immediately when Desktop quits)", flush=True)
+    finally:
+        proxy_srv.shutdown()
+        proxy_srv.server_close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default=None, help="Target Connect-RPC base URL")
@@ -333,6 +408,7 @@ def main():
     thread.start()
     try:
         run_flow(f"http://127.0.0.1:{port}", csrf, live_external=False)
+        verify_cloud_and_offline_federation(bridge_mod)
     finally:
         server.shutdown()
         server.server_close()
