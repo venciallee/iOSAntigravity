@@ -12,6 +12,7 @@ settings:
     MARKETING_VERSION: "2.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "6.0"
+    INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 iOSAntigravity Contributors. Original app icon & client code. Independent third-party companion for Antigravity; Google and Antigravity are trademarks of Google LLC."
 
 packages:
   AntigravityData:
@@ -39,9 +40,10 @@ targets:
     info:
       path: iOS/Support/Info.plist
       properties:
-        CFBundleDisplayName: "Antigravity"
+        CFBundleDisplayName: "AG Orbit"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSHumanReadableCopyright: "© 2026 iOSAntigravity Contributors. Original app icon & client code. Independent third-party companion for Antigravity; Google and Antigravity are trademarks of Google LLC."
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -49,10 +51,10 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
-        NSCameraUsageDescription: "Scan the Remote Control QR code from Antigravity Desktop to pair your device."
-        NSMicrophoneUsageDescription: "Dictate prompts to Antigravity using real-time voice transcription."
+        NSCameraUsageDescription: "Scan the Remote Control QR code from your paired desktop host."
+        NSMicrophoneUsageDescription: "Dictate prompts in AG Orbit using real-time voice transcription."
         NSFaceIDUsageDescription: "Authorize agent terminal commands and external permissions with Face ID."
-        NSLocalNetworkUsageDescription: "Connect directly to Antigravity Desktop or Mac Companion Bridge over LAN and Tailscale."
+        NSLocalNetworkUsageDescription: "Connect directly to your paired desktop host or Companion Bridge over LAN and Tailscale."
         NSSupportsLiveActivities: true
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
@@ -63,7 +65,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(ANTIGRAVITY_BUNDLE_PREFIX).app
-        INFOPLIST_KEY_CFBundleDisplayName: "Antigravity"
+        INFOPLIST_KEY_CFBundleDisplayName: "AG Orbit"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
@@ -83,15 +86,16 @@ targets:
     info:
       path: Extensions/LiveActivity/Info.plist
       properties:
-        CFBundleDisplayName: "Antigravity Live Activity"
+        CFBundleDisplayName: "AG Orbit Live Activity"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSHumanReadableCopyright: "© 2026 iOSAntigravity Contributors. Independent companion for Antigravity."
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(ANTIGRAVITY_BUNDLE_PREFIX).app.LiveActivity
-        INFOPLIST_KEY_CFBundleDisplayName: "Antigravity Live Activity"
+        INFOPLIST_KEY_CFBundleDisplayName: "AG Orbit Live Activity"
         MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
@@ -110,9 +114,10 @@ targets:
     info:
       path: Extensions/Share/Info.plist
       properties:
-        CFBundleDisplayName: "Send to Antigravity"
+        CFBundleDisplayName: "Send to AG Orbit"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSHumanReadableCopyright: "© 2026 iOSAntigravity Contributors. Independent companion for Antigravity."
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).AntigravityShareExtensionViewController"
@@ -123,7 +128,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(ANTIGRAVITY_BUNDLE_PREFIX).app.Share
-        INFOPLIST_KEY_CFBundleDisplayName: "Send to Antigravity"
+        INFOPLIST_KEY_CFBundleDisplayName: "Send to AG Orbit"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) ANTIGRAVITY_SHARE_EXTENSION"
         MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"

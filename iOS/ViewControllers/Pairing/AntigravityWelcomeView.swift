@@ -1,5 +1,8 @@
 import SwiftUI
 import AntigravityData
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Clean first-launch Welcome screen (`AntigravityWelcomeView`) displayed when no host is paired yet.
 /// Shows zero mock/demo data and provides a single action to scan Antigravity Desktop's Remote Control QR code.
@@ -24,26 +27,24 @@ public struct AntigravityWelcomeView: View {
             Spacer()
 
             VStack(spacing: 18) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(AntigravityTheme.surfaceCard)
-                        .frame(width: 80, height: 80)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                .strokeBorder(AntigravityTheme.accentPeriwinkle.opacity(0.28), lineWidth: 1)
-                        )
-                        .shadow(color: AntigravityTheme.accentPeriwinkle.opacity(0.14), radius: 24, x: 0, y: 8)
-
-                    Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 34, weight: .regular))
-                        .foregroundStyle(AntigravityTheme.accentPeriwinkle)
-                }
+                welcomeIconBadge
+                    .frame(width: 80, height: 80)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .strokeBorder(AntigravityTheme.accentPeriwinkle.opacity(0.28), lineWidth: 1)
+                    )
+                    .shadow(color: AntigravityTheme.accentPeriwinkle.opacity(0.18), radius: 24, x: 0, y: 8)
 
                 VStack(spacing: 8) {
-                    Text("Antigravity")
+                    Text("AG Orbit")
                         .font(.system(size: 32, weight: .bold))
                         .tracking(-0.6)
                         .foregroundStyle(Color.white)
+
+                    Text("Companion for Antigravity")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(AntigravityTheme.accentPeriwinkle)
 
                     Text("Scan the Remote Control QR code in Antigravity Desktop to sync your conversations over Wi-Fi or 5G.")
                         .font(.system(size: 15, weight: .regular))
@@ -109,9 +110,16 @@ public struct AntigravityWelcomeView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("btn-welcome-scan-qr")
 
-                    Text("Open Antigravity on Mac / PC → Remote Control")
-                        .font(.system(size: 12.5, weight: .regular))
-                        .foregroundStyle(UEChromePalette.textMuted)
+                    VStack(spacing: 4) {
+                        Text("Open Antigravity on Mac / PC → Remote Control")
+                            .font(.system(size: 12.5, weight: .regular))
+                            .foregroundStyle(UEChromePalette.textMuted)
+
+                        Text("Independent third-party companion · Not affiliated with Google LLC")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(UEChromePalette.textMuted.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                    }
                 }
             }
             .padding(.horizontal, 24)
@@ -155,6 +163,31 @@ public struct AntigravityWelcomeView: View {
                     isShowingGoogleSignIn = false
                 }
             )
+        }
+    }
+
+    @ViewBuilder
+    private var welcomeIconBadge: some View {
+        #if canImport(UIKit)
+        if let uiImage = UIImage(named: "AntigravityAppIconPreview") {
+            Image(uiImage: uiImage)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFill()
+        } else {
+            fallbackWelcomeBadge
+        }
+        #else
+        fallbackWelcomeBadge
+        #endif
+    }
+
+    private var fallbackWelcomeBadge: some View {
+        ZStack {
+            AntigravityTheme.surfaceCard
+            Image(systemName: "terminal")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(AntigravityTheme.accentPeriwinkle)
         }
     }
 

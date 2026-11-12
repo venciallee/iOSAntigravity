@@ -1,0 +1,50 @@
+<!--
+  AG Orbit — Original Independent App Icon Vector Master
+  Copyright (c) 2026 iOSAntigravity Contributors. All rights reserved.
+  100% original geometric artwork designed for AG Orbit (independent companion client).
+  Contains zero third-party or Google LLC trademarked shapes/assets.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="periwinkleArc" x1="180" y1="760" x2="800" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5B89F7"/>
+      <stop offset="55%" stop-color="#8EB4FF"/>
+      <stop offset="100%" stop-color="#C2DAFF"/>
+    </linearGradient>
+    <linearGradient id="coreGlass" x1="512" y1="292" x2="512" y2="732" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#232838"/>
+      <stop offset="100%" stop-color="#12151E"/>
+    </linearGradient>
+    <radialGradient id="amberGlow" cx="0.42" cy="0.38" r="0.62">
+      <stop offset="0%" stop-color="#FFE6B3"/>
+      <stop offset="55%" stop-color="#EBB365"/>
+      <stop offset="100%" stop-color="#CE8935"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 2 Future Orbital Segments (slots 6 & 7 starting at 337.14 deg, r=324, slot=290.822px: 224 dash + 66.822 gap) -->
+  <circle cx="512" cy="512" r="324"
+    stroke="#8EB4FF" stroke-opacity="0.20" stroke-width="48" stroke-linecap="round"
+    stroke-dasharray="224 66.822 224 1600"
+    transform="rotate(337.143 512 512)" />
+
+  <!-- 5 Completed/Active Periwinkle Orbital Segments (slots 1..5 starting at 80 deg -> leading tip at -34.68 deg) -->
+  <circle cx="512" cy="512" r="324"
+    stroke="url(#periwinkleArc)" stroke-width="48" stroke-linecap="round"
+    stroke-dasharray="224 66.822 224 66.822 224 66.822 224 66.822 224 700"
+    transform="rotate(80 512 512)" />
+
+  <!-- Inner Liquid Glass Medallion -->
+  <circle cx="512" cy="512" r="218" fill="url(#coreGlass)" />
+  <circle cx="512" cy="512" r="216" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="4" />
+
+  <!-- Central Terminal Chevron + Prompt Bar (`>_`) -->
+  <path d="M418 446L498 512L418 578"
+    stroke="#F5F7FA" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" />
+  <line x1="534" y1="576" x2="618" y2="576"
+    stroke="#8EB4FF" stroke-width="40" stroke-linecap="round" />
+
+  <!-- Active Agent Amber Beacon Node right at the leading head of Segment 5 (778.4, 327.6) -->
+  <circle cx="778.4" cy="327.6" r="46" fill="#0E1118" />
+  <circle cx="778.4" cy="327.6" r="34" fill="url(#amberGlow)" />
+</svg>

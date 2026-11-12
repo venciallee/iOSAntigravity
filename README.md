@@ -77,3 +77,16 @@ cd Packages/AntigravityData && swift test
 | **`UE11`** | **Implementation Plan Review** ([`ImplementationPlanReviewViewController.swift`](iOS/ViewControllers/Inspector/ImplementationPlanReviewViewController.swift)) | ![CMP_UE11](verification/output/comparisons/CMP_UE11.png) |
 | **`UE12`** | **Turn Diff Line-Level Review** ([`TurnDiffReviewViewController.swift`](iOS/ViewControllers/Inspector/TurnDiffReviewViewController.swift)) | ![CMP_UE12](verification/output/comparisons/CMP_UE12.png) |
 | **`UE13`** | **Dynamic Island & Lock Screen Live Activity** ([`AntigravityLiveActivityWidget.swift`](Extensions/LiveActivity/AntigravityLiveActivityWidget.swift)) | ![CMP_UE13](verification/output/comparisons/CMP_UE13.png) |
+
+---
+
+## 5. Original App Icon & App Store 5.2.2 Trademark Compliance (原创图标与商标声明)
+
+### Original Independent App Icon (`AG Orbit` · `AppIcon.appiconset`)
+- Uses a **100% original** 7-segment Periwinkle (`#8EB4FF`) + Warm Amber (`#EBB365`) Orbital Terminal icon ([`scripts/assets/ag-orbit-original-icon.svg`](scripts/assets/ag-orbit-original-icon.svg)) rendered across iOS 18+ **Light**, **Dark**, and **Tinted** `1024×1024` opaque sRGB slots in [`iOS/Resources/Assets.xcassets/AppIcon.appiconset/`](iOS/Resources/Assets.xcassets/AppIcon.appiconset/) via [`scripts/render-brand-icons.py`](scripts/render-brand-icons.py).
+- Contains **zero** official Google logo/icon files, fully satisfying **Apple App Store Review Guideline 5.2.2 & 4.1**.
+- Uses companion display naming (`CFBundleDisplayName = "AG Orbit"` / *"AG Orbit — Companion for Antigravity"*) across the main app, Live Activity, and Share Extension in [`project.yml`](project.yml).
+
+### Copyright & Trademark Disclaimer
+- **Original App Icon & Client Code**: **© 2026 iOSAntigravity Contributors. All rights reserved.**
+- **Trademark Notice**: `AG Orbit` is an independent, unofficial third-party companion client and is **not** affiliated with, endorsed by, or sponsored by **Google LLC**. *"Google"* and *"Antigravity"* are trademarks of Google LLC, referenced solely for nominative compatibility description (see [`NOTICE`](NOTICE) and in-app **Settings -> About & Copyright**).

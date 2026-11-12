@@ -183,6 +183,44 @@ def inspect_esdd_spec_and_swift_contracts(repo_root: Path) -> dict:
             "Pure Swift 6 AntigravityData isolation verified (zero UIKit/WebKit/AVFoundation imports; Official Cloud Relay + QR Scanner grounded)"
         )
 
+    # 6. Validate Original AppIcon (1024x1024 opaque RGB) & App Store 5.2.2 Companion Compliance
+    appicon_dir = repo_root / "iOS" / "Resources" / "Assets.xcassets" / "AppIcon.appiconset"
+    expected_icons = ["AppIcon.png", "AppIcon-Dark.png", "AppIcon-Tinted.png"]
+    missing_icons = [name for name in expected_icons if not (appicon_dir / name).exists()]
+    if missing_icons:
+        errors.append(f"Missing AppIcon PNGs in Assets.xcassets: {missing_icons}")
+    else:
+        try:
+            from PIL import Image
+
+            for name in expected_icons:
+                with Image.open(appicon_dir / name) as im:
+                    if im.size != (1024, 1024) or im.mode != "RGB":
+                        errors.append(f"Invalid AppIcon {name}: size={im.size}, mode={im.mode} (expected 1024x1024 RGB)")
+        except Exception as exc:
+            warnings.append(f"Pillow AppIcon header check skipped: {exc}")
+
+    if (repo_root / "scripts" / "sync-app-icon.sh").exists() or list((repo_root / "scripts" / "assets").glob("*official*")):
+        errors.append("App Store 5.2.2 violation: official third-party brand icon files or .icns extractor must not exist")
+
+    project_yml = (repo_root / "project.yml").read_text(encoding="utf-8", errors="ignore")
+    notice_file = repo_root / "NOTICE"
+    if "ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon" not in project_yml:
+        errors.append("project.yml missing ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon")
+    if 'CFBundleDisplayName: "AG Orbit"' not in project_yml:
+        errors.append('project.yml missing App Store 5.2.2 companion CFBundleDisplayName: "AG Orbit"')
+    if "NSHumanReadableCopyright" not in project_yml or "Google LLC" not in project_yml:
+        errors.append("project.yml missing NSHumanReadableCopyright nominative trademark disclaimer")
+    if not notice_file.exists() or "Google LLC" not in notice_file.read_text(encoding="utf-8", errors="ignore"):
+        errors.append("Repository NOTICE file missing nominative trademark disclaimer")
+    if "card-about-copyright" not in combined_swift or "AG Orbit" not in combined_swift:
+        errors.append("RemotePairingViewController missing in-app AG Orbit card-about-copyright disclaimer")
+
+    if not missing_icons and 'CFBundleDisplayName: "AG Orbit"' in project_yml:
+        checks.append(
+            "Original AG Orbit AppIcon.appiconset (1024x1024 opaque RGB) & App Store 5.2.2 trademark compliance verified"
+        )
+
     return {
         "passed": len(errors) == 0,
         "specVersion": ir.get("specVersion"),

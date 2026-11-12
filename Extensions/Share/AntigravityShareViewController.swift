@@ -25,7 +25,7 @@ public struct AntigravityShareSheetView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Send to Antigravity")
+                Text("Send to AG Orbit")
                     .font(AntigravityTheme.TypographyTier.evidence.font)
                     .foregroundStyle(AntigravityTheme.inkReading)
                 Spacer()

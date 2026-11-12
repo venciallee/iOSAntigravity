@@ -270,6 +270,8 @@ public struct RemotePairingViewController: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("btn-disconnect-host")
                 }
+
+                aboutAndCopyrightCard
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -317,6 +319,106 @@ public struct RemotePairingViewController: View {
                     isShowingGoogleSignIn = false
                 }
             )
+        }
+    }
+
+    private var appVersionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let version = (info?["CFBundleShortVersionString"] as? String) ?? "2.0.0"
+        let build = (info?["CFBundleVersion"] as? String) ?? "1"
+        return "v\(version) (\(build))"
+    }
+
+    private var aboutAndCopyrightCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("ABOUT & COPYRIGHT · 版权与商标声明")
+                .font(.system(size: 11.5, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(UEChromePalette.textMuted)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    appIconBadgeView
+                        .frame(width: 48, height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                        )
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text("AG Orbit")
+                                .font(.system(size: 15.5, weight: .semibold))
+                                .foregroundStyle(Color.white)
+                            Text(appVersionLabel)
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundStyle(AntigravityTheme.accentPeriwinkle)
+                        }
+                        Text("Companion for Antigravity")
+                            .font(.system(size: 12.5, weight: .regular))
+                            .foregroundStyle(UEChromePalette.textSecondary)
+                    }
+                }
+
+                Rectangle()
+                    .fill(UEChromePalette.subtleDivider)
+                    .frame(height: 1)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Original App Icon & Client Code © 2026 iOSAntigravity Contributors.")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(UEChromePalette.textPrimary)
+
+                    Text("AG Orbit is an independent, unofficial third-party companion client and is not affiliated with, endorsed by, or sponsored by Google LLC. \"Google\" and \"Antigravity\" are trademarks of Google LLC, referenced solely to describe compatibility with user-hosted Antigravity Desktop and Cloud instances.")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(UEChromePalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("原创 7 段轨道应用图标与客户端代码版权归 © 2026 iOSAntigravity Contributors 所有（不含任何第三方官方品牌图形资产）。“Google” 与 “Antigravity” 为 Google LLC 的商标，仅用于说明伴侣客户端兼容性，与 Google LLC 无隶属或官方背书关系。")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(UEChromePalette.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(AntigravityTheme.surfaceCard)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("card-about-copyright")
+        }
+        .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private var appIconBadgeView: some View {
+        #if canImport(UIKit)
+        if let uiImage = UIImage(named: "AntigravityAppIconPreview") {
+            Image(uiImage: uiImage)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFill()
+        } else {
+            fallbackBrandGlyphBadge
+        }
+        #else
+        fallbackBrandGlyphBadge
+        #endif
+    }
+
+    private var fallbackBrandGlyphBadge: some View {
+        ZStack {
+            AntigravityTheme.surfaceElevated
+            Image(systemName: "terminal")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(AntigravityTheme.accentPeriwinkle)
         }
     }
 

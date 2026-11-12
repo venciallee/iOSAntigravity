@@ -1,0 +1,30 @@
+AG Orbit (iOSAntigravity) — Copyright & Trademark Notice
+========================================================
+
+1. Original App Icon & Client Software Copyright
+------------------------------------------------
+Copyright (c) 2026 iOSAntigravity Contributors. All rights reserved.
+
+All Swift 6 source code, Python Companion Bridge / verification scripts, and the
+original 7-segment Orbital Terminal App Icon artwork (`scripts/assets/ag-orbit-original-icon.svg`
+and `iOS/Resources/Assets.xcassets/AppIcon.appiconset/*`) are original works authored
+by iOSAntigravity Contributors and contain zero third-party or Google LLC graphic assets.
+
+2. App Store Guideline 5.2.2 & Nominative Trademark Disclaimer
+--------------------------------------------------------------
+`AG Orbit` (`AG Orbit — Companion for Antigravity`) is an independent, unofficial
+third-party companion iOS application. It is NOT an official product of Google LLC,
+nor is it affiliated with, endorsed by, or sponsored by Google LLC.
+
+"Google", "Google Antigravity", and "Antigravity" are trademarks of Google LLC,
+referenced solely under nominative fair use to indicate interoperability with
+user-managed Antigravity Desktop (`language_server`) and Cloud environments.
+
+3. 中文版权与商标合规声明
+-------------------------
+- 原创图标与代码版权：本仓库客户端源代码及原创 7 段轨道终端图标（`AG Orbit`）版权归
+  © 2026 iOSAntigravity Contributors 所有，不包含任何 Google 官方图标或品牌视觉资产。
+- 伴侣应用与商标归属（符合 Apple App Store 5.2.2 规范）：本应用桌面名称为 `AG Orbit`
+  （`AG Orbit — Companion for Antigravity`），系独立第三方伴侣客户端，与 Google LLC
+  无任何隶属、合作、赞助或官方背书关系。“Google” 与 “Antigravity” 为 Google LLC 的商标，
+  仅用于客观说明协议兼容关系。

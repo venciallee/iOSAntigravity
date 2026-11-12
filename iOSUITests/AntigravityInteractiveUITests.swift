@@ -623,6 +623,23 @@ final class AntigravityInteractiveUITests: XCTestCase {
             "App must automatically reconnect and restore online status when Desktop returns"
         )
 
+        // 3c. Open Settings tab -> verify in-app App Icon & Google LLC Copyright / Trademark attribution card
+        let settingsTab = app.buttons["tab-item-settings"]
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 5))
+        settingsTab.tap()
+        let copyrightCard = app.descendants(matching: .any)["card-about-copyright"].firstMatch
+        XCTAssertTrue(
+            copyrightCard.waitForExistence(timeout: 5),
+            "Settings screen must render card-about-copyright"
+        )
+        XCTAssertTrue(
+            waitForTextContaining("Google LLC", in: app, timeout: 5),
+            "Settings screen must display Google LLC App Icon & Trademark copyright attribution"
+        )
+        let agentsTab = app.buttons["tab-item-agents"]
+        XCTAssertTrue(agentsTab.waitForExistence(timeout: 5))
+        agentsTab.tap()
+
         // 4. Tap Compose FAB -> send live message -> verify StartCascade + SendUserCascadeMessage round-trip
         let composeFAB = app.buttons["fab-compose"]
         XCTAssertTrue(composeFAB.waitForExistence(timeout: 5))
