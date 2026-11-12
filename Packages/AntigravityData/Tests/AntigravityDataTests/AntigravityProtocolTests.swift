@@ -1311,6 +1311,7 @@ final class AntigravityProtocolTests: XCTestCase {
         store.projects = reconciled
         store.summaries = allSummaries
         let createdOptimisticId = store.createConversationInProject("No Project")
+        XCTAssertTrue(store.locallyCreatedEmptyCascadeIds.contains(createdOptimisticId))
         store.syncStepsForCascade(createdOptimisticId, pollUntilIdle: true)
         XCTAssertFalse(store.isLoadingSteps)
         XCTAssertNil(store.stepLoadErrorText)
@@ -1318,6 +1319,98 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(createdSummary.projectSlug, "No Project")
         XCTAssertEqual(createdSummary.branchName, "")
         XCTAssertEqual(createdSummary.workspaceUri, "")
+    }
+
+    @MainActor
+    func testHistoricalStepFetchAndCloudRelayChunkedFailover() throws {
+        // 1. Same-Mac window family matching (`swift-vapor` closed, `game-loop` open on same Mac mini)
+        let openGameLoopWindow = RelayInstanceInfo(
+            uuid: "inst-game-loop-v2",
+            name: "huangjiafandemac-mini-local-game-loop",
+            status: .connected
+        )
+        XCTAssertTrue(openGameLoopWindow.sameHostFamily(as: "huangjiafandemac-mini-local-swift-vapor"))
+
+        let openDesktopSlug = RelayInstanceInfo(
+            uuid: "inst-silver-moon-v2",
+            name: "lt74xt6l0m-silver-moon",
+            status: .idle
+        )
+        XCTAssertTrue(openDesktopSlug.sameHostFamily(as: "lt74xt6l0m-golden-star"))
+        XCTAssertFalse(openDesktopSlug.sameHostFamily(as: "99aa88bb77-golden-star"))
+
+        // 2. Nested Boq JSPB wrapper `[[ "<base64>", [["content-type", "application/json"]] ], null]`
+        let expectedJSON = #"{"steps":[{"stepIndex":0,"type":"CORTEX_STEP_TYPE_USER_INPUT","userInput":"Hello from history"}]}"#
+        let b64Full = Data(expectedJSON.utf8).base64EncodedString()
+        let nestedJSPB = Data(#"[[ "\#(b64Full)", [["content-type", "application/json"]] ], null]"#.utf8)
+        let nestedDecoded = try CloudRelayJSPBCodec.decodeProxyCommandResponse(nestedJSPB)
+        XCTAssertEqual(String(data: nestedDecoded.payload, encoding: .utf8), expectedJSON)
+        XCTAssertEqual(nestedDecoded.headers["content-type"], "application/json")
+
+        // 3. Multi-chunk concatenated JSPB response (`supportsChunking == true` on large trajectory histories)
+        let allBytes = Array(expectedJSON.utf8)
+        let mid = allBytes.count / 2
+        let part1B64 = Data(allBytes[..<mid]).base64EncodedString()
+        let part2B64 = Data(allBytes[mid...]).base64EncodedString()
+        let chunkedJSPB = Data("[\"\(part1B64)\", [[\"content-type\", \"application/json\"]]]\n[\"\(part2B64)\", []]\n".utf8)
+        let chunkedDecoded = try CloudRelayJSPBCodec.decodeProxyCommandResponse(chunkedJSPB)
+        XCTAssertEqual(String(data: chunkedDecoded.payload, encoding: .utf8), expectedJSON)
+
+        // 4. Connect 5-byte envelope unwrapping on unary JSON/Protobuf responses
+        let framedBytes = ConnectEnvelope.encode(payload: Data(expectedJSON.utf8))
+        let unwrappedBytes = AntigravityRPCClient.unwrapConnectFramedPayloadIfNeeded(framedBytes)
+        XCTAssertEqual(String(data: unwrappedBytes, encoding: .utf8), expectedJSON)
+
+        // 5. Numeric proto enum values in `decodeJSONStep`
+        let numericStepJSON: JSONValue = .object([
+            "stepIndex": .int(0),
+            "type": .int(14),
+            "status": .int(3),
+            "userInput": .object(["text": .string("Fix historical step loading")])
+        ])
+        let numericStep = try XCTUnwrap(
+            AntigravityRPCClient.decodeJSONStep(numericStepJSON, cascadeId: "cid-num", fallbackIndex: 0)
+        )
+        XCTAssertEqual(numericStep.type, .userInput)
+        XCTAssertEqual(numericStep.status, .done)
+        XCTAssertEqual(numericStep.userInput, "Fix historical step loading")
+
+        // 6. Existing historical conversation with `stepCount == 0` (dormant on disk) is NEVER skipped when offline-flagged
+        let store = AntigravitySessionStore.makeESDDVerificationStore()
+        store.hasPairedBackend = true
+        store.isLiveBackendConnected = false
+        store.activeHost = RemoteHostInstance(
+            instanceId: "huangjiafandemac-mini-local-swift-vapor",
+            hostname: "huangjiafandemac-mini-local-swift-vapor",
+            channel: .cloudRelay,
+            endpointURL: URL(string: "https://antigravity.google.com/r/huangjiafandemac-mini-local-swift-vapor")!,
+            isOnline: false
+        )
+        let dormantHistoricalId = "b8c12204-77a1-4f90-9c31-5566778899aa"
+        store.summaries = [
+            CascadeSummary(
+                cascadeId: dormantHistoricalId,
+                title: "New Conversation",
+                projectSlug: "game_loop",
+                workspaceUri: "file:///Users/dev/code/game_loop",
+                branchName: "main",
+                status: .done,
+                stepCount: 0
+            )
+        ]
+        XCTAssertFalse(store.locallyCreatedEmptyCascadeIds.contains(dormantHistoricalId))
+        store.selectCascade(dormantHistoricalId)
+        XCTAssertTrue(
+            store.isLoadingSteps,
+            "Tapping an existing dormant conversation in the list must actively trigger step sync instead of skipping on stepCount == 0"
+        )
+        store.disconnectStepSyncForTestingIfNeeded()
+    }
+}
+
+private extension AntigravitySessionStore {
+    func disconnectStepSyncForTestingIfNeeded() {
+        syncStepsForCascade("", pollUntilIdle: false)
     }
 }
 

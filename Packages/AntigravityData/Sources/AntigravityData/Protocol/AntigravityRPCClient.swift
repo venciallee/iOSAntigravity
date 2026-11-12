@@ -133,7 +133,7 @@ public actor AntigravityRPCClient {
     private var resolvedInstanceUuid: String?
     private var cachedRelayInstances: [RelayInstanceInfo] = []
     private var cachedCloudProjectsById: [String: ProjectWorkspace] = [:]
-    private var wokenCascadeIds: Set<String> = []
+    private var wokenInstanceCascadeKeys: Set<String> = []
     private var cachedValidUpstreamModels: Set<String>?
     private var cachedDefaultUpstreamModel: String?
     private let urlSession: URLSession
@@ -305,8 +305,18 @@ public actor AntigravityRPCClient {
         )
     }
 
+    /// Returns the currently active reachable Cloud Relay instance, if resolved.
+    public func currentActiveRelayInstance() -> RelayInstanceInfo? {
+        if let resUuid = resolvedInstanceUuid,
+           let matched = cachedRelayInstances.first(where: { $0.uuid == resUuid && $0.status.isReachable }) {
+            return matched
+        }
+        return cachedRelayInstances.first(where: \.status.isReachable)
+    }
+
     /// Resolves a scanned Remote Control device slug (`lt74xt6l0m-golden-star`) or UUID (`0f5819ac-...-v2`)
-    /// to an online `RelayInstanceInfo`, automatically probing `X-Goog-AuthUser` `0..4` for multi-account sessions.
+    /// to an online `RelayInstanceInfo`, automatically failing over across open windows on the same Mac/account
+    /// and probing `X-Goog-AuthUser` `0..4` for multi-account sessions.
     public func resolveCloudRelayInstance(
         preferredIdentifier: String? = nil,
         timeoutInterval: TimeInterval? = nil
@@ -326,13 +336,16 @@ public actor AntigravityRPCClient {
         }
 
         var firstNonEmptyResult: (instances: [RelayInstanceInfo], authUser: String)? = nil
+        var bestReachableFallback: (selected: RelayInstanceInfo, instances: [RelayInstanceInfo], authUser: String)? = nil
+        var bestOfflineMatch: (selected: RelayInstanceInfo, instances: [RelayInstanceInfo], authUser: String)? = nil
         var lastError: Error? = nil
 
-        for candidateUser in candidateAuthUsers {
+        for (userIdx, candidateUser) in candidateAuthUsers.enumerated() {
             do {
+                let perUserTimeout = userIdx == 0 ? timeoutInterval : min(timeoutInterval ?? 6.0, 5.0)
                 let instances = try await listRelayInstances(
                     authUserOverride: candidateUser,
-                    timeoutInterval: timeoutInterval
+                    timeoutInterval: perUserTimeout
                 )
                 if instances.isEmpty {
                     continue
@@ -342,14 +355,31 @@ public actor AntigravityRPCClient {
                 }
 
                 if !isWildcardTarget {
-                    if let exactOnline = instances.first(where: { $0.matches(identifier: rawTarget) && $0.status.isReachable })
-                        ?? instances.first(where: { $0.matches(identifier: rawTarget) }) {
+                    // 1. Exact UUID or window slug match that is currently ONLINE (`isReachable`)
+                    if let exactOnline = instances.first(where: { $0.matches(identifier: rawTarget) && $0.status.isReachable }) {
                         self.authUser = candidateUser
                         self.resolvedInstanceUuid = exactOnline.uuid
                         self.cachedRelayInstances = instances
                         return (exactOnline, instances, candidateUser)
                     }
-                } else if let online = instances.first(where: { $0.status.isReachable }) ?? instances.first {
+                    // 2. Peer window on the SAME Mac (`huangjiafandemac-mini-local-...`) that is currently ONLINE
+                    if let familyOnline = instances.first(where: { $0.sameHostFamily(as: rawTarget) && $0.status.isReachable }) {
+                        self.authUser = candidateUser
+                        self.resolvedInstanceUuid = familyOnline.uuid
+                        self.cachedRelayInstances = instances
+                        return (familyOnline, instances, candidateUser)
+                    }
+                    // 3. Record any online instance on this account before considering disconnected windows
+                    if bestReachableFallback == nil,
+                       let anyOnline = instances.first(where: \.status.isReachable) {
+                        bestReachableFallback = (anyOnline, instances, candidateUser)
+                    }
+                    if bestOfflineMatch == nil,
+                       let exactOffline = instances.first(where: { $0.matches(identifier: rawTarget) })
+                           ?? instances.first(where: { $0.sameHostFamily(as: rawTarget) }) {
+                        bestOfflineMatch = (exactOffline, instances, candidateUser)
+                    }
+                } else if let online = instances.first(where: \.status.isReachable) {
                     self.authUser = candidateUser
                     self.resolvedInstanceUuid = online.uuid
                     self.cachedRelayInstances = instances
@@ -363,9 +393,22 @@ public actor AntigravityRPCClient {
             }
         }
 
+        if let reachable = bestReachableFallback {
+            self.authUser = reachable.authUser
+            self.resolvedInstanceUuid = reachable.selected.uuid
+            self.cachedRelayInstances = reachable.instances
+            return (reachable.selected, reachable.instances, reachable.authUser)
+        }
+
+        if let offline = bestOfflineMatch {
+            self.authUser = offline.authUser
+            self.resolvedInstanceUuid = offline.selected.uuid
+            self.cachedRelayInstances = offline.instances
+            return (offline.selected, offline.instances, offline.authUser)
+        }
+
         if let fallback = firstNonEmptyResult,
-           (isWildcardTarget || rawTarget.hasSuffix("-v2") || rawTarget.count >= 32),
-           let chosen = fallback.instances.first(where: { $0.status.isReachable }) ?? fallback.instances.first {
+           let chosen = fallback.instances.first(where: \.status.isReachable) ?? fallback.instances.first {
             self.authUser = fallback.authUser
             self.resolvedInstanceUuid = chosen.uuid
             self.cachedRelayInstances = fallback.instances
@@ -383,13 +426,6 @@ public actor AntigravityRPCClient {
             return (directInfo, [directInfo], authUser)
         }
 
-        if let firstNonEmptyResult {
-            let names = firstNonEmptyResult.instances.map { "\($0.name) (\($0.status.badgeText))" }.joined(separator: ", ")
-            throw AntigravityRPCError.httpError(
-                statusCode: 404,
-                body: "Host '\(rawTarget)' not found among your Google account's instances: [\(names)]"
-            )
-        }
         if let lastError {
             throw lastError
         }
@@ -728,13 +764,14 @@ public actor AntigravityRPCClient {
         var workingBody = try await sanitizeCloudRelayPayload(method: method, body: body)
         for attempt in 1...3 {
             let encodedPayload = workingBody.isEmpty ? Data("{}".utf8) : try JSONEncoder().encode(workingBody)
-            let (respData, _) = try await callCloudRelayProxyCommand(
+            let (rawRespData, _) = try await callCloudRelayProxyCommand(
                 method: method,
                 payload: encodedPayload,
                 contentType: "application/json",
                 instanceUuidOverride: instanceUuidOverride,
                 timeoutInterval: timeoutInterval
             )
+            let respData = Self.unwrapConnectFramedPayloadIfNeeded(rawRespData)
             if respData.isEmpty {
                 return [:]
             }
@@ -762,6 +799,49 @@ public actor AntigravityRPCClient {
         return [:]
     }
 
+    internal static func unwrapConnectFramedPayloadIfNeeded(_ data: Data) -> Data {
+        guard data.count >= 5 else { return data }
+        let firstByte = data[data.startIndex]
+        guard firstByte == 0x00 || firstByte == 0x01 else { return data }
+        var parser = ConnectStreamParser()
+        let frames = parser.feed(data)
+        let nonTrailerFrames = frames.filter { !$0.isEndStream }
+        guard !nonTrailerFrames.isEmpty else { return data }
+        var out = Data()
+        for frame in nonTrailerFrames {
+            let decoded = frame.isCompressed
+                ? CloudRelayJSPBCodec.decompressPayloadIfNeeded(frame.payload)
+                : frame.payload
+            out.append(decoded)
+        }
+        return out.isEmpty ? data : out
+    }
+
+    private func selectReachableRelayUuid(preferred: String?) -> String? {
+        let candidate = (preferred?.isEmpty == false) ? preferred : resolvedInstanceUuid
+        guard !cachedRelayInstances.isEmpty else { return candidate }
+        if let candidate,
+           cachedRelayInstances.contains(where: { $0.uuid == candidate && $0.status.isReachable }) {
+            return candidate
+        }
+        let familySeed = cachedRelayInstances.first(where: { $0.uuid == candidate })?.name ?? targetInstanceIdentifier
+        let familyOnline = cachedRelayInstances.first(where: {
+            $0.status.isReachable && $0.sameHostFamily(as: familySeed)
+        })
+        let preferredResolved = resolvedInstanceUuid.flatMap { resUuid in
+            cachedRelayInstances.contains(where: { $0.uuid == resUuid && $0.status.isReachable }) ? resUuid : nil
+        }
+        let anyOnline = cachedRelayInstances.first(where: \.status.isReachable)
+        if let liveBest = familyOnline?.uuid ?? preferredResolved ?? anyOnline?.uuid {
+            if resolvedInstanceUuid == nil
+                || !cachedRelayInstances.contains(where: { $0.uuid == resolvedInstanceUuid && $0.status.isReachable }) {
+                self.resolvedInstanceUuid = liveBest
+            }
+            return liveBest
+        }
+        return candidate
+    }
+
     private func callCloudRelayProxyCommand(
         method: String,
         payload: Data,
@@ -774,18 +854,15 @@ public actor AntigravityRPCClient {
                 preferredIdentifier: targetInstanceIdentifier,
                 timeoutInterval: timeoutInterval
             )
-        }
-        var effectiveUuid = (instanceUuidOverride?.isEmpty == false) ? instanceUuidOverride : resolvedInstanceUuid
-        if let candidate = effectiveUuid,
-           !cachedRelayInstances.isEmpty,
-           !cachedRelayInstances.contains(where: { $0.uuid == candidate && $0.status.isReachable }),
-           let fallbackOnline = cachedRelayInstances.first(where: { $0.status.isReachable }) {
-            let preferredResolved = resolvedInstanceUuid.flatMap { resUuid in
-                cachedRelayInstances.contains(where: { $0.uuid == resUuid && $0.status.isReachable }) ? resUuid : nil
+        } else if cachedRelayInstances.isEmpty {
+            if let refreshed = try? await listRelayInstances(timeoutInterval: min(timeoutInterval ?? 6.0, 6.0)),
+               !refreshed.isEmpty {
+                self.cachedRelayInstances = refreshed
             }
-            effectiveUuid = preferredResolved ?? fallbackOnline.uuid
         }
-        guard let targetUuid = effectiveUuid, !targetUuid.isEmpty else {
+
+        guard let initialTargetUuid = selectReachableRelayUuid(preferred: instanceUuidOverride),
+              !initialTargetUuid.isEmpty else {
             throw AntigravityRPCError.invalidEndpoint
         }
 
@@ -798,42 +875,77 @@ public actor AntigravityRPCClient {
             throw AntigravityRPCError.invalidEndpoint
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        if let timeoutInterval {
-            request.timeoutInterval = timeoutInterval
-        }
-        SAPISIDHashGenerator.applyApiServiceHeaders(
-            to: &request,
-            cookieHeader: sessionCookie ?? "",
-            origin: originStr,
-            authUser: authUser,
-            isStreaming: false
-        )
-        request.httpBody = try CloudRelayJSPBCodec.encodeProxyCommandRequest(
-            targetInstanceUuid: targetUuid,
-            rpcPath: "\(Self.servicePrefix)/\(method)",
-            payload: payload,
-            contentType: contentType,
-            isStreaming: false
-        )
+        let currentCookie = sessionCookie ?? ""
+        let currentAuthUser = authUser
+        let session = urlSession
 
-        let (data, response) = try await urlSession.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AntigravityRPCError.invalidEndpoint
+        func sendOnce(to targetUuid: String) async throws -> (payload: Data, headers: [String: String]) {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            if let timeoutInterval {
+                request.timeoutInterval = timeoutInterval
+            }
+            SAPISIDHashGenerator.applyApiServiceHeaders(
+                to: &request,
+                cookieHeader: currentCookie,
+                origin: originStr,
+                authUser: currentAuthUser,
+                isStreaming: false
+            )
+            request.httpBody = try CloudRelayJSPBCodec.encodeProxyCommandRequest(
+                targetInstanceUuid: targetUuid,
+                rpcPath: "\(Self.servicePrefix)/\(method)",
+                payload: payload,
+                contentType: contentType,
+                isStreaming: false
+            )
+
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw AntigravityRPCError.invalidEndpoint
+            }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                let text = String(data: data, encoding: .utf8) ?? "Unauthorized"
+                throw AntigravityRPCError.unauthorized(text)
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                let text = String(data: data, encoding: .utf8) ?? ""
+                throw AntigravityRPCError.httpError(statusCode: http.statusCode, body: text)
+            }
+            return try CloudRelayJSPBCodec.decodeProxyCommandResponse(
+                data,
+                responseHeaders: http.allHeaderFields
+            )
         }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            let text = String(data: data, encoding: .utf8) ?? "Unauthorized"
-            throw AntigravityRPCError.unauthorized(text)
+
+        do {
+            return try await sendOnce(to: initialTargetUuid)
+        } catch let AntigravityRPCError.unauthorized(msg) {
+            throw AntigravityRPCError.unauthorized(msg)
+        } catch {
+            let shouldFailover: Bool = {
+                if error is URLError { return true }
+                if case let AntigravityRPCError.httpError(code, _) = error {
+                    return code == 404 || code == 502 || code == 503 || code == 504
+                }
+                return false
+            }()
+            if shouldFailover,
+               let refreshed = try? await listRelayInstances(timeoutInterval: 6.0),
+               !refreshed.isEmpty {
+                self.cachedRelayInstances = refreshed
+                let familySeed = refreshed.first(where: { $0.uuid == initialTargetUuid })?.name ?? targetInstanceIdentifier
+                if let altInst = refreshed.first(where: {
+                    $0.uuid != initialTargetUuid && $0.status.isReachable && $0.sameHostFamily(as: familySeed)
+                }) ?? refreshed.first(where: {
+                    $0.uuid != initialTargetUuid && $0.status.isReachable
+                }) {
+                    self.resolvedInstanceUuid = altInst.uuid
+                    return try await sendOnce(to: altInst.uuid)
+                }
+            }
+            throw error
         }
-        guard (200..<300).contains(http.statusCode) else {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            throw AntigravityRPCError.httpError(statusCode: http.statusCode, body: text)
-        }
-        return try CloudRelayJSPBCodec.decodeProxyCommandResponse(
-            data,
-            responseHeaders: http.allHeaderFields
-        )
     }
 
     private func sanitizeCloudRelayPayload(
@@ -1406,11 +1518,17 @@ public actor AntigravityRPCClient {
     /// Wakes a dormant disk trajectory into `language_server` memory (`LoadTrajectory`).
     public func loadTrajectory(
         cascadeId: String,
+        isCloud: Bool = false,
         instanceUuidOverride: String? = nil
     ) async throws {
+        let isRemoteCloud = isCloud || cascadeId.hasPrefix("v1/")
+        var body: [String: JSONValue] = ["cascadeId": .string(cascadeId)]
+        if isRemoteCloud {
+            body["backend"] = .string("BACKEND_TYPE_REMOTE_AICODE")
+        }
         _ = try await callUnaryJSON(
             method: "LoadTrajectory",
-            body: ["cascadeId": .string(cascadeId)],
+            body: body,
             instanceUuidOverride: instanceUuidOverride,
             timeoutInterval: 8.0
         )
@@ -1439,86 +1557,234 @@ public actor AntigravityRPCClient {
         )
     }
 
-    /// Fetches the complete trajectory for a live session using upstream `GetCascadeTrajectoryStepsRequest`
-    /// (`cascade_id` + optional `step_offset`, waking dormant sessions via `LoadTrajectory` if needed)
-    /// and switches to Binary Protobuf (`application/proto`) when `knownStepCount >= 600` or truncated.
+    /// Fetches the complete trajectory for a live or historical session using upstream `GetCascadeTrajectorySteps`,
+    /// waking dormant trajectories via `LoadTrajectory`, falling back to `GetCascadeTrajectory` / Binary Protobuf,
+    /// and failing over across reachable Cloud Relay instances when a conversation lives in a peer window.
     public func fetchAllTrajectorySteps(
         cascadeId: String,
         knownStepCount: Int = 0,
+        isCloud: Bool = false,
         instanceUuidOverride: String? = nil
     ) async throws -> [CascadeStep] {
+        let primaryTarget: String? = {
+            if channel == .cloudRelay {
+                return selectReachableRelayUuid(preferred: instanceUuidOverride)
+            }
+            return instanceUuidOverride
+        }()
+
+        var primaryError: Error? = nil
+        do {
+            let steps = try await fetchStepsFromSingleInstance(
+                cascadeId: cascadeId,
+                knownStepCount: knownStepCount,
+                isCloud: isCloud,
+                targetUuid: primaryTarget
+            )
+            if !steps.isEmpty {
+                return steps
+            }
+        } catch let AntigravityRPCError.unauthorized(msg) {
+            throw AntigravityRPCError.unauthorized(msg)
+        } catch {
+            primaryError = error
+        }
+
+        // Multi-window Cloud Relay failover: if the trajectory was opened or stored in another live Desktop window,
+        // probe reachable peer instances (`sameHostFamily` windows on the same Mac first).
+        if channel == .cloudRelay {
+            if cachedRelayInstances.isEmpty,
+               let refreshed = try? await listRelayInstances(timeoutInterval: 6.0),
+               !refreshed.isEmpty {
+                self.cachedRelayInstances = refreshed
+            }
+            let familySeed = cachedRelayInstances.first(where: { $0.uuid == primaryTarget })?.name ?? targetInstanceIdentifier
+            let peerCandidates = cachedRelayInstances
+                .filter { $0.status.isReachable && $0.uuid != primaryTarget }
+                .sorted { lhs, rhs in
+                    let lFam = lhs.sameHostFamily(as: familySeed)
+                    let rFam = rhs.sameHostFamily(as: familySeed)
+                    if lFam != rFam { return lFam && !rFam }
+                    return false
+                }
+
+            for peer in peerCandidates {
+                do {
+                    let peerSteps = try await fetchStepsFromSingleInstance(
+                        cascadeId: cascadeId,
+                        knownStepCount: knownStepCount,
+                        isCloud: isCloud,
+                        targetUuid: peer.uuid
+                    )
+                    if !peerSteps.isEmpty {
+                        self.resolvedInstanceUuid = peer.uuid
+                        return peerSteps
+                    }
+                } catch let AntigravityRPCError.unauthorized(msg) {
+                    throw AntigravityRPCError.unauthorized(msg)
+                } catch {
+                    if primaryError == nil {
+                        primaryError = error
+                    }
+                }
+            }
+        }
+
+        if let primaryError {
+            throw primaryError
+        }
+        return []
+    }
+
+    private func fetchStepsFromSingleInstance(
+        cascadeId: String,
+        knownStepCount: Int,
+        isCloud: Bool,
+        targetUuid: String?
+    ) async throws -> [CascadeStep] {
+        let isRemoteCloud = isCloud || cascadeId.hasPrefix("v1/")
+        let wakeKey = "\(targetUuid ?? "direct")|\(cascadeId)"
+        var lastError: Error? = nil
+
         if knownStepCount >= Self.protobufStepThreshold {
             do {
                 let protoSteps = try await fetchTrajectoryStepsProtobuf(
                     cascadeId: cascadeId,
                     startIndex: 0,
                     endIndex: knownStepCount,
-                    instanceUuidOverride: instanceUuidOverride
+                    instanceUuidOverride: targetUuid
                 )
                 if !protoSteps.isEmpty {
-                    wokenCascadeIds.insert(cascadeId)
+                    wokenInstanceCascadeKeys.insert(wakeKey)
                     return protoSteps
                 }
             } catch let AntigravityRPCError.unauthorized(msg) {
                 throw AntigravityRPCError.unauthorized(msg)
             } catch {
-                // Dormant trajectory on disk (`No Project` / closed window); wake via `LoadTrajectory` below.
+                lastError = error
             }
-            wokenCascadeIds.insert(cascadeId)
-            try? await loadTrajectory(cascadeId: cascadeId, instanceUuidOverride: instanceUuidOverride)
-            return try await fetchTrajectoryStepsProtobuf(
+            try? await loadTrajectory(cascadeId: cascadeId, isCloud: isRemoteCloud, instanceUuidOverride: targetUuid)
+            let retryProtoSteps = try await fetchTrajectoryStepsProtobuf(
                 cascadeId: cascadeId,
                 startIndex: 0,
                 endIndex: knownStepCount,
-                instanceUuidOverride: instanceUuidOverride
+                instanceUuidOverride: targetUuid
             )
+            if !retryProtoSteps.isEmpty {
+                wokenInstanceCascadeKeys.insert(wakeKey)
+            }
+            return retryProtoSteps
+        }
+
+        var stepReqBody: [String: JSONValue] = ["cascadeId": .string(cascadeId)]
+        if isRemoteCloud {
+            stepReqBody["backend"] = .string("BACKEND_TYPE_REMOTE_AICODE")
         }
 
         var firstResp: [String: JSONValue]? = nil
         do {
             firstResp = try await callUnaryJSON(
                 method: "GetCascadeTrajectorySteps",
-                body: ["cascadeId": .string(cascadeId)],
-                instanceUuidOverride: instanceUuidOverride,
+                body: stepReqBody,
+                instanceUuidOverride: targetUuid,
                 timeoutInterval: 10.0
             )
+            lastError = nil
         } catch let AntigravityRPCError.unauthorized(msg) {
             throw AntigravityRPCError.unauthorized(msg)
         } catch {
+            lastError = error
             firstResp = nil
         }
 
         if let resp = firstResp, resp["truncatedAt"] != nil {
-            wokenCascadeIds.insert(cascadeId)
-            return try await fetchTrajectoryStepsProtobuf(
+            let protoSteps = try await fetchTrajectoryStepsProtobuf(
                 cascadeId: cascadeId,
                 startIndex: 0,
                 endIndex: max(knownStepCount, Self.protobufStepThreshold),
-                instanceUuidOverride: instanceUuidOverride
+                instanceUuidOverride: targetUuid
             )
+            if !protoSteps.isEmpty {
+                wokenInstanceCascadeKeys.insert(wakeKey)
+            }
+            return protoSteps
         }
 
         var rawSteps = firstResp?["steps"]?.arrayValue ?? []
         if !rawSteps.isEmpty {
-            wokenCascadeIds.insert(cascadeId)
-        } else if firstResp == nil || knownStepCount > 0 || !wokenCascadeIds.contains(cascadeId) {
-            wokenCascadeIds.insert(cascadeId)
-            try? await loadTrajectory(cascadeId: cascadeId, instanceUuidOverride: instanceUuidOverride)
-            let retryResp = try await callUnaryJSON(
-                method: "GetCascadeTrajectorySteps",
-                body: ["cascadeId": .string(cascadeId)],
-                instanceUuidOverride: instanceUuidOverride,
-                timeoutInterval: 10.0
-            )
-            if retryResp["truncatedAt"] != nil {
-                return try await fetchTrajectoryStepsProtobuf(
-                    cascadeId: cascadeId,
-                    startIndex: 0,
-                    endIndex: max(knownStepCount, Self.protobufStepThreshold),
-                    instanceUuidOverride: instanceUuidOverride
+            wokenInstanceCascadeKeys.insert(wakeKey)
+        } else if firstResp == nil || knownStepCount > 0 || !wokenInstanceCascadeKeys.contains(wakeKey) {
+            try? await loadTrajectory(cascadeId: cascadeId, isCloud: isRemoteCloud, instanceUuidOverride: targetUuid)
+            do {
+                let retryResp = try await callUnaryJSON(
+                    method: "GetCascadeTrajectorySteps",
+                    body: stepReqBody,
+                    instanceUuidOverride: targetUuid,
+                    timeoutInterval: 10.0
                 )
+                lastError = nil
+                if retryResp["truncatedAt"] != nil {
+                    let protoSteps = try await fetchTrajectoryStepsProtobuf(
+                        cascadeId: cascadeId,
+                        startIndex: 0,
+                        endIndex: max(knownStepCount, Self.protobufStepThreshold),
+                        instanceUuidOverride: targetUuid
+                    )
+                    if !protoSteps.isEmpty {
+                        wokenInstanceCascadeKeys.insert(wakeKey)
+                    }
+                    return protoSteps
+                }
+                rawSteps = retryResp["steps"]?.arrayValue ?? []
+                if !rawSteps.isEmpty {
+                    wokenInstanceCascadeKeys.insert(wakeKey)
+                }
+            } catch let AntigravityRPCError.unauthorized(msg) {
+                throw AntigravityRPCError.unauthorized(msg)
+            } catch {
+                lastError = error
             }
-            rawSteps = retryResp["steps"]?.arrayValue ?? []
+        }
+
+        // Fallback A: Query `GetCascadeTrajectory` (`{"trajectory": {"steps": [...]}}`) when `GetCascadeTrajectorySteps` returns empty
+        if rawSteps.isEmpty && !wokenInstanceCascadeKeys.contains(wakeKey) {
+            do {
+                let trajResp = try await callUnaryJSON(
+                    method: "GetCascadeTrajectory",
+                    body: stepReqBody,
+                    instanceUuidOverride: targetUuid,
+                    timeoutInterval: 10.0
+                )
+                let fallbackArr = trajResp["trajectory"]?.objectValue?["steps"]?.arrayValue
+                    ?? trajResp["steps"]?.arrayValue
+                    ?? []
+                if !fallbackArr.isEmpty {
+                    rawSteps = fallbackArr
+                    lastError = nil
+                    wokenInstanceCascadeKeys.insert(wakeKey)
+                }
+            } catch let AntigravityRPCError.unauthorized(msg) {
+                throw AntigravityRPCError.unauthorized(msg)
+            } catch {
+                if lastError == nil { lastError = error }
+            }
+        }
+
+        // Fallback B: Binary Protobuf (`application/proto`) when a >600-step dormant session omitted `stepCount` in summaries
+        if rawSteps.isEmpty && (firstResp == nil || lastError != nil || knownStepCount > 0) {
+            if let protoFallback = try? await fetchTrajectoryStepsProtobuf(
+                cascadeId: cascadeId,
+                startIndex: 0,
+                endIndex: max(knownStepCount, Self.protobufStepThreshold),
+                instanceUuidOverride: targetUuid
+            ), !protoFallback.isEmpty {
+                wokenInstanceCascadeKeys.insert(wakeKey)
+                return protoFallback
+            }
+        }
+
+        if rawSteps.isEmpty, let lastError {
+            throw lastError
         }
 
         if rawSteps.count >= 590 {
@@ -1526,8 +1792,9 @@ public actor AntigravityRPCClient {
                 cascadeId: cascadeId,
                 startIndex: 0,
                 endIndex: max(knownStepCount, rawSteps.count),
-                instanceUuidOverride: instanceUuidOverride
+                instanceUuidOverride: targetUuid
             ), protoSteps.count >= rawSteps.count {
+                wokenInstanceCascadeKeys.insert(wakeKey)
                 return protoSteps
             }
         }
@@ -1544,13 +1811,12 @@ public actor AntigravityRPCClient {
 
         var offset = rawSteps.count
         while offset > 0 && offset < knownStepCount && offset < Self.protobufStepThreshold {
+            var pageBody = stepReqBody
+            pageBody["stepOffset"] = .int(offset)
             let pageResp = try await callUnaryJSON(
                 method: "GetCascadeTrajectorySteps",
-                body: [
-                    "cascadeId": .string(cascadeId),
-                    "stepOffset": .int(offset)
-                ],
-                instanceUuidOverride: instanceUuidOverride
+                body: pageBody,
+                instanceUuidOverride: targetUuid
             )
             guard let pageSteps = pageResp["steps"]?.arrayValue, !pageSteps.isEmpty else {
                 break
@@ -1617,13 +1883,14 @@ public actor AntigravityRPCClient {
             endIndex: endIndex
         )
         if channel == .cloudRelay {
-            let (respBytes, _) = try await callCloudRelayProxyCommand(
+            let (rawBytes, _) = try await callCloudRelayProxyCommand(
                 method: "GetCascadeTrajectorySteps",
                 payload: protoReqBytes,
                 contentType: "application/proto",
                 instanceUuidOverride: instanceUuidOverride
             )
-            return ProtobufStepCodec.decodeStepsResponse(respBytes, cascadeId: cascadeId)
+            let unwrapped = Self.unwrapConnectFramedPayloadIfNeeded(rawBytes)
+            return ProtobufStepCodec.decodeStepsResponse(unwrapped, cascadeId: cascadeId)
         }
 
         let url = endpointURL.appendingPathComponent("\(Self.servicePrefix)/GetCascadeTrajectorySteps")
@@ -1640,7 +1907,8 @@ public actor AntigravityRPCClient {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw AntigravityRPCError.httpError(statusCode: status, body: "Binary step fetch failed")
         }
-        return ProtobufStepCodec.decodeStepsResponse(data, cascadeId: cascadeId)
+        let unwrapped = Self.unwrapConnectFramedPayloadIfNeeded(data)
+        return ProtobufStepCodec.decodeStepsResponse(unwrapped, cascadeId: cascadeId)
     }
 
     // MARK: - Workspace & Project Operations (`UE01`, `UE04`, `UE05`)
@@ -2545,10 +2813,24 @@ public actor AntigravityRPCClient {
     ) -> CascadeStep? {
         guard let obj = value.objectValue else { return nil }
         let stepIndex = obj["stepIndex"]?.intValue ?? fallbackIndex
-        let typeName = obj["type"]?.stringValue ?? ""
-        let statusName = obj["status"]?.stringValue ?? "CORTEX_STEP_STATUS_DONE"
-        var stepType = resolveStepType(typeName)
-        let stepStatus = CortexStepStatus.from(jsonName: statusName)
+        var stepType: CortexStepType = {
+            if let typeName = obj["type"]?.stringValue, !typeName.isEmpty {
+                return resolveStepType(typeName)
+            }
+            if let typeInt = obj["type"]?.intValue {
+                return ProtobufStepCodec.decodeStepType(typeInt)
+            }
+            return .unspecified
+        }()
+        let stepStatus: CortexStepStatus = {
+            if let statusName = obj["status"]?.stringValue, !statusName.isEmpty {
+                return CortexStepStatus.from(jsonName: statusName)
+            }
+            if let statusInt = obj["status"]?.intValue {
+                return ProtobufStepCodec.decodeStepStatus(statusInt)
+            }
+            return .done
+        }()
 
         // Decode userInput (string or nested object `{"userResponse": ...}` / `{"items": [{"text": ...}]}`)
         var userText: String? = nonEmptyString(obj["userInput"]?.stringValue)
@@ -2562,6 +2844,9 @@ public actor AntigravityRPCClient {
                 .joined(separator: "\n")
             userText = nonEmptyString(uiObj["userResponse"]?.stringValue)
                 ?? nonEmptyString(uiObj["query"]?.stringValue)
+                ?? nonEmptyString(uiObj["text"]?.stringValue)
+                ?? nonEmptyString(uiObj["prompt"]?.stringValue)
+                ?? nonEmptyString(uiObj["message"]?.stringValue)
                 ?? nonEmptyString(itemsJoined)
             if let itemArr = uiObj["items"]?.arrayValue {
                 for item in itemArr {
@@ -2601,6 +2886,9 @@ public actor AntigravityRPCClient {
         if let pr = obj["plannerResponse"]?.objectValue {
             let text = nonEmptyString(pr["modifiedResponse"]?.stringValue)
                 ?? nonEmptyString(pr["response"]?.stringValue)
+                ?? nonEmptyString(pr["text"]?.stringValue)
+                ?? nonEmptyString(pr["content"]?.stringValue)
+                ?? nonEmptyString(pr["message"]?.stringValue)
                 ?? ""
             let thinking = nonEmptyString(pr["thinking"]?.stringValue)
             let duration = parseDurationSeconds(pr["thinkingDurationSeconds"] ?? pr["thinkingDuration"])

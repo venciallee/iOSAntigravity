@@ -169,6 +169,8 @@ public final class AntigravitySessionStore {
     private var consecutiveSyncFailures: Int = 0
     private var backgroundPollCounter: Int = 0
     private var syncedConfigCascadeIds: Set<String> = []
+    internal var locallyCreatedEmptyCascadeIds: Set<String> = []
+    private var stepSyncGeneration: UInt64 = 0
 
     public init(
         hosts: [RemoteHostInstance] = [],
@@ -909,6 +911,7 @@ public final class AntigravitySessionStore {
         backgroundPollCounter = 0
         optimisticActiveUntilByCascadeId.removeAll()
         syncedConfigCascadeIds.removeAll()
+        locallyCreatedEmptyCascadeIds.removeAll()
         rpcClient = nil
         lastPingLatencyMs = nil
         availableRelayInstances = []
@@ -1740,6 +1743,8 @@ public final class AntigravitySessionStore {
     /// messages appear on iOS immediately.
     public func syncStepsForCascade(_ cascadeId: String, pollUntilIdle: Bool = true) {
         stepPollingTask?.cancel()
+        stepSyncGeneration &+= 1
+        let generation = stepSyncGeneration
         guard (hasPairedBackend || isLiveBackendConnected), let client = rpcClient, !cascadeId.isEmpty else { return }
 
         stepLoadErrorText = nil
@@ -1753,10 +1758,7 @@ public final class AntigravitySessionStore {
 
         let initialSummary = summaries.first(where: { $0.cascadeId == cascadeId })
         let withinInitialOptimisticSend = (optimisticActiveUntilByCascadeId[cascadeId].map { $0 > Date() } ?? false)
-        let isBrandNewEmptySession = (initialSummary != nil)
-            && (initialSummary?.stepCount == 0)
-            && (initialSummary?.status != .inProgress)
-            && (initialSummary?.status != .pending)
+        let isBrandNewEmptySession = locallyCreatedEmptyCascadeIds.contains(cascadeId)
             && !withinInitialOptimisticSend
         let isKnownOfflineLocal = hasPairedBackend
             && (!isLiveBackendConnected || !activeHost.isOnline)
@@ -1776,15 +1778,17 @@ public final class AntigravitySessionStore {
 
         stepPollingTask = Task { [weak self] in
             defer {
-                if self?.activeCascadeId == cascadeId {
-                    self?.isLoadingSteps = false
+                if let self,
+                   self.stepSyncGeneration == generation,
+                   self.activeCascadeId == cascadeId {
+                    self.isLoadingSteps = false
                 }
             }
             if (self?.stepsByCascadeId[cascadeId] ?? []).isEmpty {
                 let cached = await storeRef.loadProjectedSteps(cascadeId: cascadeId)
                 if !cached.isEmpty, let self, (self.stepsByCascadeId[cascadeId] ?? []).isEmpty {
                     self.stepsByCascadeId[cascadeId] = cached
-                    if self.activeCascadeId == cascadeId {
+                    if self.stepSyncGeneration == generation && self.activeCascadeId == cascadeId {
                         self.isLoadingSteps = false
                     }
                 }
@@ -1796,30 +1800,64 @@ public final class AntigravitySessionStore {
                 attempts += 1
                 let summaryMeta = self?.summaries.first(where: { $0.cascadeId == cascadeId })
                 let knownCount = summaryMeta?.stepCount ?? 0
+                let summaryIsCloud = summaryMeta?.isCloud ?? false
                 let originUuid = summaryMeta?.originInstanceUuid
-                let isEmptyNewSessionNow = (summaryMeta != nil)
-                    && knownCount == 0
-                    && summaryMeta?.status != .inProgress
-                    && summaryMeta?.status != .pending
+                let isEmptyNewSessionNow = (self?.locallyCreatedEmptyCascadeIds.contains(cascadeId) == true)
                     && !(self?.optimisticActiveUntilByCascadeId[cascadeId].map { $0 > Date() } ?? false)
                 var stillActive = false
                 do {
                     let remoteSteps = try await client.fetchAllTrajectorySteps(
                         cascadeId: cascadeId,
                         knownStepCount: knownCount,
+                        isCloud: summaryIsCloud,
                         instanceUuidOverride: originUuid
                     )
+                    let liveRelayInst: RelayInstanceInfo? = (self?.activeHost.channel == .cloudRelay)
+                        ? await client.currentActiveRelayInstance()
+                        : nil
                     guard let self, !Task.isCancelled else { return }
+
+                    if let liveRelayInst {
+                        if self.activeHost.instanceId != liveRelayInst.uuid
+                            || self.activeHost.hostname != liveRelayInst.name
+                            || !self.activeHost.isOnline {
+                            let parsedTarget = RemoteHostInstance.parseRemoteControlTarget(self.activeHost.endpointURL.absoluteString)
+                            let originPrefix = parsedTarget?.relayOrigin ?? SAPISIDHashGenerator.defaultOrigin
+                            let nextURL = URL(string: "\(originPrefix)/r/\(liveRelayInst.uuid)") ?? self.activeHost.endpointURL
+                            let refreshedHost = RemoteHostInstance(
+                                instanceId: liveRelayInst.uuid,
+                                hostname: liveRelayInst.name,
+                                version: liveRelayInst.version,
+                                channel: .cloudRelay,
+                                endpointURL: nextURL,
+                                isOnline: true,
+                                latencyMs: self.activeHost.latencyMs
+                            )
+                            self.activeHost = refreshedHost
+                            if let hostIdx = self.hosts.firstIndex(where: { $0.instanceId == refreshedHost.instanceId }) {
+                                self.hosts[hostIdx] = refreshedHost
+                            } else {
+                                self.hosts.insert(refreshedHost, at: 0)
+                            }
+                        }
+                        if !summaryIsCloud,
+                           let sumIdx = self.summaries.firstIndex(where: { $0.cascadeId == cascadeId }) {
+                            self.summaries[sumIdx].originInstanceUuid = liveRelayInst.uuid
+                            self.summaries[sumIdx].originHostName = liveRelayInst.name
+                        }
+                    }
+
                     if self.hasPairedBackend && (!self.isLiveBackendConnected || !self.activeHost.isOnline) {
                         self.markBackendReconnected()
                     }
                     self.stepLoadErrorText = nil
-                    if self.activeCascadeId == cascadeId {
+                    if self.stepSyncGeneration == generation && self.activeCascadeId == cascadeId {
                         self.isLoadingSteps = false
                     }
 
                     let withinOptimisticWindow = (self.optimisticActiveUntilByCascadeId[cascadeId].map { $0 > Date() } ?? false)
                     if !remoteSteps.isEmpty {
+                        self.locallyCreatedEmptyCascadeIds.remove(cascadeId)
                         self.stepsByCascadeId[cascadeId] = remoteSteps
                         await storeRef.saveProjectedSteps(remoteSteps, for: cascadeId)
                         if !self.syncedConfigCascadeIds.contains(cascadeId),
@@ -1868,7 +1906,7 @@ public final class AntigravitySessionStore {
                         if Self.isBackendOfflineError(error) && self.activeHost.channel != .cloudRelay {
                             self.markBackendOffline(error: error)
                         }
-                        if self.activeCascadeId == cascadeId {
+                        if self.stepSyncGeneration == generation && self.activeCascadeId == cascadeId {
                             self.isLoadingSteps = false
                             if (self.stepsByCascadeId[cascadeId] ?? []).isEmpty && !isEmptyNewSessionNow {
                                 self.stepLoadErrorText = error.localizedDescription
@@ -2219,6 +2257,9 @@ public final class AntigravitySessionStore {
             summaries = nextSummaries
         }
         stepsByCascadeId[optimisticId] = []
+        if initialPrompt == nil || initialPrompt?.isEmpty == true {
+            locallyCreatedEmptyCascadeIds.insert(optimisticId)
+        }
         activeCascadeId = optimisticId
         selectedProjectId = summaries.first(where: { $0.cascadeId == optimisticId })?.projectSlug ?? effectiveSlug
         selectedWorkspaceUri = workspaceUri
@@ -2244,7 +2285,11 @@ public final class AntigravitySessionStore {
                 if self.hasPairedBackend && (!self.isLiveBackendConnected || !self.activeHost.isOnline) {
                     self.markBackendReconnected()
                 }
+                let wasEmptyNew = self.locallyCreatedEmptyCascadeIds.remove(optimisticId) != nil
                 let existingSteps = self.stepsByCascadeId.removeValue(forKey: optimisticId) ?? []
+                if wasEmptyNew && existingSteps.isEmpty && (initialPrompt == nil || initialPrompt?.isEmpty == true) {
+                    self.locallyCreatedEmptyCascadeIds.insert(realCascadeId)
+                }
                 self.stepsByCascadeId[realCascadeId] = existingSteps.map { step in
                     var copy = step
                     copy.cascadeId = realCascadeId
@@ -2258,6 +2303,7 @@ public final class AntigravitySessionStore {
                     self.activeRoute = .cascadeChat(realCascadeId)
                 }
                 if let prompt = initialPrompt, !prompt.isEmpty {
+                    self.locallyCreatedEmptyCascadeIds.remove(realCascadeId)
                     self.composerDraftText = prompt
                     self.sendCurrentDraft()
                 } else {
@@ -2649,6 +2695,7 @@ public final class AntigravitySessionStore {
             currentSteps.append(assistantStep)
         }
         stepsByCascadeId[activeCascadeId] = currentSteps
+        locallyCreatedEmptyCascadeIds.remove(activeCascadeId)
 
         let currentSummary = summaries.first(where: { $0.cascadeId == activeCascadeId })
         let currentProj = projects.first(where: { $0.id == (currentSummary?.projectSlug ?? selectedProjectId) })
@@ -2734,6 +2781,8 @@ public final class AntigravitySessionStore {
                         instanceUuidOverride: summaryOriginUuid
                     )
                     if let self, !createdId.isEmpty {
+                        self.locallyCreatedEmptyCascadeIds.remove(targetCascadeId)
+                        self.locallyCreatedEmptyCascadeIds.remove(createdId)
                         let existing = self.stepsByCascadeId.removeValue(forKey: targetCascadeId) ?? currentSteps
                         self.stepsByCascadeId[createdId] = existing.map { step in
                             var copy = step

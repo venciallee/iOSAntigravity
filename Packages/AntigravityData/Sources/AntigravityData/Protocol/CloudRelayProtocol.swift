@@ -71,6 +71,40 @@ public struct RelayInstanceInfo: Codable, Sendable, Equatable, Identifiable {
         }
         return false
     }
+
+    /// Returns `true` when `rawIdentifier` belongs to another Antigravity Desktop window on the same machine
+    /// (for example `huangjiafandemac-mini-local-swift-vapor` vs `huangjiafandemac-mini-local-game-loop`,
+    /// or `lt74xt6l0m-golden-star` vs `lt74xt6l0m-silver-moon`).
+    public func sameHostFamily(as rawIdentifier: String) -> Bool {
+        let needle = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let candidate = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty, !candidate.isEmpty else { return false }
+        if matches(identifier: needle) { return true }
+
+        let lhsParts = needle.split(separator: "-").map(String.init)
+        let rhsParts = candidate.split(separator: "-").map(String.init)
+        guard !lhsParts.isEmpty, !rhsParts.isEmpty else { return false }
+
+        var commonSegments: [String] = []
+        for (l, r) in zip(lhsParts, rhsParts) {
+            if l == r {
+                commonSegments.append(l)
+            } else {
+                break
+            }
+        }
+        if commonSegments.count >= 2 && commonSegments.joined(separator: "-").count >= 7 {
+            return true
+        }
+        let genericPrefixes: Set<String> = ["antigravity", "localhost", "macbook", "desktop", "workspace"]
+        if commonSegments.count == 1,
+           let first = commonSegments.first,
+           first.count >= 8,
+           !genericPrefixes.contains(first) {
+            return true
+        }
+        return false
+    }
 }
 
 // MARK: - Google SAPISIDHASH & ApiService Header Builder
@@ -447,8 +481,64 @@ public enum CloudRelayJSPBCodec: Sendable {
         return try JSONEncoder().encode(jspb)
     }
 
+    /// Transparently gunzips RFC 1952 `gzip` payloads (`0x1f 0x8b 0x08`) returned inside Cloud Relay `ProxyCommand` frames.
+    public static func decompressPayloadIfNeeded(_ data: Data) -> Data {
+        let bytes = Array(data)
+        guard bytes.count >= 18,
+              bytes[0] == 0x1f,
+              bytes[1] == 0x8b,
+              bytes[2] == 0x08 else {
+            return data
+        }
+        let flags = bytes[3]
+        var headerEnd = 10
+        let payloadLimit = bytes.count - 8
+
+        if (flags & 0x04) != 0 {
+            guard headerEnd + 2 <= payloadLimit else { return data }
+            let xlen = Int(bytes[headerEnd]) | (Int(bytes[headerEnd + 1]) << 8)
+            headerEnd += 2 + xlen
+        }
+        if (flags & 0x08) != 0 {
+            while headerEnd < payloadLimit && bytes[headerEnd] != 0 { headerEnd += 1 }
+            headerEnd += 1
+        }
+        if (flags & 0x10) != 0 {
+            while headerEnd < payloadLimit && bytes[headerEnd] != 0 { headerEnd += 1 }
+            headerEnd += 1
+        }
+        if (flags & 0x02) != 0 {
+            headerEnd += 2
+        }
+        guard headerEnd <= payloadLimit else { return data }
+
+        #if os(iOS) || os(macOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        let deflateSlice = Data(bytes[headerEnd..<payloadLimit])
+        if let decompressed = try? (deflateSlice as NSData).decompressed(using: .zlib) {
+            return Data(referencing: decompressed)
+        }
+        #endif
+        return data
+    }
+
+    private static func parseInnerHeaderPairs(_ pairsValue: JSONValue?) -> [String: String] {
+        guard let pairs = pairsValue?.arrayValue else { return [:] }
+        var headers: [String: String] = [:]
+        for pairVal in pairs {
+            if let pair = pairVal.arrayValue,
+               pair.count >= 2,
+               let k = pair[0].stringValue?.lowercased(),
+               let v = pair[1].stringValue {
+                headers[k] = v
+            }
+        }
+        return headers
+    }
+
     /// Decodes `ProxyCommandResponse` JSPB tuple:
-    /// `[ "<base64ResponseBytes>", [ ["accept-encoding", "gzip"], ["content-type", "application/json"] ] ]`
+    /// - Standard: `[ "<base64ResponseBytes>", [ ["accept-encoding", "gzip"], ["content-type", "application/json"] ] ]`
+    /// - Nested Boq wrapper: `[ [ "<base64ResponseBytes>", [ ... ] ], trailer ]`
+    /// - Chunked response (`supportsChunking == true`): `[ "<b64Part1>", [ ... ] ]\n[ "<b64Part2>", [] ]`
     public static func decodeProxyCommandResponse(
         _ rawData: Data,
         responseHeaders: [AnyHashable: Any] = [:]
@@ -457,35 +547,50 @@ public enum CloudRelayJSPBCodec: Sendable {
         if unwrapped.isEmpty {
             return (Data(), [:])
         }
-        let rootValue = try JSONDecoder().decode(JSONValue.self, from: unwrapped)
-        guard let rootArray = rootValue.arrayValue else {
+
+        if let rootValue = try? JSONDecoder().decode(JSONValue.self, from: unwrapped) {
+            guard let rootArray = rootValue.arrayValue else {
+                throw AntigravityRPCError.decodingError("Expected JSPB array in ProxyCommandResponse")
+            }
+
+            // Check if Boq returned `[null, errorTrailer]` when upstream RPC failed
+            if rootArray.first == .null, rootArray.count >= 2 {
+                let errSummary = String(data: unwrapped, encoding: .utf8) ?? "Cloud Relay RPC error"
+                throw AntigravityRPCError.httpError(statusCode: 502, body: errSummary)
+            }
+
+            if let b64Payload = rootArray.first?.stringValue {
+                guard let decodedPayload = decodeBase64Flexible(b64Payload) else {
+                    throw AntigravityRPCError.decodingError("Invalid base64 payload in ProxyCommandResponse")
+                }
+                let innerHeaders = rootArray.count > 1 ? parseInnerHeaderPairs(rootArray[1]) : [:]
+                return (decompressPayloadIfNeeded(decodedPayload), innerHeaders)
+            }
+
+            // Nested JSPB wrapper (`[[ "<b64>", headers ], trailer]`) or multi-element array
+            var innerHeaders: [String: String] = [:]
+            if let nestedFirst = rootArray.first?.arrayValue, nestedFirst.count > 1 {
+                innerHeaders = parseInnerHeaderPairs(nestedFirst[1])
+            }
+            let nestedChunks = extractPayloadsFromJSPBArray(rootArray)
+            var combined = Data()
+            for chunk in nestedChunks {
+                combined.append(chunk)
+            }
+            return (decompressPayloadIfNeeded(combined), innerHeaders)
+        }
+
+        // Multi-chunk concatenated JSPB arrays (`[chunk1]\n[chunk2]`) when `supportsChunking == true`
+        var streamParser = CloudRelayJSPBStreamParser()
+        let streamedChunks = streamParser.feed(unwrapped)
+        guard !streamedChunks.isEmpty else {
             throw AntigravityRPCError.decodingError("Expected JSPB array in ProxyCommandResponse")
         }
-
-        // Check if Boq returned a nested `[responseArray, errorTrailer]` wrapper when payload is absent
-        if rootArray.first == .null, rootArray.count >= 2 {
-            let errSummary = String(data: unwrapped, encoding: .utf8) ?? "Cloud Relay RPC error"
-            throw AntigravityRPCError.httpError(statusCode: 502, body: errSummary)
+        var combined = Data()
+        for chunk in streamedChunks {
+            combined.append(chunk)
         }
-
-        let b64Payload = rootArray.first?.stringValue ?? ""
-        guard let decodedPayload = decodeBase64Flexible(b64Payload) else {
-            throw AntigravityRPCError.decodingError("Invalid base64 payload in ProxyCommandResponse")
-        }
-
-        var innerHeaders: [String: String] = [:]
-        if rootArray.count > 1, let pairs = rootArray[1].arrayValue {
-            for pairVal in pairs {
-                if let pair = pairVal.arrayValue,
-                   pair.count >= 2,
-                   let k = pair[0].stringValue?.lowercased(),
-                   let v = pair[1].stringValue {
-                    innerHeaders[k] = v
-                }
-            }
-        }
-
-        return (decodedPayload, innerHeaders)
+        return (decompressPayloadIfNeeded(combined), [:])
     }
 
     /// Extracts base64 payload chunks from a `StreamProxyCommand` JSPB response buffer.
