@@ -71,9 +71,16 @@ public actor LocalProjectionStore {
         }
     }
 
+    private static func sanitizedFileKey(for cascadeId: String) -> String {
+        cascadeId
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+    }
+
     public func loadProjectedSteps(cascadeId: String) -> [CascadeStep] {
         if let cached = cachedStepsByCascade[cascadeId] { return cached }
-        let file = storageDirectory.appendingPathComponent("steps_\(cascadeId).json")
+        let safeKey = Self.sanitizedFileKey(for: cascadeId)
+        let file = storageDirectory.appendingPathComponent("steps_\(safeKey).json")
         guard let data = try? Data(contentsOf: file),
               let decoded = try? JSONDecoder().decode([CascadeStep].self, from: data) else {
             return []
@@ -84,7 +91,8 @@ public actor LocalProjectionStore {
 
     public func saveProjectedSteps(_ steps: [CascadeStep], for cascadeId: String) {
         cachedStepsByCascade[cascadeId] = steps
-        let file = storageDirectory.appendingPathComponent("steps_\(cascadeId).json")
+        let safeKey = Self.sanitizedFileKey(for: cascadeId)
+        let file = storageDirectory.appendingPathComponent("steps_\(safeKey).json")
         if let data = try? JSONEncoder().encode(steps) {
             try? data.write(to: file, options: .atomic)
         }

@@ -359,7 +359,8 @@ public actor AntigravityRPCClient {
             }
         }
 
-        if let fallback = firstNonEmptyResult, isWildcardTarget,
+        if let fallback = firstNonEmptyResult,
+           (isWildcardTarget || rawTarget.hasSuffix("-v2") || rawTarget.count >= 32),
            let chosen = fallback.instances.first(where: { $0.status.isReachable }) ?? fallback.instances.first {
             self.authUser = fallback.authUser
             self.resolvedInstanceUuid = chosen.uuid
@@ -367,16 +368,15 @@ public actor AntigravityRPCClient {
             return (chosen, fallback.instances, fallback.authUser)
         }
 
-        if !isWildcardTarget && (rawTarget.hasSuffix("-v2") || rawTarget.count >= 32) {
+        if firstNonEmptyResult == nil && !isWildcardTarget && (rawTarget.hasSuffix("-v2") || rawTarget.count >= 32) {
             let directInfo = RelayInstanceInfo(
                 uuid: rawTarget,
                 name: rawTarget,
                 status: .connected
             )
             self.resolvedInstanceUuid = rawTarget
-            let list = firstNonEmptyResult?.instances ?? [directInfo]
-            self.cachedRelayInstances = list
-            return (directInfo, list, authUser)
+            self.cachedRelayInstances = [directInfo]
+            return (directInfo, [directInfo], authUser)
         }
 
         if let firstNonEmptyResult {
@@ -433,13 +433,14 @@ public actor AntigravityRPCClient {
     /// reachable instances on the signed-in Google account, and queries Antigravity Cloud (`BACKEND_TYPE_REMOTE_AICODE`)
     /// projects & conversations so both Cloud ("Antigravity") and Local hosts stay synchronized.
     public func fetchFederatedWorkspacesAndSummaries(
-        timeoutInterval: TimeInterval? = nil
+        timeoutInterval: TimeInterval? = nil,
+        lightweightPoll: Bool = false
     ) async throws -> (workspaces: [WorkspaceInfo], summaries: [CascadeSummary], cloudProjects: [ProjectWorkspace], cloudWarmingUp: Bool) {
         if channel == .cloudRelay {
             if let refreshed = try? await listRelayInstances(timeoutInterval: timeoutInterval), !refreshed.isEmpty {
                 self.cachedRelayInstances = refreshed
                 if let currentUuid = resolvedInstanceUuid,
-                   !refreshed.contains(where: { $0.uuid == currentUuid }),
+                   !refreshed.contains(where: { $0.uuid == currentUuid && $0.status.isReachable }),
                    let fallback = refreshed.first(where: { $0.status.isReachable }) ?? refreshed.first {
                     self.resolvedInstanceUuid = fallback.uuid
                 }
@@ -456,11 +457,16 @@ public actor AntigravityRPCClient {
             return []
         }()
 
-        // 1. Fetch Antigravity Cloud (`BACKEND_TYPE_REMOTE_AICODE`) projects
-        let cloudProjectOutcome = await fetchCloudProjects(
-            candidateInstances: reachableInstances,
-            timeoutInterval: timeoutInterval
-        )
+        // 1. Fetch Antigravity Cloud (`BACKEND_TYPE_REMOTE_AICODE`) projects (reuse cache on lightweight periodic ticks)
+        let cloudProjectOutcome: (projects: [ProjectWorkspace], warmingUp: Bool)
+        if lightweightPoll && !cachedCloudProjectsById.isEmpty {
+            cloudProjectOutcome = (Array(cachedCloudProjectsById.values), false)
+        } else {
+            cloudProjectOutcome = await fetchCloudProjects(
+                candidateInstances: reachableInstances,
+                timeoutInterval: timeoutInterval
+            )
+        }
         let cloudProjects = cloudProjectOutcome.projects
 
         var mergedWorkspacesByUri: [String: WorkspaceInfo] = [:]
@@ -748,7 +754,16 @@ public actor AntigravityRPCClient {
                 timeoutInterval: timeoutInterval
             )
         }
-        let effectiveUuid = (instanceUuidOverride?.isEmpty == false) ? instanceUuidOverride : resolvedInstanceUuid
+        var effectiveUuid = (instanceUuidOverride?.isEmpty == false) ? instanceUuidOverride : resolvedInstanceUuid
+        if let candidate = effectiveUuid,
+           !cachedRelayInstances.isEmpty,
+           !cachedRelayInstances.contains(where: { $0.uuid == candidate && $0.status.isReachable }),
+           let fallbackOnline = cachedRelayInstances.first(where: { $0.status.isReachable }) {
+            let preferredResolved = resolvedInstanceUuid.flatMap { resUuid in
+                cachedRelayInstances.contains(where: { $0.uuid == resUuid && $0.status.isReachable }) ? resUuid : nil
+            }
+            effectiveUuid = preferredResolved ?? fallbackOnline.uuid
+        }
         guard let targetUuid = effectiveUuid, !targetUuid.isEmpty else {
             throw AntigravityRPCError.invalidEndpoint
         }
@@ -1414,7 +1429,8 @@ public actor AntigravityRPCClient {
         var firstResp = try await callUnaryJSON(
             method: "GetCascadeTrajectorySteps",
             body: ["cascadeId": .string(cascadeId)],
-            instanceUuidOverride: instanceUuidOverride
+            instanceUuidOverride: instanceUuidOverride,
+            timeoutInterval: 10.0
         )
         if firstResp["truncatedAt"] != nil {
             return try await fetchTrajectoryStepsProtobuf(
@@ -1431,7 +1447,8 @@ public actor AntigravityRPCClient {
             firstResp = try await callUnaryJSON(
                 method: "GetCascadeTrajectorySteps",
                 body: ["cascadeId": .string(cascadeId)],
-                instanceUuidOverride: instanceUuidOverride
+                instanceUuidOverride: instanceUuidOverride,
+                timeoutInterval: 10.0
             )
             if firstResp["truncatedAt"] != nil {
                 return try await fetchTrajectoryStepsProtobuf(
@@ -1909,7 +1926,8 @@ public actor AntigravityRPCClient {
                     "agentPersona": .string(agentPersona)
                 ])
             ],
-            instanceUuidOverride: instanceUuidOverride
+            instanceUuidOverride: instanceUuidOverride,
+            timeoutInterval: 300.0
         )
     }
 
@@ -2256,7 +2274,16 @@ public actor AntigravityRPCClient {
         let framedPayload = ConnectEnvelopeFrame(flags: [], payload: rawJSON).encode()
 
         if channel == .cloudRelay {
-            let effectiveUuid = (instanceUuidOverride?.isEmpty == false) ? instanceUuidOverride : resolvedInstanceUuid
+            var effectiveUuid = (instanceUuidOverride?.isEmpty == false) ? instanceUuidOverride : resolvedInstanceUuid
+            if let candidate = effectiveUuid,
+               !cachedRelayInstances.isEmpty,
+               !cachedRelayInstances.contains(where: { $0.uuid == candidate && $0.status.isReachable }),
+               let fallbackOnline = cachedRelayInstances.first(where: { $0.status.isReachable }) {
+                let preferredResolved = resolvedInstanceUuid.flatMap { resUuid in
+                    cachedRelayInstances.contains(where: { $0.uuid == resUuid && $0.status.isReachable }) ? resUuid : nil
+                }
+                effectiveUuid = preferredResolved ?? fallbackOnline.uuid
+            }
             guard let targetUuid = effectiveUuid, !targetUuid.isEmpty else {
                 return AsyncThrowingStream { continuation in
                     continuation.finish()
@@ -2498,7 +2525,7 @@ public actor AntigravityRPCClient {
                 ?? ""
             let thinking = nonEmptyString(pr["thinking"]?.stringValue)
             let duration = parseDurationSeconds(pr["thinkingDurationSeconds"] ?? pr["thinkingDuration"])
-            if !text.isEmpty || thinking != nil {
+            if !text.isEmpty || thinking != nil || stepStatus == .inProgress || stepStatus == .pending {
                 plannerPayload = PlannerResponsePayload(
                     response: text,
                     thinking: thinking,
@@ -2650,6 +2677,12 @@ public actor AntigravityRPCClient {
                 totalCount: tb["totalCount"]?.intValue ?? 4
             )
             if stepType == .unspecified { stepType = .taskBoundary }
+        }
+
+        if (stepType == .plannerResponse || stepType == .notifyUser)
+            && plannerPayload == nil
+            && (stepStatus == .inProgress || stepStatus == .pending) {
+            plannerPayload = PlannerResponsePayload(response: "")
         }
 
         let createdDate = Self.parseProtoTimestamp(obj["metadata"]?.objectValue?["createdAt"] ?? obj["createdAt"]) ?? Date()

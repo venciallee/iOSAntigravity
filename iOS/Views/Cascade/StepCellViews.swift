@@ -67,37 +67,65 @@ public struct UserPromptContextBubbleView: View {
     }
 }
 
-/// Collapsible `👁 Thought for 14s ›` reasoning row (`row-thought-14s`).
+/// Collapsible `👁 Thought for 14s ›` reasoning row (`row-thought-14s`) with live streaming timer & reasoning preview.
 public struct CollapsibleThoughtRowView: View {
     public let durationSeconds: Int
     public let reasoningSummary: String
+    public let isStreaming: Bool
+    public let startedAt: Date?
     @State private var isExpanded: Bool = false
+    @State private var userCollapsedDuringStream: Bool = false
 
     public init(
         durationSeconds: Int = 14,
-        reasoningSummary: String = "Inspected internal/middleware router chain, verified token-bucket concurrency lock contention, and prepared vegeta load profile."
+        reasoningSummary: String = "Inspected internal/middleware router chain, verified token-bucket concurrency lock contention, and prepared vegeta load profile.",
+        isStreaming: Bool = false,
+        startedAt: Date? = nil
     ) {
         self.durationSeconds = durationSeconds
         self.reasoningSummary = reasoningSummary
+        self.isStreaming = isStreaming
+        self.startedAt = startedAt
+    }
+
+    private var effectiveExpanded: Bool {
+        if isStreaming {
+            return !userCollapsedDuringStream
+        }
+        return isExpanded
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
-                    isExpanded.toggle()
+                    if isStreaming {
+                        userCollapsedDuringStream.toggle()
+                    } else {
+                        isExpanded.toggle()
+                    }
                 }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "eye")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(AntigravityTheme.inkSecondary)
-                    Text("Thought for \(durationSeconds)s")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(AntigravityTheme.inkSecondary)
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    if isStreaming {
+                        AntigravityRunningArcIndicatorView(isAnimated: true)
+                        TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                            let elapsed = Int(max(Double(durationSeconds), context.date.timeIntervalSince(startedAt ?? context.date)))
+                            Text("Thinking · \(max(1, elapsed))s…")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(StepCardPalette.periwinkle)
+                        }
+                    } else {
+                        Image(systemName: "eye")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(AntigravityTheme.inkSecondary)
+                        Text("Thought for \(durationSeconds)s")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(AntigravityTheme.inkSecondary)
+                    }
+                    Image(systemName: effectiveExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(AntigravityTheme.inkSecondary)
+                        .foregroundStyle(isStreaming ? StepCardPalette.periwinkle : AntigravityTheme.inkSecondary)
                     Spacer()
                 }
                 .frame(minHeight: AntigravityTheme.minTouchTargetPt)
@@ -105,12 +133,23 @@ public struct CollapsibleThoughtRowView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("row-thought-14s")
 
-            if isExpanded {
-                AntigravityMarkdownView(markdown: reasoningSummary, variant: .thought)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(StepCardPalette.cardSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            if effectiveExpanded {
+                let trimmed = reasoningSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    AntigravityMarkdownView(markdown: reasoningSummary, variant: .thought)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(StepCardPalette.cardSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else if isStreaming {
+                    Text("Analyzing workspace context and planning next steps…")
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(AntigravityTheme.inkSecondary)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(StepCardPalette.cardSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
             }
         }
     }
@@ -429,8 +468,22 @@ public struct CascadeEvidenceGroupCardView: View {
         store.expandedEvidenceGroupIds.contains(groupId)
     }
 
+    private var isActivelyRunning: Bool {
+        (!store.isVerificationMode || store.isLiveBackendConnected)
+            && steps.contains(where: { $0.status == .inProgress || $0.status == .pending })
+    }
+
     private var summaryTitle: String {
         let editCount = steps.filter { $0.codeAction != nil }.count
+        if isActivelyRunning {
+            if editCount == steps.count && editCount > 0 {
+                return "Editing \(editCount) workspace file\(editCount == 1 ? "" : "s")…"
+            } else if editCount > 0 {
+                return "Inspecting & editing \(steps.count) workspace items…"
+            } else {
+                return "Inspecting \(steps.count) workspace file\(steps.count == 1 ? "" : "s")…"
+            }
+        }
         if editCount == steps.count && editCount > 0 {
             return "Edited \(editCount) workspace file\(editCount == 1 ? "" : "s")"
         } else if editCount > 0 {
@@ -448,11 +501,15 @@ public struct CascadeEvidenceGroupCardView: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "doc.on.doc")
-                        .foregroundStyle(StepCardPalette.periwinkle)
+                    if isActivelyRunning {
+                        AntigravityRunningArcIndicatorView(isAnimated: true)
+                    } else {
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(StepCardPalette.periwinkle)
+                    }
                     Text(summaryTitle)
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(AntigravityTheme.inkReading)
+                        .foregroundStyle(isActivelyRunning ? StepCardPalette.periwinkle : AntigravityTheme.inkReading)
                     Spacer()
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
@@ -539,6 +596,10 @@ public struct CascadeStepCellView: View {
         self.step = step
     }
 
+    private var shouldAnimateLive: Bool {
+        !store.isVerificationMode || store.isLiveBackendConnected
+    }
+
     public var body: some View {
         switch step.type {
         case .userInput:
@@ -549,17 +610,41 @@ public struct CascadeStepCellView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("step-user-\(step.stepIndex)")
         case .plannerResponse, .notifyUser:
+            let stepIsActive = (step.status == .inProgress || step.status == .pending)
+            let thinking = step.plannerResponse?.thinking ?? ""
+            let prose = step.plannerResponse?.response ?? ""
+            let isStreamingThought = stepIsActive
+                && prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && shouldAnimateLive
+
             VStack(alignment: .leading, spacing: 8) {
-                if let thinking = step.plannerResponse?.thinking, !thinking.isEmpty {
+                if !thinking.isEmpty || isStreamingThought {
                     CollapsibleThoughtRowView(
-                        durationSeconds: max(1, Int(step.plannerResponse?.thinkingDurationSeconds ?? 4)),
-                        reasoningSummary: thinking
+                        durationSeconds: max(1, Int(step.plannerResponse?.thinkingDurationSeconds ?? 1)),
+                        reasoningSummary: thinking,
+                        isStreaming: isStreamingThought,
+                        startedAt: step.createdAt
                     )
                 }
-                if let prose = step.plannerResponse?.response, !prose.isEmpty {
+                if !prose.isEmpty {
                     AntigravityMarkdownView(markdown: prose, variant: .assistant)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("step-prose-\(step.stepIndex)")
+
+                    if stepIsActive && shouldAnimateLive {
+                        HStack(spacing: 7) {
+                            AntigravityFourDotLoadingView(
+                                isAnimated: true,
+                                dotSize: 4.0,
+                                spacing: 3.0,
+                                tint: StepCardPalette.periwinkle
+                            )
+                            Text("Generating…")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(StepCardPalette.periwinkle)
+                        }
+                        .padding(.top, 2)
+                    }
                 }
                 if !store.isVerificationMode,
                    let refs = step.plannerResponse?.referencedFiles,
@@ -600,6 +685,14 @@ public struct CascadeStepCellView: View {
                                 Text(code == 0 ? "exit 0" : "exit \(code)")
                                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                                     .foregroundStyle(code == 0 ? StepCardPalette.emeraldDone : AntigravityTheme.statusError)
+                            } else if (step.status == .inProgress || step.status == .pending) && shouldAnimateLive {
+                                HStack(spacing: 5) {
+                                    AntigravityRunningArcIndicatorView(isAnimated: true)
+                                        .scaleEffect(0.82)
+                                    Text("running")
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(StepCardPalette.periwinkle)
+                                }
                             }
                         }
                         if let out = cmd.outputPreview, !out.isEmpty {

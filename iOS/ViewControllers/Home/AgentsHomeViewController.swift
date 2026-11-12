@@ -787,6 +787,10 @@ public struct AgentsHomeViewController: View {
         }
     }
 
+    private var shouldAnimateLive: Bool {
+        !store.isVerificationMode || store.isLiveBackendConnected
+    }
+
     private func conversationRow(item: AgentConversationItem, showProjectSlug: Bool) -> some View {
         Button {
             triggerOpenConversation(item.id)
@@ -805,7 +809,7 @@ public struct AgentsHomeViewController: View {
                                 .lineLimit(1)
                             Spacer(minLength: 6)
                             if item.indicator == .runningArc {
-                                AntigravityFourDotLoadingView(isAnimated: store.isLiveBackendConnected)
+                                AntigravityFourDotLoadingView(isAnimated: shouldAnimateLive)
                                     .accessibilityElement(children: .ignore)
                                     .accessibilityLabel("Running")
                                     .accessibilityIdentifier("loading-four-dots-\(item.id)")
@@ -895,7 +899,7 @@ public struct AgentsHomeViewController: View {
     private func leadingStatusIndicator(_ style: IndicatorStyle) -> some View {
         switch style {
         case .runningArc:
-            AntigravityRunningArcIndicatorView(isAnimated: store.isLiveBackendConnected)
+            AntigravityRunningArcIndicatorView(isAnimated: shouldAnimateLive)
         case .needsReviewHalo:
             ZStack {
                 Circle()

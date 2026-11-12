@@ -165,7 +165,9 @@ public final class AntigravitySessionStore {
     private var summaryPollingTask: Task<Void, Never>? = nil
     private var stepPollingTask: Task<Void, Never>? = nil
     private var locallyViewedAtByCascadeId: [String: Date] = [:]
+    private var optimisticActiveUntilByCascadeId: [String: Date] = [:]
     private var consecutiveSyncFailures: Int = 0
+    private var backgroundPollCounter: Int = 0
     private var syncedConfigCascadeIds: Set<String> = []
 
     public init(
@@ -904,6 +906,8 @@ public final class AntigravitySessionStore {
         isLiveBackendConnected = false
         cloudAgentWarmingUp = false
         consecutiveSyncFailures = 0
+        backgroundPollCounter = 0
+        optimisticActiveUntilByCascadeId.removeAll()
         syncedConfigCascadeIds.removeAll()
         rpcClient = nil
         lastPingLatencyMs = nil
@@ -1506,7 +1510,7 @@ public final class AntigravitySessionStore {
                 let isRelay = (self?.activeHost.channel == .cloudRelay)
                 let intervalNs: UInt64 = {
                     if isRelay {
-                        return (self?.isLiveBackendConnected == true) ? 4_000_000_000 : 3_000_000_000
+                        return (self?.isLiveBackendConnected == true) ? 7_000_000_000 : 3_000_000_000
                     }
                     return (self?.isLiveBackendConnected == true) ? 1_500_000_000 : 2_000_000_000
                 }()
@@ -1542,6 +1546,11 @@ public final class AntigravitySessionStore {
                     merged.isArchived = summaries[idx].isArchived || decoded.isArchived
                     merged.stepCount = max(prevStepCount, decoded.stepCount)
                     merged.cloudProjectId = decoded.cloudProjectId ?? summaries[idx].cloudProjectId
+                    if let optimisticExpiry = optimisticActiveUntilByCascadeId[cid],
+                       optimisticExpiry > Date(),
+                       merged.status != .waiting && merged.status != .blocked && merged.status != .error {
+                        merged.status = .inProgress
+                    }
                     if merged.stepCount > prevStepCount && activeRoute != .cascadeChat(cid) {
                         merged.isUnread = true
                         locallyViewedAtByCascadeId.removeValue(forKey: cid)
@@ -1594,8 +1603,68 @@ public final class AntigravitySessionStore {
         }
     }
 
+    /// Reconciles summary streaming state from fetched trajectory steps without prematurely flipping
+    /// an active turn to `.done` while the agent is preparing its first step or thinking between tool calls.
+    public static func reconcileSummaryStreamingStatus(
+        currentStatus: CortexStepStatus,
+        remoteSteps: [CascadeStep],
+        withinOptimisticSendWindow: Bool
+    ) -> (status: CortexStepStatus, stillActive: Bool) {
+        if remoteSteps.contains(where: { $0.status == .waiting || $0.status == .blocked }) {
+            return (.waiting, false)
+        }
+        if remoteSteps.contains(where: { $0.status == .inProgress || $0.status == .pending }) {
+            return (.inProgress, true)
+        }
+        if let lastStep = remoteSteps.last, (lastStep.status == .error || lastStep.status == .cancelled) {
+            return (lastStep.status, false)
+        }
+
+        let lastUserIdx = remoteSteps.lastIndex(where: { $0.type == .userInput })
+        let turnTail: ArraySlice<CascadeStep> = {
+            if let lastUserIdx {
+                return remoteSteps[(lastUserIdx + 1)...]
+            }
+            return remoteSteps[...]
+        }()
+        let hasCompletedAssistantReply = turnTail.contains { step in
+            (step.type == .plannerResponse || step.type == .notifyUser)
+                && step.status == .done
+                && !(step.plannerResponse?.response ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let lastVisible = remoteSteps.last(where: { $0.hasRenderableChatContent }) ?? remoteSteps.last
+        let endsMidTurn: Bool = {
+            guard let lastVisible else { return remoteSteps.isEmpty }
+            if lastVisible.status == .error || lastVisible.status == .cancelled {
+                return false
+            }
+            switch lastVisible.type {
+            case .userInput, .taskBoundary, .viewFile, .viewContentChunk, .search, .listDirectory, .codeAction:
+                return true
+            case .runCommand:
+                return lastVisible.runCommand?.exitCode == nil || !hasCompletedAssistantReply
+            default:
+                return false
+            }
+        }()
+
+        if withinOptimisticSendWindow && !hasCompletedAssistantReply {
+            return (.inProgress, true)
+        }
+        if currentStatus == .inProgress || currentStatus == .pending {
+            if hasCompletedAssistantReply && !endsMidTurn {
+                return (.done, false)
+            }
+            if remoteSteps.isEmpty || endsMidTurn || !hasCompletedAssistantReply {
+                return (.inProgress, true)
+            }
+            return (.done, false)
+        }
+        return (currentStatus, false)
+    }
+
     /// Synchronizes `GetCascadeTrajectorySteps` (`stepOffset` JSON `<600`, Binary Protobuf `>=600`) for `cascadeId`.
-    /// Polls every 450ms while the agent turn is actively streaming (`inProgress` or `pending`), and every 1.2s
+    /// Polls every 350ms while the agent turn is actively streaming (`inProgress` or `pending`), and every 1.0s
     /// while the user is viewing the conversation (`activeRoute == .cascadeChat(cascadeId)`) so PC/Cloud-originated
     /// messages appear on iOS immediately.
     public func syncStepsForCascade(_ cascadeId: String, pollUntilIdle: Bool = true) {
@@ -1606,6 +1675,7 @@ public final class AntigravitySessionStore {
         if (stepsByCascadeId[cascadeId] ?? []).isEmpty {
             isLoadingSteps = true
         }
+        let storeRef = projectionStore
 
         stepPollingTask = Task { [weak self] in
             defer {
@@ -1613,8 +1683,18 @@ public final class AntigravitySessionStore {
                     self?.isLoadingSteps = false
                 }
             }
+            if (self?.stepsByCascadeId[cascadeId] ?? []).isEmpty {
+                let cached = await storeRef.loadProjectedSteps(cascadeId: cascadeId)
+                if !cached.isEmpty, let self, (self.stepsByCascadeId[cascadeId] ?? []).isEmpty {
+                    self.stepsByCascadeId[cascadeId] = cached
+                    if self.activeCascadeId == cascadeId {
+                        self.isLoadingSteps = false
+                    }
+                }
+            }
+
             var attempts = 0
-            let maxAttempts = pollUntilIdle ? 360 : 1
+            let maxAttempts = pollUntilIdle ? 10_000 : 1
             while !Task.isCancelled && attempts < maxAttempts {
                 attempts += 1
                 let summaryMeta = self?.summaries.first(where: { $0.cascadeId == cascadeId })
@@ -1635,8 +1715,11 @@ public final class AntigravitySessionStore {
                     if self.activeCascadeId == cascadeId {
                         self.isLoadingSteps = false
                     }
+
+                    let withinOptimisticWindow = (self.optimisticActiveUntilByCascadeId[cascadeId].map { $0 > Date() } ?? false)
                     if !remoteSteps.isEmpty {
                         self.stepsByCascadeId[cascadeId] = remoteSteps
+                        await storeRef.saveProjectedSteps(remoteSteps, for: cascadeId)
                         if !self.syncedConfigCascadeIds.contains(cascadeId),
                            let latestCfgStep = remoteSteps.last(where: {
                                $0.type == .userInput && ($0.recordedExecutionMode != nil || $0.recordedModelId != nil)
@@ -1654,29 +1737,40 @@ public final class AntigravitySessionStore {
                                !firstPrompt.isEmpty {
                                 self.summaries[sumIdx].title = String(firstPrompt.prefix(56))
                             }
-                            if remoteSteps.contains(where: { $0.status == .waiting }) {
-                                self.summaries[sumIdx].status = .waiting
-                            } else if remoteSteps.contains(where: { $0.status == .inProgress || $0.status == .pending }) {
-                                self.summaries[sumIdx].status = .inProgress
-                            } else if self.summaries[sumIdx].status == .inProgress || self.summaries[sumIdx].status == .pending {
-                                self.summaries[sumIdx].status = .done
+                            let reconciled = Self.reconcileSummaryStreamingStatus(
+                                currentStatus: self.summaries[sumIdx].status,
+                                remoteSteps: remoteSteps,
+                                withinOptimisticSendWindow: withinOptimisticWindow
+                            )
+                            self.summaries[sumIdx].status = reconciled.status
+                            stillActive = reconciled.stillActive
+                            if !reconciled.stillActive {
+                                self.optimisticActiveUntilByCascadeId.removeValue(forKey: cascadeId)
                             }
                             self.summaries[sumIdx].statusSubtitle = AntigravityRPCClient.buildLiveStatusSubtitle(
                                 status: self.summaries[sumIdx].status,
                                 stepCount: self.summaries[sumIdx].stepCount,
                                 isUnread: self.summaries[sumIdx].isUnread
                             )
+                        } else {
+                            stillActive = remoteSteps.contains { $0.status == .inProgress || $0.status == .pending }
+                                || withinOptimisticWindow
                         }
-                        stillActive = remoteSteps.contains { $0.status == .inProgress || $0.status == .pending }
-                            || self.summaries.first(where: { $0.cascadeId == cascadeId })?.status == .inProgress
+                    } else {
+                        stillActive = withinOptimisticWindow
+                            || summaryMeta?.status == .inProgress
+                            || summaryMeta?.status == .pending
                     }
                 } catch {
                     if let self, !Task.isCancelled {
                         if Self.isBackendOfflineError(error) && self.activeHost.channel != .cloudRelay {
                             self.markBackendOffline(error: error)
                         }
-                        if self.activeCascadeId == cascadeId, (self.stepsByCascadeId[cascadeId] ?? []).isEmpty {
-                            self.stepLoadErrorText = error.localizedDescription
+                        if self.activeCascadeId == cascadeId {
+                            self.isLoadingSteps = false
+                            if (self.stepsByCascadeId[cascadeId] ?? []).isEmpty {
+                                self.stepLoadErrorText = error.localizedDescription
+                            }
                         }
                     }
                     if !pollUntilIdle { break }
@@ -1690,7 +1784,8 @@ public final class AntigravitySessionStore {
                 if !stillActive && !isViewingThisChat {
                     break
                 }
-                let sleepNs: UInt64 = stillActive ? 450_000_000 : 1_200_000_000
+                let isHostOffline = !self.isLiveBackendConnected || !self.activeHost.isOnline
+                let sleepNs: UInt64 = stillActive ? 350_000_000 : (isHostOffline ? 2_500_000_000 : 1_000_000_000)
                 try? await Task.sleep(nanoseconds: sleepNs)
             }
         }
@@ -2071,10 +2166,15 @@ public final class AntigravitySessionStore {
         defer { isRefreshingSummaries = false }
         guard let client = rpcClient else { return }
 
+        backgroundPollCounter += 1
         let isRelay = (activeHost.channel == .cloudRelay)
-        let syncTimeout: TimeInterval = isRelay ? 10.0 : 3.5
+        let syncTimeout: TimeInterval = isRelay ? 14.0 : 3.5
+        let useLightweight = isRelay && (backgroundPollCounter % 4 != 1) && summaryStreamTask != nil
         do {
-            let federated = try await client.fetchFederatedWorkspacesAndSummaries(timeoutInterval: syncTimeout)
+            let federated = try await client.fetchFederatedWorkspacesAndSummaries(
+                timeoutInterval: syncTimeout,
+                lightweightPoll: useLightweight
+            )
             consecutiveSyncFailures = 0
             cloudAgentWarmingUp = federated.cloudWarmingUp
 
@@ -2090,6 +2190,7 @@ public final class AntigravitySessionStore {
             let existingById = Dictionary(uniqueKeysWithValues: summaries.map { ($0.cascadeId, $0) })
             let remoteIds = Set(remoteSummaries.map(\.cascadeId))
             var shouldResyncActiveCascade = false
+            let now = Date()
 
             var mergedList: [CascadeSummary] = remoteSummaries.map { remote in
                 var copy = remote
@@ -2107,20 +2208,25 @@ public final class AntigravitySessionStore {
                         copy.originInstanceUuid = existing.originInstanceUuid
                         copy.originHostName = copy.originHostName ?? existing.originHostName
                     }
+                    if let optimisticExpiry = optimisticActiveUntilByCascadeId[remote.cascadeId],
+                       optimisticExpiry > now,
+                       copy.status != .waiting && copy.status != .blocked && copy.status != .error {
+                        copy.status = .inProgress
+                    }
                     if hasNewActivity {
                         if activeRoute != .cascadeChat(remote.cascadeId) {
                             copy.isUnread = true
                             locallyViewedAtByCascadeId.removeValue(forKey: remote.cascadeId)
                         } else {
                             copy.isUnread = false
-                            locallyViewedAtByCascadeId[remote.cascadeId] = Date()
+                            locallyViewedAtByCascadeId[remote.cascadeId] = now
                         }
                     }
                     if remote.cascadeId == activeCascadeId && (
                         hasNewActivity
                             || remote.status != existing.status
-                            || remote.status == .inProgress
-                            || remote.status == .pending
+                            || copy.status == .inProgress
+                            || copy.status == .pending
                     ) {
                         shouldResyncActiveCascade = true
                     }
@@ -2205,7 +2311,7 @@ public final class AntigravitySessionStore {
         } catch {
             if Self.isBackendOfflineError(error) {
                 consecutiveSyncFailures += 1
-                let failureThreshold = isRelay ? 2 : 1
+                let failureThreshold = isRelay ? 3 : 1
                 if consecutiveSyncFailures >= failureThreshold {
                     markBackendOffline(error: error)
                 }
@@ -2474,6 +2580,11 @@ public final class AntigravitySessionStore {
                     }
                 }
 
+                if let self, !targetCascadeId.isEmpty {
+                    self.optimisticActiveUntilByCascadeId[targetCascadeId] = Date().addingTimeInterval(45)
+                    self.syncStepsForCascade(targetCascadeId, pollUntilIdle: true)
+                }
+
                 try await clientRef.sendUserCascadeMessage(
                     cascadeId: targetCascadeId,
                     message: messageBody,
@@ -2498,10 +2609,17 @@ public final class AntigravitySessionStore {
                 }
             } catch {
                 if let self {
-                    self.stepLoadErrorText = "Failed to send message: \(error.localizedDescription)"
-                    if let sumIdx = self.summaries.firstIndex(where: { $0.cascadeId == targetCascadeId }) {
-                        self.summaries[sumIdx].status = .done
-                        self.summaries[sumIdx].statusSubtitle = "Send failed · Tap to retry"
+                    let stepsAdvanced = (self.stepsByCascadeId[targetCascadeId]?.count ?? 0) > currentSteps.count
+                    if stepsAdvanced && !targetCascadeId.isEmpty {
+                        // Turn already started streaming on backend despite unary HTTP timeout; keep polling steps
+                        self.syncStepsForCascade(targetCascadeId, pollUntilIdle: true)
+                    } else {
+                        self.optimisticActiveUntilByCascadeId.removeValue(forKey: targetCascadeId)
+                        self.stepLoadErrorText = "Failed to send message: \(error.localizedDescription)"
+                        if let sumIdx = self.summaries.firstIndex(where: { $0.cascadeId == targetCascadeId }) {
+                            self.summaries[sumIdx].status = .done
+                            self.summaries[sumIdx].statusSubtitle = "Send failed · Tap to retry"
+                        }
                     }
                 }
             }
@@ -2509,6 +2627,7 @@ public final class AntigravitySessionStore {
     }
 
     public func stopActiveCascadeStreaming() {
+        optimisticActiveUntilByCascadeId.removeValue(forKey: activeCascadeId)
         guard var currentSteps = stepsByCascadeId[activeCascadeId] else { return }
         for i in currentSteps.indices where currentSteps[i].status == .inProgress || currentSteps[i].status == .pending || currentSteps[i].status == .waiting {
             currentSteps[i].status = .cancelled

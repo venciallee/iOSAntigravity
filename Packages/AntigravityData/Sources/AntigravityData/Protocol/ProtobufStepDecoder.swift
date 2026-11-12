@@ -306,6 +306,11 @@ public enum ProtobufStepCodec {
         if rawType == 17 && plannerPayload == nil {
             stepType = .generateImage
         }
+        if (stepType == .plannerResponse || stepType == .notifyUser)
+            && plannerPayload == nil
+            && (stepStatus == .inProgress || stepStatus == .pending) {
+            plannerPayload = PlannerResponsePayload(response: "")
+        }
 
         return CascadeStep(
             cascadeId: cascadeId,

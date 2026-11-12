@@ -524,7 +524,7 @@ public struct ProjectDetailViewController: View {
                                             .lineLimit(1)
                                         Spacer()
                                         if row.indicator == .runningArc {
-                                            AntigravityFourDotLoadingView(isAnimated: store.isLiveBackendConnected)
+                                            AntigravityFourDotLoadingView(isAnimated: shouldAnimateLive)
                                                 .accessibilityElement(children: .ignore)
                                                 .accessibilityLabel("Running")
                                                 .accessibilityIdentifier("loading-four-dots-\(row.id)")
@@ -584,11 +584,15 @@ public struct ProjectDetailViewController: View {
         }
     }
 
+    private var shouldAnimateLive: Bool {
+        !store.isVerificationMode || store.isLiveBackendConnected
+    }
+
     @ViewBuilder
     private func rowIndicator(_ kind: ProjectConversationRowModel.IndicatorKind) -> some View {
         switch kind {
         case .runningArc:
-            AntigravityRunningArcIndicatorView(isAnimated: store.isLiveBackendConnected)
+            AntigravityRunningArcIndicatorView(isAnimated: shouldAnimateLive)
         case .needsReviewHalo:
             ZStack {
                 Circle()

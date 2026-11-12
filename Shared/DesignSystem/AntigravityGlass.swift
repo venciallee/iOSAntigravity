@@ -88,33 +88,43 @@ public struct AntigravityFourDotLoadingView: View {
 
     public var body: some View {
         if isAnimated {
-            TimelineView(.animation(minimumInterval: 0.18)) { context in
-                let step = Int(floor(context.date.timeIntervalSinceReferenceDate / 0.18))
-                let phase = ((step % 4) + 4) % 4
-                fourDotGrid(opacities: Self.phaseOpacities[phase])
+            TimelineView(.periodic(from: .now, by: 0.05)) { context in
+                let t = context.date.timeIntervalSinceReferenceDate * 5.2
+                // Clockwise 2x2 order: top-left (0), top-right (1), bottom-right (3), bottom-left (2)
+                let phaseOffsets: [Double] = [0.0, .pi * 0.5, .pi * 1.5, .pi]
+                let waves = phaseOffsets.map { offset in
+                    0.5 + 0.5 * sin(t - offset)
+                }
+                let opacities = waves.map { 0.18 + 0.82 * $0 }
+                let scales = waves.map { CGFloat(0.80 + 0.36 * $0) }
+                fourDotGrid(opacities: opacities, scales: scales)
             }
         } else {
-            fourDotGrid(opacities: Self.phaseOpacities[0])
+            fourDotGrid(opacities: Self.phaseOpacities[0], scales: [1.0, 1.0, 1.0, 1.0])
         }
     }
 
-    private func fourDotGrid(opacities: [Double]) -> some View {
+    private func fourDotGrid(opacities: [Double], scales: [CGFloat]) -> some View {
         VStack(spacing: spacing) {
             HStack(spacing: spacing) {
                 Circle()
                     .fill(tint.opacity(opacities[0]))
                     .frame(width: dotSize, height: dotSize)
+                    .scaleEffect(scales[0])
                 Circle()
                     .fill(tint.opacity(opacities[1]))
                     .frame(width: dotSize, height: dotSize)
+                    .scaleEffect(scales[1])
             }
             HStack(spacing: spacing) {
                 Circle()
                     .fill(tint.opacity(opacities[2]))
                     .frame(width: dotSize, height: dotSize)
+                    .scaleEffect(scales[2])
                 Circle()
                     .fill(tint.opacity(opacities[3]))
                     .frame(width: dotSize, height: dotSize)
+                    .scaleEffect(scales[3])
             }
         }
         .frame(width: dotSize * 2 + spacing + 2, height: dotSize * 2 + spacing + 2)
@@ -131,8 +141,8 @@ public struct AntigravityRunningArcIndicatorView: View {
 
     public var body: some View {
         if isAnimated {
-            TimelineView(.animation(minimumInterval: 0.04)) { context in
-                let angle = (context.date.timeIntervalSinceReferenceDate * 240.0)
+            TimelineView(.periodic(from: .now, by: 0.033)) { context in
+                let angle = (context.date.timeIntervalSinceReferenceDate * 270.0)
                     .truncatingRemainder(dividingBy: 360.0)
                 arcRing(angleDegrees: angle - 85.0)
             }

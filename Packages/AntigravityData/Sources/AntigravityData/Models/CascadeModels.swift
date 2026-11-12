@@ -48,7 +48,16 @@ public enum CortexStepStatus: Int, Codable, Sendable, CaseIterable {
         if upper.contains("BLOCKED") {
             return .blocked
         }
-        if upper.contains("RUNNING") || upper.contains("IN_PROGRESS") || upper.contains("BUSY") || upper.contains("STREAMING") || upper.contains("EXECUTING") {
+        if upper.contains("RUNNING")
+            || upper.contains("IN_PROGRESS")
+            || upper.contains("GENERAT")
+            || upper.contains("THINK")
+            || upper.contains("PROCESS")
+            || upper.contains("WORK")
+            || upper.contains("ACTIVE")
+            || upper.contains("BUSY")
+            || upper.contains("STREAMING")
+            || upper.contains("EXECUTING") {
             return .inProgress
         }
         if upper.contains("PENDING") || upper.contains("QUEUED") {
@@ -57,7 +66,7 @@ public enum CortexStepStatus: Int, Codable, Sendable, CaseIterable {
         if upper.contains("ERROR") || upper.contains("FAIL") {
             return .error
         }
-        if upper.contains("CANCEL") || upper.contains("ABORT") || upper.contains("STOP") {
+        if upper.contains("CANCEL") || upper.contains("ABORT") || upper.contains("STOP") || upper.contains("INTERRUPT") {
             return .cancelled
         }
         if upper.contains("DONE") || upper.contains("COMPLETE") || upper.contains("FINISH") {
@@ -397,7 +406,7 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
         case .plannerResponse, .notifyUser:
             let hasResponse = !(plannerResponse?.response ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let hasThinking = !(plannerResponse?.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            return hasResponse || hasThinking
+            return hasResponse || hasThinking || status == .inProgress || status == .pending
         case .taskBoundary:
             return taskBoundary != nil
         case .runCommand:

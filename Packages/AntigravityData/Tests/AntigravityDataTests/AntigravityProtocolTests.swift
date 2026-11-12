@@ -1042,6 +1042,88 @@ final class AntigravityProtocolTests: XCTestCase {
             XCTFail("Expected streaming unclosed codeBlock")
         }
     }
+
+    @MainActor
+    func testGeneratingStepStatusAndActiveStreamingLifecycle() async throws {
+        // 1. Upstream JSON step status mapping for active generation & interruption
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CORTEX_STEP_STATUS_GENERATING"), .inProgress)
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CORTEX_STEP_STATUS_THINKING"), .inProgress)
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CASCADE_RUN_STATUS_GENERATING"), .inProgress)
+        XCTAssertEqual(CortexStepStatus.from(jsonName: "CORTEX_STEP_STATUS_INTERRUPTED"), .cancelled)
+
+        // 2. Actively generating PLANNER_RESPONSE with empty prose/thinking is preserved & renderable
+        let generatingJSON: JSONValue = .object([
+            "type": .string("CORTEX_STEP_TYPE_PLANNER_RESPONSE"),
+            "status": .string("CORTEX_STEP_STATUS_GENERATING"),
+            "plannerResponse": .object([
+                "response": .string("")
+            ])
+        ])
+        let generatingStep = try XCTUnwrap(
+            AntigravityRPCClient.decodeJSONStep(generatingJSON, cascadeId: "cid-live", fallbackIndex: 1)
+        )
+        XCTAssertEqual(generatingStep.status, .inProgress)
+        XCTAssertEqual(generatingStep.type, .plannerResponse)
+        XCTAssertNotNil(generatingStep.plannerResponse)
+        XCTAssertTrue(
+            generatingStep.hasRenderableChatContent,
+            "An actively generating plannerResponse step must render live thinking indicator even before first token lands"
+        )
+
+        // 3. Reconcile streaming status: keep .inProgress right after USER_INPUT and between tool calls
+        let userStep = CascadeStep(
+            cascadeId: "cid-live",
+            stepIndex: 0,
+            type: .userInput,
+            status: .done,
+            userInput: "Analyze game_loop performance"
+        )
+        let afterUserOnly = AntigravitySessionStore.reconcileSummaryStreamingStatus(
+            currentStatus: .inProgress,
+            remoteSteps: [userStep],
+            withinOptimisticSendWindow: true
+        )
+        XCTAssertEqual(afterUserOnly.status, .inProgress)
+        XCTAssertTrue(afterUserOnly.stillActive)
+
+        let toolDoneStep = CascadeStep(
+            cascadeId: "cid-live",
+            stepIndex: 1,
+            type: .viewFile,
+            status: .done,
+            viewFile: ViewFilePayload(fileUri: "file:///workspace/game_loop.swift", startLine: 1, endLine: 80)
+        )
+        let betweenToolCalls = AntigravitySessionStore.reconcileSummaryStreamingStatus(
+            currentStatus: .inProgress,
+            remoteSteps: [userStep, toolDoneStep],
+            withinOptimisticSendWindow: false
+        )
+        XCTAssertEqual(betweenToolCalls.status, .inProgress)
+        XCTAssertTrue(betweenToolCalls.stillActive)
+
+        let completedReplyStep = CascadeStep(
+            cascadeId: "cid-live",
+            stepIndex: 2,
+            type: .plannerResponse,
+            status: .done,
+            plannerResponse: PlannerResponsePayload(response: "Finished analyzing `game_loop.swift`.")
+        )
+        let turnCompleted = AntigravitySessionStore.reconcileSummaryStreamingStatus(
+            currentStatus: .inProgress,
+            remoteSteps: [userStep, toolDoneStep, completedReplyStep],
+            withinOptimisticSendWindow: false
+        )
+        XCTAssertEqual(turnCompleted.status, .done)
+        XCTAssertFalse(turnCompleted.stillActive)
+
+        // 4. Cloud v1/... trajectory IDs with slashes persist & reload cleanly in LocalProjectionStore
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("agy_proj_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let cloudCascadeId = "v1/default/jetski_remote_agents_3p/a860e091-c559-4a65-9b8c-ba6efd89c533"
+        let storeA = LocalProjectionStore(storageDirectory: tempDir)
+        await storeA.saveProjectedSteps([userStep, completedReplyStep], for: cloudCascadeId)
+        let storeB = LocalProjectionStore(storageDirectory: tempDir)
+        let reloaded = await storeB.loadProjectedSteps(cascadeId: cloudCascadeId)
+        XCTAssertEqual(reloaded.count, 2)
+    }
 }
-
-

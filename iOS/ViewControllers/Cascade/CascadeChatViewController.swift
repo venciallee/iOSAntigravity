@@ -54,6 +54,18 @@ public struct CascadeChatViewController: View {
         return hostTitle
     }
 
+    private var shouldAnimateLive: Bool {
+        !store.isVerificationMode || store.isLiveBackendConnected
+    }
+
+    private var streamingFollowSignature: Int {
+        let lastStep = store.activeSteps.last
+        let proseLen = lastStep?.plannerResponse?.response.count ?? 0
+        let thoughtLen = lastStep?.plannerResponse?.thinking?.count ?? 0
+        let statusRaw = lastStep?.status.rawValue ?? 0
+        return (store.activeSteps.count &* 1_000_003) &+ (proseLen &* 31) &+ (thoughtLen &* 7) &+ statusRaw
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             chatTopNavigationBar
@@ -61,49 +73,61 @@ public struct CascadeChatViewController: View {
             Divider()
                 .overlay(Color.white.opacity(0.06))
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 9) {
-                    if isStaticESDDFixtureView {
-                        staticRateLimiterShowcaseBody
-                    } else if store.displayItems.isEmpty {
-                        emptyOrLoadingSessionCard
-                    } else {
-                        ForEach(store.displayItems) { item in
-                            switch item {
-                            case .single(let step):
-                                CascadeStepCellView(store: store, step: step)
-                            case .evidenceGroup(let groupId, let groupedSteps):
-                                CascadeEvidenceGroupCardView(
-                                    store: store,
-                                    groupId: groupId,
-                                    steps: groupedSteps
-                                )
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 9) {
+                        if isStaticESDDFixtureView {
+                            staticRateLimiterShowcaseBody
+                        } else if store.displayItems.isEmpty {
+                            emptyOrLoadingSessionCard
+                        } else {
+                            ForEach(store.displayItems) { item in
+                                switch item {
+                                case .single(let step):
+                                    CascadeStepCellView(store: store, step: step)
+                                case .evidenceGroup(let groupId, let groupedSteps):
+                                    CascadeEvidenceGroupCardView(
+                                        store: store,
+                                        groupId: groupId,
+                                        steps: groupedSteps
+                                    )
+                                }
+                            }
+
+                            if store.isCascadeStreaming || store.activeSummary?.status == .inProgress || store.activeSummary?.status == .pending {
+                                HStack(spacing: 10) {
+                                    AntigravityFourDotLoadingView(
+                                        isAnimated: shouldAnimateLive,
+                                        dotSize: 4.5,
+                                        spacing: 3.5,
+                                        tint: Self.periwinkle
+                                    )
+                                    Text("Agent is thinking and executing steps...")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                        .foregroundStyle(AntigravityTheme.inkSecondary)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(AntigravityTheme.surfaceCard.opacity(0.65))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .accessibilityIdentifier("chat-inline-four-dot-loading")
                             }
                         }
 
-                        if store.isCascadeStreaming || store.activeSummary?.status == .inProgress || store.activeSummary?.status == .pending {
-                            HStack(spacing: 10) {
-                                AntigravityFourDotLoadingView(
-                                    isAnimated: store.isLiveBackendConnected,
-                                    dotSize: 4.5,
-                                    spacing: 3.5,
-                                    tint: Self.periwinkle
-                                )
-                                Text("Agent is thinking and executing steps...")
-                                    .font(.system(size: 13.5, weight: .medium))
-                                    .foregroundStyle(AntigravityTheme.inkSecondary)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(AntigravityTheme.surfaceCard.opacity(0.65))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .accessibilityIdentifier("chat-inline-four-dot-loading")
-                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id("chat-bottom-anchor")
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                }
+                .onChange(of: streamingFollowSignature) { _, _ in
+                    guard !isStaticESDDFixtureView, store.isAutoScrollPinnedToBottom else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        scrollProxy.scrollTo("chat-bottom-anchor", anchor: .bottom)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
             }
 
             if !store.displayItems.isEmpty, let errText = store.stepLoadErrorText {
@@ -145,7 +169,13 @@ public struct CascadeChatViewController: View {
                 .padding(.bottom, 6)
         }
         .background(AntigravityTheme.canvasObsidian)
+        .onChange(of: store.isCascadeStreaming) { _, streaming in
+            if streaming {
+                isTurnStopped = false
+            }
+        }
         .task(id: store.activeCascadeId) {
+            isTurnStopped = false
             if (store.hasPairedBackend || store.isLiveBackendConnected) && !store.activeCascadeId.isEmpty {
                 store.syncStepsForCascade(store.activeCascadeId, pollUntilIdle: true)
             }
@@ -188,7 +218,7 @@ public struct CascadeChatViewController: View {
         if (store.hasPairedBackend || store.isLiveBackendConnected) && store.isLoadingSteps {
             HStack(spacing: 12) {
                 AntigravityFourDotLoadingView(
-                    isAnimated: true,
+                    isAnimated: shouldAnimateLive,
                     dotSize: 4.5,
                     spacing: 3.5,
                     tint: Self.periwinkle
@@ -382,9 +412,13 @@ public struct CascadeChatViewController: View {
         }()
 
         return HStack(spacing: 8) {
-            Circle()
-                .fill(isTurnStopped ? AntigravityTheme.inkSecondary : (store.pendingWaitingStep != nil ? Self.warmAmber : Self.periwinkle))
-                .frame(width: 8, height: 8)
+            if !isStaticESDDFixtureView && !isTurnStopped && store.pendingWaitingStep == nil && store.isCascadeStreaming {
+                AntigravityRunningArcIndicatorView(isAnimated: shouldAnimateLive)
+            } else {
+                Circle()
+                    .fill(isTurnStopped ? AntigravityTheme.inkSecondary : (store.pendingWaitingStep != nil ? Self.warmAmber : Self.periwinkle))
+                    .frame(width: 8, height: 8)
+            }
 
             Text(statusLabel)
                 .font(.system(size: 13, weight: .medium))
