@@ -22,7 +22,9 @@ public enum CloudRelayCookieExtractor {
                 continue
             }
             let domain = cookie.domain.lowercased()
-            guard domain.hasSuffix("google.com") || domain.contains("antigravity.google") else {
+            let cleanDomain = domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            guard domain.hasSuffix("google.com")
+                || RemoteHostInstance.isAntigravityRelayHost(cleanDomain) else {
                 continue
             }
             // Prefer `.google.com` / `antigravity.google.com` entries first
@@ -45,7 +47,9 @@ public enum CloudRelayCookieExtractor {
         let allCookies = await store.allCookies()
         for cookie in allCookies {
             let domain = cookie.domain.lowercased()
-            if domain.hasSuffix("google.com") || domain.contains("antigravity.google") {
+            let cleanDomain = domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            if domain.hasSuffix("google.com")
+                || RemoteHostInstance.isAntigravityRelayHost(cleanDomain) {
                 await store.deleteCookie(cookie)
             }
         }
@@ -62,6 +66,7 @@ public struct CloudRelaySignInSheet: View {
     public var onDismiss: () -> Void
 
     @State private var currentURLDisplay: String = "antigravity.google.com"
+    @State private var latestFullURLString: String? = nil
     @State private var isLoadingPage: Bool = true
     @State private var detectedCookiesReady: Bool = false
 
@@ -76,9 +81,19 @@ public struct CloudRelaySignInSheet: View {
     }
 
     private var initialURL: URL {
-        let parsed = RemoteHostInstance.parseRemoteControlTarget(targetRelayURLString)
-        let urlStr = parsed?.canonicalRelayURLString ?? SAPISIDHashGenerator.defaultOrigin
-        return URL(string: urlStr) ?? URL(string: SAPISIDHashGenerator.defaultOrigin)!
+        let trimmed = targetRelayURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parsed = RemoteHostInstance.parseRemoteControlTarget(trimmed) {
+            if let orig = parsed.originalURLString,
+               let origURL = URL(string: orig),
+               let scheme = origURL.scheme?.lowercased(),
+               (scheme == "https" || scheme == "http") {
+                return origURL
+            }
+            if let canonicalURL = URL(string: parsed.canonicalRelayURLString) {
+                return canonicalURL
+            }
+        }
+        return URL(string: SAPISIDHashGenerator.defaultOrigin)!
     }
 
     public var body: some View {
@@ -117,8 +132,10 @@ public struct CloudRelaySignInSheet: View {
                 Button {
                     Task {
                         if let cookie = await CloudRelayCookieExtractor.readGoogleCookieHeader() {
-                            let parsed = RemoteHostInstance.parseRemoteControlTarget(currentURLDisplay)
-                            onAuthenticated(cookie, nil, parsed?.authUser)
+                            let parsed = latestFullURLString.flatMap {
+                                RemoteHostInstance.parseRemoteControlTarget($0)
+                            }
+                            onAuthenticated(cookie, latestFullURLString, parsed?.authUser)
                         }
                     }
                 } label: {
@@ -147,9 +164,12 @@ public struct CloudRelaySignInSheet: View {
             #if canImport(WebKit) && canImport(UIKit)
             CloudRelayWebViewRepresentable(
                 initialURL: initialURL,
-                onStateChange: { urlStr, loading, cookiesReady in
-                    if let urlStr {
-                        currentURLDisplay = urlStr
+                onStateChange: { hostStr, fullURLStr, loading, cookiesReady in
+                    if let hostStr {
+                        currentURLDisplay = hostStr
+                    }
+                    if let fullURLStr {
+                        latestFullURLString = fullURLStr
                     }
                     isLoadingPage = loading
                     detectedCookiesReady = cookiesReady
@@ -175,7 +195,7 @@ public struct CloudRelaySignInSheet: View {
 #if canImport(WebKit) && canImport(UIKit)
 private struct CloudRelayWebViewRepresentable: UIViewControllerRepresentable {
     let initialURL: URL
-    let onStateChange: (String?, Bool, Bool) -> Void
+    let onStateChange: (String?, String?, Bool, Bool) -> Void
     let onAutoCapturedSession: (String, String?, String?) -> Void
 
     func makeUIViewController(context: Context) -> CloudRelayWebAuthViewController {
@@ -191,7 +211,7 @@ private struct CloudRelayWebViewRepresentable: UIViewControllerRepresentable {
 @MainActor
 private final class CloudRelayWebAuthViewController: UIViewController, WKNavigationDelegate, WKHTTPCookieStoreObserver {
     private let initialURL: URL
-    var onStateChange: ((String?, Bool, Bool) -> Void)?
+    var onStateChange: ((String?, String?, Bool, Bool) -> Void)?
     var onAutoCapturedSession: ((String, String?, String?) -> Void)?
 
     private var webView: WKWebView!
@@ -247,7 +267,7 @@ private final class CloudRelayWebAuthViewController: UIViewController, WKNavigat
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        onStateChange?(webView.url?.host ?? initialURL.host, true, false)
+        onStateChange?(webView.url?.host ?? initialURL.host, webView.url?.absoluteString, true, false)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -262,9 +282,9 @@ private final class CloudRelayWebAuthViewController: UIViewController, WKNavigat
         let host = currentURL?.host?.lowercased() ?? ""
         let cookieHeader = await CloudRelayCookieExtractor.readGoogleCookieHeader()
         let hasCookies = (cookieHeader != nil)
-        onStateChange?(currentURL?.host ?? initialURL.host, webView.isLoading, hasCookies)
+        onStateChange?(currentURL?.host ?? initialURL.host, currentURL?.absoluteString, webView.isLoading, hasCookies)
 
-        let isOnAntigravityRelay = host.contains("antigravity.google")
+        let isOnAntigravityRelay = RemoteHostInstance.isAntigravityRelayHost(host)
         if autoFinishIfOnRelayHost && isOnAntigravityRelay, let cookieHeader {
             didCompleteCapture = true
             let finalURLStr = currentURL?.absoluteString

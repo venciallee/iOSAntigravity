@@ -444,17 +444,23 @@ public struct RemoteHostInstance: Codable, Sendable, Equatable, Identifiable {
         public var conversationId: String?
         public var authUser: String?
         public var relayOrigin: String
+        public var originalURLString: String?
+        public var requiresRedirectResolution: Bool
 
         public init(
             instanceId: String,
             conversationId: String? = nil,
             authUser: String? = nil,
-            relayOrigin: String = "https://antigravity.google.com"
+            relayOrigin: String = "https://antigravity.google.com",
+            originalURLString: String? = nil,
+            requiresRedirectResolution: Bool = false
         ) {
             self.instanceId = instanceId
             self.conversationId = conversationId
             self.authUser = authUser
             self.relayOrigin = relayOrigin
+            self.originalURLString = originalURLString
+            self.requiresRedirectResolution = requiresRedirectResolution
         }
 
         public var canonicalRelayURLString: String {
@@ -466,52 +472,298 @@ public struct RemoteHostInstance: Codable, Sendable, Equatable, Identifiable {
         }
     }
 
+    /// Returns `true` when `rawHost` belongs to an official Antigravity Cloud Relay surface.
+    public static func isAntigravityRelayHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased()
+        if host == "accounts.google.com" || host == "www.google.com" || host == "google.com" {
+            return false
+        }
+        if host == "antigravity.google.com" || host == "antigravity.google"
+            || host.hasSuffix(".antigravity.google.com") || host.hasSuffix(".antigravity.google") {
+            return true
+        }
+        if (host.hasPrefix("antigravity.") || host.contains(".antigravity.") || host.contains("jetski"))
+            && (host.hasSuffix(".google.com") || host.hasSuffix(".google") || host.hasSuffix(".corp.google.com")) {
+            return true
+        }
+        if host == "antigravity.dev" || host.hasSuffix(".antigravity.dev")
+            || host == "antigravity.app" || host.hasSuffix(".antigravity.app") {
+            return true
+        }
+        return false
+    }
+
+    /// Returns `true` when `rawHost` is an official Google shortlink redirector (`g.co`, `c.gle`, `goo.gl`, `*.page.link`).
+    public static func isGoogleShortlinkHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased()
+        return host == "g.co"
+            || host == "c.gle"
+            || host == "goo.gl"
+            || host.hasSuffix(".goo.gl")
+            || host.hasSuffix(".page.link")
+    }
+
+    /// Returns `true` for loopback hosts used by local mock Cloud Relay verification servers.
+    public static func isLoopbackHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased()
+        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+    }
+
+    /// Returns `true` for Direct LAN / Companion Bridge pairing URIs (`antigravity://pair?url=https://192.168.x.x:8787&csrf=...`).
+    public static func isDirectLANPairingURI(_ rawInput: String) -> Bool {
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let comps = URLComponents(string: trimmed),
+              let scheme = comps.scheme?.lowercased(),
+              (scheme == "antigravity" || scheme == "agy" || scheme == "google-antigravity"),
+              let targetURL = comps.queryItems?.first(where: { $0.name == "url" })?.value,
+              !targetURL.isEmpty else {
+            return false
+        }
+        if comps.host?.lowercased() == "pair" {
+            return true
+        }
+        if let csrf = comps.queryItems?.first(where: { $0.name == "csrf" })?.value, !csrf.isEmpty {
+            return true
+        }
+        return false
+    }
+
+    /// Selects the best Cloud Relay target URL after `WKWebView` sign-in completes, preserving
+    /// resolved shortlink destinations while never dropping an explicit scanned `instanceId`.
+    public static func resolveEffectiveRelayTarget(
+        scannedInput: String,
+        webViewFinalURL: String?
+    ) -> String {
+        let trimmedScanned = scannedInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedFinal = webViewFinalURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let scannedTarget = parseRemoteControlTarget(trimmedScanned)
+        let finalTarget = trimmedFinal.isEmpty ? nil : parseRemoteControlTarget(trimmedFinal)
+
+        if let finalTarget, !finalTarget.instanceId.isEmpty {
+            if scannedTarget == nil || scannedTarget?.instanceId.isEmpty == true || scannedTarget?.requiresRedirectResolution == true {
+                return trimmedFinal
+            }
+        }
+        if !trimmedScanned.isEmpty {
+            if let scannedTarget, !scannedTarget.requiresRedirectResolution {
+                return trimmedScanned
+            }
+            if !trimmedFinal.isEmpty {
+                return trimmedFinal
+            }
+            return trimmedScanned
+        }
+        if !trimmedFinal.isEmpty {
+            return trimmedFinal
+        }
+        return "https://antigravity.google.com"
+    }
+
     /// Parses an official Antigravity Remote Control QR URL (`https://antigravity.google.com/r/<id>?p=c%2F<conv>`),
-    /// `/u/<authuser>/r/<id>`, custom test relay `/r/<id>` URLs, or bare device slug/UUIDs.
+    /// `/u/<authuser>/r/<id>`, Google `AccountChooser`/`ServiceLogin` wrappers, Google shortlinks (`g.co`, `c.gle`),
+    /// scheme-less Antigravity links, custom `antigravity://` / `agy://` URIs, JSON payloads, or bare device slugs.
     public static func parseRemoteControlTarget(_ rawInput: String) -> ParsedRemoteControlTarget? {
+        parseRemoteControlTargetInternal(rawInput, depth: 0)
+    }
+
+    private static func parseRemoteControlTargetInternal(
+        _ rawInput: String,
+        depth: Int
+    ) -> ParsedRemoteControlTarget? {
+        guard depth <= 4 else { return nil }
         let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        // Bare instance UUID or device slug (e.g. `lt74xt6l0m-golden-star` or `0f5819ac-9308-40d8-a308-98b55122c533-v2`)
-        if !trimmed.contains("://") && !trimmed.contains("/") && !trimmed.contains(":") && !trimmed.contains(" ") {
-            return ParsedRemoteControlTarget(instanceId: trimmed)
-        }
-
-        guard let url = URL(string: trimmed),
-              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let scheme = comps.scheme?.lowercased(),
-              (scheme == "https" || scheme == "http"),
-              let host = comps.host?.lowercased() else {
+        if isDirectLANPairingURI(trimmed) {
             return nil
         }
 
-        let parts = url.pathComponents.filter { $0 != "/" }
-        let isAntigravityGoogleHost = host.contains("antigravity.google")
-        let rIndex = parts.firstIndex(of: "r")
-        guard isAntigravityGoogleHost || rIndex != nil else {
+        // 1. JSON payload support (`{"url": ...}` or `{"instanceId": ...}`)
+        if trimmed.hasPrefix("{") && trimmed.hasSuffix("}"),
+           let jsonData = trimmed.data(using: .utf8),
+           let dict = (try? JSONSerialization.jsonObject(with: jsonData)) as? [String: Any] {
+            let urlKeys = ["url", "relayUrl", "relay_url", "remoteUrl", "remote_url", "link", "href", "endpoint"]
+            for key in urlKeys {
+                if let urlStr = dict[key] as? String,
+                   let nested = parseRemoteControlTargetInternal(urlStr, depth: depth + 1) {
+                    return nested
+                }
+            }
+            let idKeys = ["instanceId", "instance_id", "instance", "uuid", "deviceId", "device_id", "hostId", "host_id", "slug"]
+            for key in idKeys {
+                if let rawId = dict[key] as? String {
+                    let cleanId = rawId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !cleanId.isEmpty {
+                        let conv = (dict["conversationId"] ?? dict["conversation_id"] ?? dict["cascadeId"] ?? dict["cascade_id"]) as? String
+                        let auth = (dict["authUser"] ?? dict["authuser"] ?? dict["auth_user"]) as? String
+                        return ParsedRemoteControlTarget(
+                            instanceId: cleanId,
+                            conversationId: conv,
+                            authUser: auth
+                        )
+                    }
+                }
+            }
             return nil
         }
 
-        var instanceId = ""
-        if let rIndex, parts.count > rIndex + 1 {
-            instanceId = parts[rIndex + 1]
+        // 2. Multi-word pasted CLI / prose text containing an embedded URL
+        if trimmed.contains(where: \.isWhitespace) {
+            let trimPunctuation = CharacterSet(charactersIn: "\"'<>()[]{},;")
+            for rawToken in trimmed.components(separatedBy: .whitespacesAndNewlines) where !rawToken.isEmpty {
+                var token = rawToken.trimmingCharacters(in: trimPunctuation)
+                while token.hasSuffix(".") {
+                    token.removeLast()
+                }
+                let lowerToken = token.lowercased()
+                if lowerToken.contains("://")
+                    || lowerToken.contains("antigravity.")
+                    || lowerToken.contains(".google")
+                    || lowerToken.hasPrefix("g.co/")
+                    || lowerToken.hasPrefix("c.gle/") {
+                    if let extracted = parseRemoteControlTargetInternal(token, depth: depth + 1) {
+                        return extracted
+                    }
+                }
+            }
+            return nil
         }
 
-        var authUser: String? = comps.queryItems?.first(where: { $0.name.lowercased() == "authuser" })?.value
-        if authUser == nil,
-           let uIndex = parts.firstIndex(of: "u"),
-           parts.count > uIndex + 1,
-           parts[uIndex + 1].allSatisfy(\.isNumber) {
-            authUser = parts[uIndex + 1]
+        // 3. Inputs without an explicit `://` scheme (scheme-less URLs vs bare device slugs/UUIDs)
+        if !trimmed.contains("://") {
+            let lower = trimmed.lowercased()
+            let looksLikeSchemelessURL =
+                trimmed.contains("/")
+                || trimmed.contains("?")
+                || lower.hasPrefix("antigravity.")
+                || lower.contains(".google.com")
+                || lower.hasSuffix(".google")
+                || lower.hasPrefix("g.co")
+                || lower.hasPrefix("c.gle")
+                || lower.hasPrefix("goo.gl")
+                || lower.contains(".page.link")
+
+            if looksLikeSchemelessURL {
+                return parseRemoteControlTargetInternal("https://\(trimmed)", depth: depth + 1)
+            }
+
+            // Bare instance UUID or device slug (e.g. `lt74xt6l0m-golden-star` or `0f5819ac-9308-40d8-a308-98b55122c533-v2`)
+            let isBareSlug =
+                trimmed.count >= 3
+                && trimmed.count <= 128
+                && !trimmed.contains(":")
+                && !trimmed.contains(".")
+                && !trimmed.contains("@")
+                && !trimmed.contains("=")
+                && !trimmed.contains("&")
+                && trimmed.unicodeScalars.allSatisfy { scalar in
+                    CharacterSet.alphanumerics.contains(scalar) || scalar == "-" || scalar == "_"
+                }
+            if isBareSlug {
+                return ParsedRemoteControlTarget(instanceId: trimmed)
+            }
+            return nil
         }
 
-        var conversationId: String? = nil
-        if let queryItems = comps.queryItems,
-           let pValue = queryItems.first(where: { $0.name == "p" })?.value?.removingPercentEncoding,
-           pValue.hasPrefix("c/") {
-            conversationId = String(pValue.dropFirst(2))
+        guard let comps = URLComponents(string: trimmed),
+              let scheme = comps.scheme?.lowercased() else {
+            return nil
         }
 
+        // 4. Custom Antigravity deep-link schemes (`antigravity://`, `agy://`, `google-antigravity://`)
+        if scheme == "antigravity" || scheme == "agy" || scheme == "google-antigravity" {
+            let hostLower = comps.host?.lowercased() ?? ""
+            if scheme == "antigravity" && hostLower == "verify" {
+                return nil
+            }
+            if let nested = unwrapRedirectQueryParameter(from: comps, depth: depth) {
+                return nested
+            }
+            let parts = comps.path.split(separator: "/").map(String.init)
+            var extracted = extractMetadata(parts: parts, queryItems: comps.queryItems, fragment: comps.fragment)
+            if extracted.instanceId.isEmpty {
+                if hostLower == "r", let firstPart = parts.first {
+                    extracted.instanceId = firstPart
+                } else if ["remote", "remote-control", "connect", "instance", "host", "open", ""].contains(hostLower),
+                          let firstPart = parts.first,
+                          !["c", "u"].contains(firstPart.lowercased()) {
+                    extracted.instanceId = firstPart
+                } else if !hostLower.isEmpty,
+                          !["remote", "remote-control", "connect", "instance", "host", "open", "c", "u"].contains(hostLower),
+                          parts.isEmpty {
+                    extracted.instanceId = comps.host ?? ""
+                }
+            }
+            return ParsedRemoteControlTarget(
+                instanceId: extracted.instanceId,
+                conversationId: extracted.conversationId,
+                authUser: extracted.authUser,
+                relayOrigin: "https://antigravity.google.com",
+                originalURLString: trimmed
+            )
+        }
+
+        // 5. Standard `https://` / `http://` URLs
+        guard (scheme == "https" || scheme == "http"),
+              let rawHost = comps.host,
+              !rawHost.isEmpty else {
+            return nil
+        }
+        let host = rawHost.lowercased()
+        let parts = comps.path.split(separator: "/").map(String.init)
+
+        // 5a. Unwrap Google AccountChooser / ServiceLogin / Redirector URLs (`?continue=...`, `?q=...`, `?link=...`)
+        if var nested = unwrapRedirectQueryParameter(from: comps, depth: depth) {
+            if nested.authUser == nil {
+                let outerMeta = extractMetadata(parts: parts, queryItems: comps.queryItems, fragment: comps.fragment)
+                nested.authUser = outerMeta.authUser
+            }
+            nested.originalURLString = trimmed
+            return nested
+        }
+
+        // 5b. Official Google shortlinks (`g.co/...`, `c.gle/...`, `goo.gl/...`, `*.page.link/...`)
+        //     or `accounts.google.com` flows explicitly referencing Antigravity
+        if isGoogleShortlinkHost(host) {
+            guard !parts.isEmpty else { return nil }
+            return ParsedRemoteControlTarget(
+                instanceId: "",
+                conversationId: nil,
+                authUser: nil,
+                relayOrigin: "https://antigravity.google.com",
+                originalURLString: trimmed,
+                requiresRedirectResolution: true
+            )
+        }
+        if host == "accounts.google.com" && (trimmed.lowercased().contains("antigravity") || trimmed.lowercased().contains("jetski")) {
+            return ParsedRemoteControlTarget(
+                instanceId: "",
+                conversationId: nil,
+                authUser: nil,
+                relayOrigin: "https://antigravity.google.com",
+                originalURLString: trimmed,
+                requiresRedirectResolution: true
+            )
+        }
+
+        // 5c. Antigravity Relay hosts vs local mock loopback servers
+        let isAntigravity = isAntigravityRelayHost(host)
+        let isLoopback = isLoopbackHost(host)
+        if isLoopback {
+            let lowerParts = parts.map { $0.lowercased() }
+            let hasRemoteControlPath =
+                lowerParts.contains("r")
+                || lowerParts.contains("remote")
+                || lowerParts.contains("remote-control")
+            guard hasRemoteControlPath else {
+                return nil
+            }
+        } else if !isAntigravity {
+            return nil
+        }
+
+        let extracted = extractMetadata(parts: parts, queryItems: comps.queryItems, fragment: comps.fragment)
         let origin: String
         if let port = comps.port {
             origin = "\(scheme)://\(host):\(port)"
@@ -520,11 +772,154 @@ public struct RemoteHostInstance: Codable, Sendable, Equatable, Identifiable {
         }
 
         return ParsedRemoteControlTarget(
-            instanceId: instanceId,
-            conversationId: conversationId,
-            authUser: authUser,
-            relayOrigin: origin
+            instanceId: extracted.instanceId,
+            conversationId: extracted.conversationId,
+            authUser: extracted.authUser,
+            relayOrigin: origin,
+            originalURLString: trimmed,
+            requiresRedirectResolution: false
         )
+    }
+
+    private static func unwrapRedirectQueryParameter(
+        from comps: URLComponents,
+        depth: Int
+    ) -> ParsedRemoteControlTarget? {
+        let redirectKeys: Set<String> = [
+            "continue", "url", "q", "redirect_uri", "redirect",
+            "target", "link", "deep_link_id", "dest", "destination",
+            "next", "followup"
+        ]
+        var candidateItems: [URLQueryItem] = comps.queryItems ?? []
+        if let fragment = comps.fragment, fragment.contains("="),
+           let fragComps = URLComponents(string: "https://placeholder.invalid?\(fragment)"),
+           let fragItems = fragComps.queryItems {
+            candidateItems.append(contentsOf: fragItems)
+        }
+        for item in candidateItems where redirectKeys.contains(item.name.lowercased()) {
+            guard let rawValue = item.value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !rawValue.isEmpty else {
+                continue
+            }
+            if let direct = parseRemoteControlTargetInternal(rawValue, depth: depth + 1) {
+                return direct
+            }
+            if let onceDecoded = rawValue.removingPercentEncoding,
+               onceDecoded != rawValue,
+               let decoded = parseRemoteControlTargetInternal(onceDecoded, depth: depth + 1) {
+                return decoded
+            }
+        }
+        return nil
+    }
+
+    private static func extractMetadata(
+        parts: [String],
+        queryItems: [URLQueryItem]?,
+        fragment: String?
+    ) -> (instanceId: String, conversationId: String?, authUser: String?) {
+        let markerPrefixes: Set<String> = [
+            "r", "remote", "remote-control", "instances", "instance", "host", "hosts", "d"
+        ]
+        let reservedSegments: Set<String> = [
+            "c", "u", "login", "signin", "settings", "auth"
+        ]
+
+        var instanceId = ""
+        if let markerIdx = parts.firstIndex(where: { markerPrefixes.contains($0.lowercased()) }),
+           parts.count > markerIdx + 1 {
+            let candidate = parts[markerIdx + 1]
+            if !reservedSegments.contains(candidate.lowercased()) {
+                instanceId = candidate
+            }
+        }
+
+        var authUser: String? = nil
+        if let qAuth = queryItems?.first(where: { $0.name.lowercased() == "authuser" })?.value,
+           !qAuth.isEmpty,
+           qAuth.allSatisfy(\.isNumber) {
+            authUser = qAuth
+        } else if let uIndex = parts.firstIndex(where: { $0.lowercased() == "u" }),
+                  parts.count > uIndex + 1,
+                  !parts[uIndex + 1].isEmpty,
+                  parts[uIndex + 1].allSatisfy(\.isNumber) {
+            authUser = parts[uIndex + 1]
+        }
+
+        var conversationId: String? = nil
+        if let queryItems {
+            if let rawP = queryItems.first(where: { $0.name.lowercased() == "p" })?.value {
+                let decodedP = rawP.removingPercentEncoding ?? rawP
+                let normalizedP = decodedP.hasPrefix("/") ? String(decodedP.dropFirst()) : decodedP
+                if normalizedP.hasPrefix("c/") {
+                    let cid = String(normalizedP.dropFirst(2))
+                    if !cid.isEmpty {
+                        conversationId = cid
+                    }
+                }
+            }
+            if conversationId == nil {
+                let convKeys: Set<String> = [
+                    "c", "cascade", "cascade_id", "cascadeid",
+                    "conversation", "conversation_id", "conversationid"
+                ]
+                if let rawConv = queryItems.first(where: { convKeys.contains($0.name.lowercased()) })?.value {
+                    let decoded = (rawConv.removingPercentEncoding ?? rawConv).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !decoded.isEmpty {
+                        conversationId = decoded
+                    }
+                }
+            }
+            if instanceId.isEmpty {
+                let idKeys: Set<String> = [
+                    "instance", "instance_id", "instanceid",
+                    "host", "host_id", "hostid",
+                    "device", "device_id", "deviceid",
+                    "uuid", "r", "id", "slug"
+                ]
+                if let rawInst = queryItems.first(where: { idKeys.contains($0.name.lowercased()) })?.value {
+                    let decoded = (rawInst.removingPercentEncoding ?? rawInst).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !decoded.isEmpty {
+                        instanceId = decoded
+                    }
+                }
+            }
+        }
+
+        if conversationId == nil,
+           let cIdx = parts.firstIndex(where: { $0.lowercased() == "c" }),
+           parts.count > cIdx + 1 {
+            let joined = parts[(cIdx + 1)...].joined(separator: "/")
+            if !joined.isEmpty {
+                conversationId = joined
+            }
+        }
+
+        // SPA hash-route fallback (`#/r/<id>?p=c%2F<conv>` or `#instance=<id>`)
+        if let fragment, !fragment.isEmpty,
+           (instanceId.isEmpty || conversationId == nil || authUser == nil) {
+            let fragPartsAndQuery = fragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let fragPathRaw = fragPartsAndQuery[0]
+            let fragQueryRaw: String? = {
+                if fragPartsAndQuery.count > 1 { return fragPartsAndQuery[1] }
+                if !fragPathRaw.contains("/") && fragPathRaw.contains("=") { return fragPathRaw }
+                return nil
+            }()
+            let fragParts = fragPathRaw.contains("=") && !fragPathRaw.contains("/")
+                ? []
+                : fragPathRaw.split(separator: "/").map(String.init)
+            let fragQueryItems = fragQueryRaw.flatMap {
+                URLComponents(string: "https://placeholder.invalid?\($0)")?.queryItems
+            }
+            if !fragParts.isEmpty || fragQueryItems != nil {
+                let fragMeta = extractMetadata(parts: fragParts, queryItems: fragQueryItems, fragment: nil)
+                if instanceId.isEmpty { instanceId = fragMeta.instanceId }
+                if conversationId == nil { conversationId = fragMeta.conversationId }
+                if authUser == nil { authUser = fragMeta.authUser }
+            }
+        }
+
+        return (instanceId, conversationId, authUser)
     }
 
     /// Parses an official Antigravity Remote Control QR URL (`https://antigravity.google.com/r/<id>?p=c%2F<conv>`).

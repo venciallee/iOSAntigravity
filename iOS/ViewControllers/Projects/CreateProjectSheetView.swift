@@ -71,7 +71,7 @@ public struct CreateProjectSheetView: View {
             return GitHubRepoRowModel(
                 id: repo.id,
                 fullName: repo.fullName,
-                metadata: "\(repo.isPrivate ? "Private" : "Public") · \(repo.primaryLanguage) · \(repo.updatedRelative)",
+                metadata: repo.visibilityLabel,
                 defaultProjectNameCloud: "\(slug)-cloud",
                 defaultProjectNameMac: slug,
                 accessibilityId: "repo-row-\(slug)"

@@ -74,8 +74,8 @@ public struct AntigravityApp: App {
                         return
                     }
                     let rawURL = url.absoluteString
-                    if (url.scheme?.lowercased() == "antigravity" && url.host?.lowercased() == "pair")
-                        || RemoteHostInstance.parseRemoteControlQR(urlString: rawURL) != nil {
+                    if RemoteHostInstance.isDirectLANPairingURI(rawURL)
+                        || RemoteHostInstance.parseRemoteControlTarget(rawURL) != nil {
                         activeVerifyCase = nil
                         if store.isVerificationMode {
                             let liveStore = AntigravitySessionStore.makeLiveStore()

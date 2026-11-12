@@ -551,8 +551,21 @@ public final class AntigravitySessionStore {
     @discardableResult
     public func connectWithPairingURI(_ rawURI: String, fallbackCookie: String = "") async -> Bool {
         let trimmed = rawURI.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let target = RemoteHostInstance.parseRemoteControlTarget(trimmed),
-           trimmed.contains("://") && (trimmed.lowercased().contains("antigravity.google") || trimmed.contains("/r/")) {
+        if RemoteHostInstance.isDirectLANPairingURI(trimmed),
+           let comps = URLComponents(string: trimmed),
+           let targetURL = comps.queryItems?.first(where: { $0.name == "url" })?.value {
+            let csrf = comps.queryItems?.first(where: { $0.name == "csrf" })?.value ?? ""
+            let sha256 = comps.queryItems?.first(where: { $0.name == "sha256" })?.value
+            let name = comps.queryItems?.first(where: { $0.name == "name" })?.value ?? "MacBook Pro"
+            return await connectDirectLAN(
+                endpointURLString: targetURL,
+                csrfToken: csrf,
+                certSHA256: sha256,
+                hostName: name
+            )
+        }
+
+        if let target = RemoteHostInstance.parseRemoteControlTarget(trimmed) {
             lastScannedRelayURL = target.canonicalRelayURLString
             var effectiveCookie = fallbackCookie.trimmingCharacters(in: .whitespacesAndNewlines)
             var savedAuthUser = target.authUser
@@ -564,25 +577,11 @@ public final class AntigravitySessionStore {
             }
             let displayHost = target.instanceId.isEmpty ? "Antigravity Desktop" : target.instanceId
             return await connectCloudRelay(
-                relayURLString: target.canonicalRelayURLString,
+                relayURLString: trimmed,
                 sessionCookie: effectiveCookie,
                 authUser: savedAuthUser,
                 deepLinkedConversationId: target.conversationId,
                 hostName: displayHost
-            )
-        }
-
-        if let comps = URLComponents(string: trimmed),
-           comps.scheme?.lowercased() == "antigravity",
-           let targetURL = comps.queryItems?.first(where: { $0.name == "url" })?.value {
-            let csrf = comps.queryItems?.first(where: { $0.name == "csrf" })?.value ?? ""
-            let sha256 = comps.queryItems?.first(where: { $0.name == "sha256" })?.value
-            let name = comps.queryItems?.first(where: { $0.name == "name" })?.value ?? "MacBook Pro"
-            return await connectDirectLAN(
-                endpointURLString: targetURL,
-                csrfToken: csrf,
-                certSHA256: sha256,
-                hostName: name
             )
         }
 
@@ -675,6 +674,36 @@ public final class AntigravitySessionStore {
         }
     }
 
+    ///Resolves HTTP redirects for official Google shortlinks (`g.co`, `c.gle`, `goo.gl`, `*.page.link`)
+    /// using an ephemeral `URLSession` (without attaching session cookies) so the target `/r/<instance-id>` is discovered.
+    nonisolated private static func resolveShortlinkRedirectIfNeeded(_ urlString: String) async -> String? {
+        guard let url = URL(string: urlString) else { return nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6
+        config.timeoutIntervalForResource = 10
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+
+        var headReq = URLRequest(url: url)
+        headReq.httpMethod = "HEAD"
+        if let (_, resp) = try? await session.data(for: headReq),
+           let finalStr = resp.url?.absoluteString,
+           finalStr != urlString,
+           RemoteHostInstance.parseRemoteControlTarget(finalStr) != nil {
+            return finalStr
+        }
+
+        var getReq = URLRequest(url: url)
+        getReq.httpMethod = "GET"
+        if let (_, resp) = try? await session.data(for: getReq),
+           let finalStr = resp.url?.absoluteString,
+           finalStr != urlString,
+           RemoteHostInstance.parseRemoteControlTarget(finalStr) != nil {
+            return finalStr
+        }
+        return nil
+    }
+
     /// Connects to official Google Cloud Remote Control Relay (`https://antigravity.google.com/r/<instance-id>`)
     /// via `devtools_jetski_boq_api_proto.ApiService` (`ListInstances` + `ProxyCommand` + `SAPISIDHASH`).
     @discardableResult
@@ -688,11 +717,11 @@ public final class AntigravitySessionStore {
         isRestoringSavedSession: Bool = false
     ) async -> Bool {
         let trimmedInput = relayURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parsedTarget = RemoteHostInstance.parseRemoteControlTarget(
+        var parsedTarget = RemoteHostInstance.parseRemoteControlTarget(
             trimmedInput.isEmpty ? SAPISIDHashGenerator.defaultOrigin : trimmedInput
         )
-        let canonicalURLString = parsedTarget?.canonicalRelayURLString ?? trimmedInput
-        guard let url = URL(string: canonicalURLString), url.scheme != nil else {
+        var canonicalURLString = parsedTarget?.canonicalRelayURLString ?? trimmedInput
+        guard URL(string: canonicalURLString)?.scheme != nil else {
             connectionErrorText = "Invalid Remote Control QR link: \(relayURLString)"
             return false
         }
@@ -701,16 +730,34 @@ public final class AntigravitySessionStore {
         let trimmedCookie = sessionCookie.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCookie.isEmpty else {
             isLiveBackendConnected = false
-            connectionErrorText = "Google Sign-In required: sign in once to pair with \(parsedTarget?.instanceId ?? url.lastPathComponent)."
+            let fallbackName = parsedTarget?.instanceId.isEmpty == false ? parsedTarget!.instanceId : "Antigravity Desktop"
+            connectionErrorText = "Google Sign-In required: sign in once to pair with \(fallbackName)."
             connectionStatusText = "Sign in with Google to pair Remote Control"
             return false
         }
 
         isConnectingToBackend = true
         connectionErrorText = nil
+        defer { isConnectingToBackend = false }
+
+        if parsedTarget?.requiresRedirectResolution == true,
+           let origURL = parsedTarget?.originalURLString {
+            connectionStatusText = "Resolving Remote Control link..."
+            if let resolvedStr = await Self.resolveShortlinkRedirectIfNeeded(origURL),
+               let resolvedTarget = RemoteHostInstance.parseRemoteControlTarget(resolvedStr) {
+                parsedTarget = resolvedTarget
+                canonicalURLString = resolvedTarget.canonicalRelayURLString
+                lastScannedRelayURL = canonicalURLString
+            }
+        }
+
+        guard let url = URL(string: canonicalURLString), url.scheme != nil else {
+            connectionErrorText = "Invalid Remote Control QR link: \(relayURLString)"
+            return false
+        }
+
         let targetBadge = parsedTarget?.instanceId.isEmpty == false ? parsedTarget!.instanceId : "Cloud Relay"
         connectionStatusText = "Pairing with \(targetBadge) via Google Cloud Relay..."
-        defer { isConnectingToBackend = false }
 
         let effectiveAuthUser = authUser ?? parsedTarget?.authUser
         let initialInstanceId = parsedTarget?.instanceId.isEmpty == false ? parsedTarget!.instanceId : "auto"

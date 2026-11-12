@@ -19,6 +19,7 @@ public struct RemoteControlQRScannerSheet: View {
     @State private var scannerErrorMessage: String? = nil
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var isCameraAvailable: Bool = true
+    @State private var showManualEntry: Bool = false
 
     public init(
         onScannedQR: @escaping (String) -> Void,
@@ -29,7 +30,7 @@ public struct RemoteControlQRScannerSheet: View {
     }
 
     public var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             // Sheet Top Bar
             HStack {
                 Button {
@@ -98,10 +99,10 @@ public struct RemoteControlQRScannerSheet: View {
                         AntigravityTheme.accentPeriwinkle.opacity(0.85),
                         style: StrokeStyle(lineWidth: 2.5, dash: [26, 14])
                     )
-                    .frame(width: 228, height: 228)
+                    .frame(width: 216, height: 216)
                     .allowsHitTesting(false)
             }
-            .frame(height: isCameraAvailable ? 380 : 280)
+            .frame(height: (isCameraAvailable && !showManualEntry) ? 360 : 260)
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
@@ -152,10 +153,9 @@ public struct RemoteControlQRScannerSheet: View {
             }
             #endif
 
-            // Only show manual link input when physical camera is unavailable (e.g. iOS Simulator)
-            if !isCameraAvailable {
+            if !isCameraAvailable || showManualEntry {
                 HStack(spacing: 8) {
-                    TextField("https://antigravity.google.com/r/...", text: $manualLinkDraft)
+                    TextField("https://antigravity.google.com/r/... or device ID", text: $manualLinkDraft)
                         .font(.system(size: 13, weight: .regular, design: .monospaced))
                         .foregroundStyle(UEChromePalette.textPrimary)
                         .textInputAutocapitalization(.never)
@@ -166,7 +166,7 @@ public struct RemoteControlQRScannerSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                     Button {
-                        handleScannedCandidate(manualLinkDraft)
+                        _ = handleScannedCandidate(manualLinkDraft)
                     } label: {
                         Text("Connect")
                             .font(.system(size: 14.5, weight: .semibold))
@@ -182,6 +182,18 @@ public struct RemoteControlQRScannerSheet: View {
                     .disabled(manualLinkDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(.horizontal, 16)
+            } else {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showManualEntry = true
+                    }
+                } label: {
+                    Text("Enter link or device ID manually")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(AntigravityTheme.accentPeriwinkle)
+                        .frame(minHeight: 34)
+                }
+                .buttonStyle(.plain)
             }
 
             Spacer(minLength: 8)
@@ -194,10 +206,10 @@ public struct RemoteControlQRScannerSheet: View {
             Image(systemName: "qrcode.viewfinder")
                 .font(.system(size: 46, weight: .light))
                 .foregroundStyle(AntigravityTheme.accentPeriwinkle)
-            Text("Camera Unavailable in Simulator")
+            Text("Camera Unavailable")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.white)
-            Text("Choose a QR screenshot from Photos or paste the `https://antigravity.google.com/r/...` link below.")
+            Text("Choose a QR screenshot from Photos or paste the https://antigravity.google.com/r/... link below.")
                 .font(.system(size: 12.5, weight: .regular))
                 .foregroundStyle(UEChromePalette.textSecondary)
                 .multilineTextAlignment(.center)
@@ -210,23 +222,30 @@ public struct RemoteControlQRScannerSheet: View {
         if let pasted = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
            !pasted.isEmpty {
             manualLinkDraft = pasted
-            handleScannedCandidate(pasted)
+            _ = handleScannedCandidate(pasted)
         } else {
             scannerErrorMessage = "Clipboard is empty."
         }
         #endif
     }
 
-    private func handleScannedCandidate(_ raw: String) {
+    @discardableResult
+    private func handleScannedCandidate(_ raw: String) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if RemoteHostInstance.parseRemoteControlTarget(trimmed) != nil || trimmed.lowercased().hasPrefix("antigravity://") {
+        guard !trimmed.isEmpty else { return false }
+        if RemoteHostInstance.parseRemoteControlTarget(trimmed) != nil
+            || RemoteHostInstance.isDirectLANPairingURI(trimmed) {
+            scannerErrorMessage = nil
             #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             #endif
             onScannedQR(trimmed)
+            return true
         } else {
-            scannerErrorMessage = "Unrecognized QR code: expected an Antigravity Remote Control link (`https://antigravity.google.com/r/...`)."
+            let singleLine = trimmed.replacingOccurrences(of: "\n", with: " ")
+            let preview = singleLine.count <= 44 ? singleLine : "\(singleLine.prefix(41))..."
+            scannerErrorMessage = "Unrecognized QR content (\"\(preview)\"). Point at Antigravity Desktop's Remote Control QR or paste the link."
+            return false
         }
     }
 
@@ -247,10 +266,18 @@ public struct RemoteControlQRScannerSheet: View {
             return
         }
         let features = detector.features(in: ciImage).compactMap { $0 as? CIQRCodeFeature }
-        if let payload = features.compactMap(\.messageString).first(where: { !$0.isEmpty }) {
-            handleScannedCandidate(payload)
-        } else {
+        let payloads = features.compactMap(\.messageString).filter { !$0.isEmpty }
+        guard !payloads.isEmpty else {
             scannerErrorMessage = "No QR code found in the selected image."
+            return
+        }
+        // Prefer the first recognized Antigravity QR if the screenshot contains multiple QR codes
+        if let matching = payloads.first(where: {
+            RemoteHostInstance.parseRemoteControlTarget($0) != nil || RemoteHostInstance.isDirectLANPairingURI($0)
+        }) {
+            _ = handleScannedCandidate(matching)
+        } else {
+            _ = handleScannedCandidate(payloads[0])
         }
         #endif
     }
@@ -259,7 +286,7 @@ public struct RemoteControlQRScannerSheet: View {
 
 #if canImport(UIKit) && canImport(AVFoundation)
 private struct QRCameraPreviewRepresentable: UIViewControllerRepresentable {
-    let onCodeDetected: (String) -> Void
+    let onCodeDetected: (String) -> Bool
     let onCameraUnavailable: (String) -> Void
 
     func makeUIViewController(context: Context) -> QRCameraScannerViewController {
@@ -269,16 +296,21 @@ private struct QRCameraPreviewRepresentable: UIViewControllerRepresentable {
         return vc
     }
 
-    func updateUIViewController(_ uiViewController: QRCameraScannerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: QRCameraScannerViewController, context: Context) {
+        uiViewController.onCodeDetected = onCodeDetected
+        uiViewController.onCameraUnavailable = onCameraUnavailable
+    }
 }
 
 private final class QRCameraScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
-    var onCodeDetected: ((String) -> Void)?
+    var onCodeDetected: ((String) -> Bool)?
     var onCameraUnavailable: ((String) -> Void)?
 
     private let captureSession = AVCaptureSession()
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var didEmitCode = false
+    private var lastRejectedValue: String?
+    private var lastRejectedAt: Date = .distantPast
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -353,14 +385,24 @@ private final class QRCameraScannerViewController: UIViewController, AVCaptureMe
 
     private func handleDetectedString(_ stringValue: String) {
         guard !didEmitCode else { return }
-        didEmitCode = true
-        nonisolated(unsafe) let session = captureSession
-        DispatchQueue.global(qos: .userInitiated).async {
-            if session.isRunning {
-                session.stopRunning()
-            }
+        if let lastRejectedValue,
+           lastRejectedValue == stringValue,
+           Date().timeIntervalSince(lastRejectedAt) < 1.5 {
+            return
         }
-        onCodeDetected?(stringValue)
+        let accepted = onCodeDetected?(stringValue) ?? false
+        if accepted {
+            didEmitCode = true
+            nonisolated(unsafe) let session = captureSession
+            DispatchQueue.global(qos: .userInitiated).async {
+                if session.isRunning {
+                    session.stopRunning()
+                }
+            }
+        } else {
+            lastRejectedValue = stringValue
+            lastRejectedAt = Date()
+        }
     }
 
     nonisolated func metadataOutput(
@@ -368,14 +410,17 @@ private final class QRCameraScannerViewController: UIViewController, AVCaptureMe
         didOutput metadataObjects: [AVMetadataObject],
         from connection: AVCaptureConnection
     ) {
-        guard let readable = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
-              readable.type == .qr,
-              let stringValue = readable.stringValue,
-              !stringValue.isEmpty else {
-            return
-        }
-        Task { @MainActor [weak self] in
-            self?.handleDetectedString(stringValue)
+        // Inspect all detected QR objects in the frame rather than only the first
+        for obj in metadataObjects {
+            guard let readable = obj as? AVMetadataMachineReadableCodeObject,
+                  readable.type == .qr,
+                  let stringValue = readable.stringValue,
+                  !stringValue.isEmpty else {
+                continue
+            }
+            Task { @MainActor [weak self] in
+                self?.handleDetectedString(stringValue)
+            }
         }
     }
 }

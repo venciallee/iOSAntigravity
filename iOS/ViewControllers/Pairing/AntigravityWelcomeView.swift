@@ -136,12 +136,10 @@ public struct AntigravityWelcomeView: View {
                 targetRelayURLString: pendingRelayURL.isEmpty ? SAPISIDHashGenerator.defaultOrigin : pendingRelayURL,
                 onAuthenticated: { cookieHeader, finalURL, detectedAuthUser in
                     isShowingGoogleSignIn = false
-                    let effectiveURL: String = {
-                        if !pendingRelayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            return pendingRelayURL
-                        }
-                        return finalURL ?? SAPISIDHashGenerator.defaultOrigin
-                    }()
+                    let effectiveURL = RemoteHostInstance.resolveEffectiveRelayTarget(
+                        scannedInput: pendingRelayURL,
+                        webViewFinalURL: finalURL
+                    )
                     Task {
                         let ok = await store.connectCloudRelay(
                             relayURLString: effectiveURL,
@@ -163,7 +161,7 @@ public struct AntigravityWelcomeView: View {
     private func handleScannedQRValue(_ raw: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if trimmed.lowercased().hasPrefix("antigravity://") && trimmed.contains("url=") {
+        if RemoteHostInstance.isDirectLANPairingURI(trimmed) {
             Task {
                 let ok = await store.connectWithPairingURI(trimmed, fallbackCookie: "")
                 if ok {
