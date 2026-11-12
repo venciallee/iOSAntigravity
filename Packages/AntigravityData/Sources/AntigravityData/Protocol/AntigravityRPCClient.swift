@@ -2747,12 +2747,10 @@ public actor AntigravityRPCClient {
             slug = explicitSlug
         } else if rawUri.hasPrefix("cloud://") {
             let trimmedCloud = rawUri.replacingOccurrences(of: "cloud://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let lastComp = (trimmedCloud as NSString).lastPathComponent
-            slug = lastComp.isEmpty ? (trimmedCloud.isEmpty ? "Antigravity Cloud" : trimmedCloud) : lastComp
+            slug = trimmedCloud.isEmpty ? "Antigravity Cloud" : trimmedCloud
         } else if rawUri.hasPrefix("https://github.com/") {
             let trimmedGH = rawUri.replacingOccurrences(of: "https://github.com/", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let lastComp = (trimmedGH as NSString).lastPathComponent
-            slug = lastComp.isEmpty ? "github-workspace" : lastComp
+            slug = trimmedGH.isEmpty ? "github-workspace" : trimmedGH
         } else if rawUri.contains("://") && !rawUri.hasPrefix("file://") {
             let decodedRaw = rawUri.removingPercentEncoding ?? rawUri
             let lastComp = ((URL(string: decodedRaw)?.path ?? decodedRaw) as NSString).lastPathComponent
