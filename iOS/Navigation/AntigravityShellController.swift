@@ -360,9 +360,17 @@ public struct AntigravityRootContainerView: View {
 
     private func openOrCreateConversation(_ rawId: String, defaultProjectSlug: String) {
         if rawId == "new-conversation" || rawId.hasPrefix("new-") {
-            let slug = rawId.hasPrefix("new-") && rawId != "new-conversation"
-                ? String(rawId.dropFirst(4))
-                : defaultProjectSlug
+            let slug: String = {
+                if rawId.hasPrefix("new-") && rawId != "new-conversation" {
+                    return String(rawId.dropFirst(4))
+                }
+                if !defaultProjectSlug.isEmpty {
+                    return defaultProjectSlug
+                }
+                return (store.hasPairedBackend || store.isLiveBackendConnected)
+                    ? AntigravityCloudDetector.noProjectDisplayName
+                    : "ledger-svc"
+            }()
             _ = store.createConversationInProject(slug)
             return
         }

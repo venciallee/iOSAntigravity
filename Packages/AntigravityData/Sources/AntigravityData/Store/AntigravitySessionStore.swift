@@ -1054,6 +1054,25 @@ public final class AntigravitySessionStore {
         }
     }
 
+    internal static func normalizeNoProjectSummary(_ s: inout CascadeSummary) {
+        guard !esddFixtureCascadeIds.contains(s.cascadeId) else { return }
+        guard (s.cloudProjectId ?? "").isEmpty else { return }
+        if AntigravityCloudDetector.isGenericContainerURI(s.workspaceUri) {
+            s.workspaceUri = ""
+        }
+        let isScratch = AntigravityCloudDetector.isPlaygroundScratchURI(s.workspaceUri)
+        if AntigravityCloudDetector.isNoProjectSlug(s.projectSlug) || isScratch {
+            let hasCloudPrefix = s.projectSlug.lowercased().hasPrefix("cloud:")
+            s.projectSlug = hasCloudPrefix
+                ? "cloud:\(AntigravityCloudDetector.noProjectDisplayName)"
+                : AntigravityCloudDetector.noProjectDisplayName
+            s.branchName = ""
+            if !isScratch && s.workspaceUri.isEmpty == false && AntigravityCloudDetector.isGenericContainerURI(s.workspaceUri) {
+                s.workspaceUri = ""
+            }
+        }
+    }
+
     internal static func reconcileLiveProjects(
         workspaces: [WorkspaceInfo],
         summaries: inout [CascadeSummary],
@@ -1061,7 +1080,13 @@ public final class AntigravitySessionStore {
         hostName: String,
         cloudProjects: [ProjectWorkspace] = []
     ) -> [ProjectWorkspace] {
-        let nonDemoExisting = existingProjects.filter { !esddFixtureProjectIds.contains($0.id) }
+        let nonDemoExisting = existingProjects.filter { existing in
+            guard !esddFixtureProjectIds.contains(existing.id) else { return false }
+            if (existing.cloudProjectId ?? "").isEmpty && AntigravityCloudDetector.isNoProjectSlug(existing.name) {
+                return existing.name == AntigravityCloudDetector.noProjectDisplayName
+            }
+            return true
+        }
         var expandedById: [String: Bool] = [:]
         var existingById: [String: ProjectWorkspace] = [:]
         for p in nonDemoExisting {
@@ -1082,12 +1107,16 @@ public final class AntigravitySessionStore {
             return rawSlug
         }
 
-        // Link summaries that carry a `cloudProjectId` to their canonical Cloud project name & URI
+        // Link summaries that carry a `cloudProjectId` to their canonical Cloud project name & URI,
+        // and normalize unassigned / legacy `"workspace"` / scratch playground summaries to `"No Project"`.
         for idx in summaries.indices {
             if let cpid = summaries[idx].cloudProjectId, let cp = cloudProjById[cpid] {
                 summaries[idx].isCloud = true
                 summaries[idx].projectSlug = cp.name
                 summaries[idx].workspaceUri = cp.workspaceUri
+                summaries[idx].originHostName = "Antigravity"
+            } else {
+                normalizeNoProjectSummary(&summaries[idx])
             }
         }
 
@@ -1117,111 +1146,131 @@ public final class AntigravitySessionStore {
         var knownIds = Set<String>()
 
         for slug in orderedBaseSlugs {
+            let isNoProj = AntigravityCloudDetector.isNoProjectSlug(slug)
+            let canonicalName = isNoProj ? AntigravityCloudDetector.noProjectDisplayName : slug
             let matchingIndices = summaries.indices.filter { baseSlug(for: summaries[$0].projectSlug) == slug }
             let cloudIndices = matchingIndices.filter { summaries[$0].isCloud }
             let localIndices = matchingIndices.filter { !summaries[$0].isCloud }
 
-            let matchingWorkspaces = wsByName[slug] ?? []
+            let matchingWorkspaces = isNoProj ? [] : (wsByName[slug] ?? [])
             let cloudWs = matchingWorkspaces.first(where: \.isCloud)
             let localWs = matchingWorkspaces.first(where: { !$0.isCloud })
-            let matchedCloudProj = cloudProjByName[slug]?.first
+            let matchedCloudProj = isNoProj ? nil : cloudProjByName[slug]?.first
 
             if !cloudIndices.isEmpty && !localIndices.isEmpty {
-                // Both active local Mac chats and active Cloud chats exist for the same repo name:
-                // keep local chats under `slug` and separate Cloud chats under `cloud:<slug>`.
+                // Both active local Mac chats and active Cloud chats exist for the same group (`slug` or `No Project`):
+                // keep local chats under `canonicalName` and separate Cloud chats under `cloud:<canonicalName>`.
                 for idx in localIndices {
-                    summaries[idx].projectSlug = slug
+                    summaries[idx].projectSlug = canonicalName
                 }
                 let firstLocal = summaries[localIndices[0]]
-                let localUri = localWs?.workspaceUri ?? firstLocal.workspaceUri
-                let localBranch = localWs?.activeBranch ?? firstLocal.branchName
+                let localUri = isNoProj ? "" : (localWs?.workspaceUri ?? firstLocal.workspaceUri)
+                let localBranch = isNoProj ? "" : (localWs?.activeBranch ?? firstLocal.branchName)
                 let resolvedLocalHost = localWs?.originHostName ?? firstLocal.originHostName ?? hostName
-                if knownIds.insert(slug).inserted {
+                let localPathDisplay = isNoProj
+                    ? "Unassigned · \(resolvedLocalHost)"
+                    : localUri.replacingOccurrences(of: "file://", with: "")
+                if knownIds.insert(canonicalName).inserted {
                     reconciled.append(
                         ProjectWorkspace(
-                            id: slug,
-                            name: slug,
-                            pathDisplay: localUri.replacingOccurrences(of: "file://", with: ""),
+                            id: canonicalName,
+                            name: canonicalName,
+                            pathDisplay: localPathDisplay,
                             workspaceUri: localUri,
                             runtime: .macBookPro,
                             hostName: resolvedLocalHost,
                             activeBranch: localBranch,
-                            worktrees: localWs?.worktrees.isEmpty == false ? localWs!.worktrees : [localBranch],
-                            isExpandedInHome: expandedById[slug] ?? true,
+                            worktrees: isNoProj ? [] : (localWs?.worktrees.isEmpty == false ? localWs!.worktrees : [localBranch]),
+                            isExpandedInHome: expandedById[canonicalName] ?? true,
                             originInstanceUuid: localWs?.originInstanceUuid ?? firstLocal.originInstanceUuid
                         )
                     )
                 }
 
-                let cloudId = "cloud:\(slug)"
+                let cloudId = "cloud:\(canonicalName)"
                 for idx in cloudIndices {
                     summaries[idx].projectSlug = cloudId
                 }
                 let firstCloud = summaries[cloudIndices[0]]
-                let cloudUri = preferredCloudUri(matchedCloudProj?.workspaceUri ?? cloudWs?.workspaceUri, firstCloud.workspaceUri)
-                let cloudBranch = matchedCloudProj?.activeBranch ?? cloudWs?.activeBranch ?? firstCloud.branchName
+                let cloudUri = isNoProj
+                    ? ""
+                    : preferredCloudUri(matchedCloudProj?.workspaceUri ?? cloudWs?.workspaceUri, firstCloud.workspaceUri)
+                let cloudBranch = isNoProj
+                    ? ""
+                    : (matchedCloudProj?.activeBranch ?? cloudWs?.activeBranch ?? firstCloud.branchName)
+                let cloudPathDisplay = isNoProj ? "Antigravity Cloud · Unassigned" : cloudUri
                 if knownIds.insert(cloudId).inserted {
                     reconciled.append(
                         ProjectWorkspace(
                             id: cloudId,
-                            name: slug,
-                            pathDisplay: cloudUri,
+                            name: canonicalName,
+                            pathDisplay: cloudPathDisplay,
                             workspaceUri: cloudUri,
                             runtime: .cloud,
                             hostName: "Cloud",
                             activeBranch: cloudBranch,
-                            worktrees: cloudWs?.worktrees.isEmpty == false ? cloudWs!.worktrees : [cloudBranch],
+                            worktrees: isNoProj ? [] : (cloudWs?.worktrees.isEmpty == false ? cloudWs!.worktrees : [cloudBranch]),
                             isExpandedInHome: expandedById[cloudId] ?? true,
-                            cloudProjectId: matchedCloudProj?.cloudProjectId ?? matchedCloudProj?.id ?? firstCloud.cloudProjectId ?? existingById[cloudId]?.cloudProjectId,
+                            cloudProjectId: isNoProj ? nil : (matchedCloudProj?.cloudProjectId ?? matchedCloudProj?.id ?? firstCloud.cloudProjectId ?? existingById[cloudId]?.cloudProjectId),
                             originInstanceUuid: matchedCloudProj?.originInstanceUuid ?? firstCloud.originInstanceUuid
                         )
                     )
                 }
             } else if !cloudIndices.isEmpty {
                 for idx in cloudIndices {
-                    summaries[idx].projectSlug = slug
+                    summaries[idx].projectSlug = canonicalName
                 }
                 let firstCloud = summaries[cloudIndices[0]]
-                let cloudUri = preferredCloudUri(matchedCloudProj?.workspaceUri ?? cloudWs?.workspaceUri, firstCloud.workspaceUri)
-                let cloudBranch = matchedCloudProj?.activeBranch ?? cloudWs?.activeBranch ?? firstCloud.branchName
-                if knownIds.insert(slug).inserted {
+                let cloudUri = isNoProj
+                    ? ""
+                    : preferredCloudUri(matchedCloudProj?.workspaceUri ?? cloudWs?.workspaceUri, firstCloud.workspaceUri)
+                let cloudBranch = isNoProj
+                    ? ""
+                    : (matchedCloudProj?.activeBranch ?? cloudWs?.activeBranch ?? firstCloud.branchName)
+                let cloudPathDisplay = isNoProj ? "Antigravity Cloud · Unassigned" : cloudUri
+                if knownIds.insert(canonicalName).inserted {
                     reconciled.append(
                         ProjectWorkspace(
-                            id: slug,
-                            name: slug,
-                            pathDisplay: cloudUri,
+                            id: canonicalName,
+                            name: canonicalName,
+                            pathDisplay: cloudPathDisplay,
                             workspaceUri: cloudUri,
                             runtime: .cloud,
                             hostName: "Cloud",
                             activeBranch: cloudBranch,
-                            worktrees: cloudWs?.worktrees.isEmpty == false ? cloudWs!.worktrees : [cloudBranch],
-                            isExpandedInHome: expandedById[slug] ?? true,
-                            cloudProjectId: matchedCloudProj?.cloudProjectId ?? matchedCloudProj?.id ?? firstCloud.cloudProjectId ?? existingById[slug]?.cloudProjectId,
+                            worktrees: isNoProj ? [] : (cloudWs?.worktrees.isEmpty == false ? cloudWs!.worktrees : [cloudBranch]),
+                            isExpandedInHome: expandedById[canonicalName] ?? true,
+                            cloudProjectId: isNoProj ? nil : (matchedCloudProj?.cloudProjectId ?? matchedCloudProj?.id ?? firstCloud.cloudProjectId ?? existingById[canonicalName]?.cloudProjectId),
                             originInstanceUuid: matchedCloudProj?.originInstanceUuid ?? firstCloud.originInstanceUuid
                         )
                     )
                 }
             } else if !localIndices.isEmpty {
                 for idx in localIndices {
-                    summaries[idx].projectSlug = slug
+                    summaries[idx].projectSlug = canonicalName
                 }
                 let firstLocal = summaries[localIndices[0]]
-                let isWsCloudOnly = (cloudWs != nil && localWs == nil && AntigravityCloudDetector.isCloudWorkspaceURI(firstLocal.workspaceUri))
-                let effectiveUri = (isWsCloudOnly ? cloudWs?.workspaceUri : localWs?.workspaceUri) ?? firstLocal.workspaceUri
-                let effectiveBranch = localWs?.activeBranch ?? firstLocal.branchName
+                let isWsCloudOnly = !isNoProj && (cloudWs != nil && localWs == nil && AntigravityCloudDetector.isCloudWorkspaceURI(firstLocal.workspaceUri))
+                let effectiveUri = isNoProj
+                    ? ""
+                    : ((isWsCloudOnly ? cloudWs?.workspaceUri : localWs?.workspaceUri) ?? firstLocal.workspaceUri)
+                let effectiveBranch = isNoProj ? "" : (localWs?.activeBranch ?? firstLocal.branchName)
                 let resolvedLocalHost = localWs?.originHostName ?? firstLocal.originHostName ?? hostName
-                if knownIds.insert(slug).inserted {
+                let pathDisplay = isNoProj
+                    ? "Unassigned · \(resolvedLocalHost)"
+                    : effectiveUri.replacingOccurrences(of: "file://", with: "")
+                if knownIds.insert(canonicalName).inserted {
                     reconciled.append(
                         ProjectWorkspace(
-                            id: slug,
-                            name: slug,
-                            pathDisplay: effectiveUri.replacingOccurrences(of: "file://", with: ""),
+                            id: canonicalName,
+                            name: canonicalName,
+                            pathDisplay: pathDisplay,
                             workspaceUri: effectiveUri,
                             runtime: isWsCloudOnly ? .cloud : .macBookPro,
                             hostName: isWsCloudOnly ? "Cloud" : resolvedLocalHost,
                             activeBranch: effectiveBranch,
-                            worktrees: localWs?.worktrees.isEmpty == false ? localWs!.worktrees : [effectiveBranch],
-                            isExpandedInHome: expandedById[slug] ?? true,
+                            worktrees: isNoProj ? [] : (localWs?.worktrees.isEmpty == false ? localWs!.worktrees : [effectiveBranch]),
+                            isExpandedInHome: expandedById[canonicalName] ?? true,
                             originInstanceUuid: localWs?.originInstanceUuid ?? firstLocal.originInstanceUuid
                         )
                     )
@@ -1232,6 +1281,11 @@ public final class AntigravitySessionStore {
         // Append any open 0-conversation workspaces not yet represented above
         for ws in workspaces {
             let slug = ws.displayName
+            guard !AntigravityCloudDetector.isNoProjectSlug(slug),
+                  !AntigravityCloudDetector.isGenericContainerURI(ws.workspaceUri),
+                  !AntigravityCloudDetector.isPlaygroundScratchURI(ws.workspaceUri) else {
+                continue
+            }
             let isCloud = ws.isCloud || AntigravityCloudDetector.isCloudWorkspaceURI(ws.workspaceUri)
             if reconciled.contains(where: { !$0.workspaceUri.isEmpty && $0.workspaceUri.caseInsensitiveCompare(ws.workspaceUri) == .orderedSame }) {
                 continue
@@ -1303,7 +1357,10 @@ public final class AntigravitySessionStore {
             }
         }
 
-        return reconciled
+        // Keep all named projects first (preserving recency order) and `No Project` sections cleanly at the bottom
+        let namedProjects = reconciled.filter { !$0.isNoProject }
+        let unassignedProjects = reconciled.filter(\.isNoProject)
+        return namedProjects + unassignedProjects
     }
 
     /// Queries the connected `language_server` / `agy` daemon for live models, custom agents, and Cloud GitHub repos.
@@ -1409,12 +1466,14 @@ public final class AntigravitySessionStore {
             workspaces: handshake.workspaces,
             summaries: &sortedSummaries,
             existingProjects: [],
-            hostName: updatedHost.hostname
+            hostName: updatedHost.hostname,
+            cloudProjects: handshake.cloudProjects
         )
         summaries = sortedSummaries
         projects = nextProjects
-        selectedProjectId = nextProjects.first?.id ?? ""
-        selectedWorkspaceUri = nextProjects.first?.workspaceUri ?? handshake.workspaces.first?.workspaceUri ?? ""
+        let defaultProject = nextProjects.first(where: { !$0.isNoProject }) ?? nextProjects.first
+        selectedProjectId = defaultProject?.id ?? ""
+        selectedWorkspaceUri = defaultProject?.workspaceUri ?? ""
         activeCascadeId = sortedSummaries.first?.cascadeId ?? ""
 
         // Clear offline ESDD demo state when connected to a live backend
@@ -1525,12 +1584,21 @@ public final class AntigravitySessionStore {
     /// and single-cascade `{"cascadeId": "...", "status": "..."}` frames.
     private func applyJetboxSummaryEvent(_ event: [String: JSONValue], forceCloud: Bool = false) {
         var changedIds = Set<String>()
+        let existingCloudProjects = projects.filter { $0.runtime == .cloud && $0.cloudProjectId != nil }
+        let cloudProjById: [String: ProjectWorkspace] = Dictionary(
+            existingCloudProjects.compactMap { cp in
+                guard let cpid = cp.cloudProjectId, !cpid.isEmpty else { return nil }
+                return (cpid, cp)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         let decodedBatch = AntigravityRPCClient.decodeJetboxSummariesEvent(
             event,
             forceCloud: forceCloud,
             originInstanceUuid: activeHost.instanceId,
-            originHostName: forceCloud ? "Antigravity" : activeHost.hostname
+            originHostName: forceCloud ? "Antigravity" : activeHost.hostname,
+            cloudProjectsById: cloudProjById
         )
         if !decodedBatch.upserts.isEmpty {
             for decoded in decodedBatch.upserts {
@@ -1541,6 +1609,10 @@ public final class AntigravitySessionStore {
                     var merged = decoded
                     if summaries[idx].title != "New Conversation" && merged.title == "New Conversation" {
                         merged.title = summaries[idx].title
+                    }
+                    if summaries[idx].isCloud && !merged.isCloud {
+                        merged.isCloud = true
+                        merged.originHostName = "Antigravity"
                     }
                     merged.isPinned = summaries[idx].isPinned || decoded.isPinned
                     merged.isArchived = summaries[idx].isArchived || decoded.isArchived
@@ -1560,7 +1632,6 @@ public final class AntigravitySessionStore {
                     summaries.insert(decoded, at: 0)
                 }
             }
-            let existingCloudProjects = projects.filter { $0.runtime == .cloud && $0.cloudProjectId != nil }
             var updatedSummaries = summaries
             projects = Self.reconcileLiveProjects(
                 workspaces: workspaces,
@@ -1672,8 +1743,34 @@ public final class AntigravitySessionStore {
         guard (hasPairedBackend || isLiveBackendConnected), let client = rpcClient, !cascadeId.isEmpty else { return }
 
         stepLoadErrorText = nil
-        if (stepsByCascadeId[cascadeId] ?? []).isEmpty {
+
+        // Local optimistic IDs (`cas-<8hex>`) have not been materialized on the server via `StartCascade` yet.
+        // Never show a stuck "Loading conversation history..." spinner or `not_found` error on them.
+        if cascadeId.hasPrefix("cas-") && !Self.esddFixtureCascadeIds.contains(cascadeId) {
+            isLoadingSteps = false
+            return
+        }
+
+        let initialSummary = summaries.first(where: { $0.cascadeId == cascadeId })
+        let withinInitialOptimisticSend = (optimisticActiveUntilByCascadeId[cascadeId].map { $0 > Date() } ?? false)
+        let isBrandNewEmptySession = (initialSummary != nil)
+            && (initialSummary?.stepCount == 0)
+            && (initialSummary?.status != .inProgress)
+            && (initialSummary?.status != .pending)
+            && !withinInitialOptimisticSend
+        let isKnownOfflineLocal = hasPairedBackend
+            && (!isLiveBackendConnected || !activeHost.isOnline)
+            && (initialSummary?.isCloud != true)
+
+        if isBrandNewEmptySession && isKnownOfflineLocal {
+            isLoadingSteps = false
+            return
+        }
+
+        if (stepsByCascadeId[cascadeId] ?? []).isEmpty && !isBrandNewEmptySession {
             isLoadingSteps = true
+        } else {
+            isLoadingSteps = false
         }
         let storeRef = projectionStore
 
@@ -1700,6 +1797,11 @@ public final class AntigravitySessionStore {
                 let summaryMeta = self?.summaries.first(where: { $0.cascadeId == cascadeId })
                 let knownCount = summaryMeta?.stepCount ?? 0
                 let originUuid = summaryMeta?.originInstanceUuid
+                let isEmptyNewSessionNow = (summaryMeta != nil)
+                    && knownCount == 0
+                    && summaryMeta?.status != .inProgress
+                    && summaryMeta?.status != .pending
+                    && !(self?.optimisticActiveUntilByCascadeId[cascadeId].map { $0 > Date() } ?? false)
                 var stillActive = false
                 do {
                     let remoteSteps = try await client.fetchAllTrajectorySteps(
@@ -1768,7 +1870,7 @@ public final class AntigravitySessionStore {
                         }
                         if self.activeCascadeId == cascadeId {
                             self.isLoadingSteps = false
-                            if (self.stepsByCascadeId[cascadeId] ?? []).isEmpty {
+                            if (self.stepsByCascadeId[cascadeId] ?? []).isEmpty && !isEmptyNewSessionNow {
                                 self.stepLoadErrorText = error.localizedDescription
                             }
                         }
@@ -2050,17 +2152,40 @@ public final class AntigravitySessionStore {
         initialPrompt: String? = nil
     ) -> String {
         let optimisticId = "cas-\(UUID().uuidString.prefix(8).lowercased())"
-        let project = projects.first(where: { $0.id == projectSlug })
-        let isCloudProj = (project?.runtime == .cloud)
-        let cloudProjId = project?.cloudProjectId
+        let trimmedSlug = projectSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        let project = projects.first(where: { $0.id == trimmedSlug })
+            ?? projects.first(where: { $0.name == trimmedSlug })
+        let isUnassigned = (project?.isNoProject == true) || AntigravityCloudDetector.isNoProjectSlug(trimmedSlug)
+        let isCloudProj = (project?.runtime == .cloud) || trimmedSlug.lowercased().hasPrefix("cloud:")
+        let effectiveSlug: String = {
+            if let project { return project.id }
+            if isUnassigned {
+                let hasLocalNoProj = projects.contains(where: { $0.isNoProject && $0.runtime != .cloud })
+                if isCloudProj && hasLocalNoProj {
+                    return "cloud:\(AntigravityCloudDetector.noProjectDisplayName)"
+                }
+                return AntigravityCloudDetector.noProjectDisplayName
+            }
+            return trimmedSlug
+        }()
+        let cloudProjId = isUnassigned ? nil : project?.cloudProjectId
         let originUuid = project?.originInstanceUuid
-        let workspaceUri = project?.workspaceUri ?? (isCloudProj ? "cloud://\(projectSlug)" : "file:///Users/wl/code/\(projectSlug)")
-        let branch = project?.activeBranch ?? "main"
+        let workspaceUri: String = {
+            if isUnassigned { return "" }
+            if let existingUri = project?.workspaceUri, !existingUri.isEmpty {
+                return existingUri
+            }
+            if hasPairedBackend || isLiveBackendConnected {
+                return ""
+            }
+            return isCloudProj ? "cloud://\(trimmedSlug)" : "file:///Users/wl/code/\(trimmedSlug)"
+        }()
+        let branch = isUnassigned ? "" : (project?.activeBranch ?? "main")
 
         let newSummary = CascadeSummary(
             cascadeId: optimisticId,
             title: title,
-            projectSlug: projectSlug,
+            projectSlug: effectiveSlug,
             workspaceUri: workspaceUri,
             branchName: branch,
             status: initialPrompt != nil ? .inProgress : .done,
@@ -2081,9 +2206,21 @@ public final class AntigravitySessionStore {
             originHostName: isCloudProj ? "Antigravity" : activeHost.hostname
         )
         summaries.insert(newSummary, at: 0)
+        if hasPairedBackend || isLiveBackendConnected {
+            let existingCloudProjects = projects.filter { $0.runtime == .cloud && $0.cloudProjectId != nil }
+            var nextSummaries = summaries
+            projects = Self.reconcileLiveProjects(
+                workspaces: workspaces,
+                summaries: &nextSummaries,
+                existingProjects: projects,
+                hostName: activeHost.hostname,
+                cloudProjects: existingCloudProjects
+            )
+            summaries = nextSummaries
+        }
         stepsByCascadeId[optimisticId] = []
         activeCascadeId = optimisticId
-        selectedProjectId = projectSlug
+        selectedProjectId = summaries.first(where: { $0.cascadeId == optimisticId })?.projectSlug ?? effectiveSlug
         selectedWorkspaceUri = workspaceUri
         activeRoute = .cascadeChat(optimisticId)
 
@@ -2099,6 +2236,7 @@ public final class AntigravitySessionStore {
                    initialPrompt: initialPrompt ?? "",
                    modelId: modelId,
                    cloudProjectId: cloudProjId,
+                   isCloud: isCloudProj,
                    instanceUuidOverride: originUuid
                ),
                !realCascadeId.isEmpty {
@@ -2141,7 +2279,15 @@ public final class AntigravitySessionStore {
         branchName: String? = nil,
         initialPrompt: String? = nil
     ) {
-        let slug = selectedProject?.id ?? "ledger-svc"
+        let slug: String = {
+            if let selected = selectedProject?.id, !selected.isEmpty {
+                return selected
+            }
+            if hasPairedBackend || isLiveBackendConnected {
+                return projects.first?.id ?? AntigravityCloudDetector.noProjectDisplayName
+            }
+            return "ledger-svc"
+        }()
         let newId = createConversationInProject(slug, title: title, initialPrompt: nil)
         if let branchName, let idx = summaries.firstIndex(where: { $0.cascadeId == newId }) {
             summaries[idx].branchName = branchName
@@ -2153,7 +2299,8 @@ public final class AntigravitySessionStore {
     }
 
     public func revealProjectInFinder(_ projectSlug: String) {
-        guard let project = projects.first(where: { $0.id == projectSlug }) else { return }
+        guard let project = projects.first(where: { $0.id == projectSlug }),
+              !project.workspaceUri.isEmpty else { return }
         let uri = project.workspaceUri
         let clientRef = rpcClient
         Task {
@@ -2199,6 +2346,10 @@ public final class AntigravitySessionStore {
                         || remote.updatedAt.timeIntervalSince(existing.updatedAt) > 0.5
                     if existing.title != "New Conversation" && copy.title == "New Conversation" {
                         copy.title = existing.title
+                    }
+                    if existing.isCloud && !copy.isCloud {
+                        copy.isCloud = true
+                        copy.originHostName = "Antigravity"
                     }
                     copy.isPinned = existing.isPinned || remote.isPinned
                     copy.isArchived = existing.isArchived || remote.isArchived
@@ -2270,7 +2421,8 @@ public final class AntigravitySessionStore {
                 )
                 summaries = mergedList
                 if selectedProjectId.isEmpty || !projects.contains(where: { $0.id == selectedProjectId }) {
-                    selectedProjectId = projects.first?.id ?? ""
+                    let defaultProj = projects.first(where: { !$0.isNoProject }) ?? projects.first
+                    selectedProjectId = defaultProj?.id ?? ""
                 }
                 if shouldResyncActiveCascade && !activeCascadeId.isEmpty {
                     syncStepsForCascade(
@@ -2529,9 +2681,28 @@ public final class AntigravitySessionStore {
         let storeRef = projectionStore
         let clientRef = rpcClient
         let shouldSendLive = (hasPairedBackend || isLiveBackendConnected)
-        let workspaceUri = selectedWorkspaceUri.isEmpty
-            ? (isVerificationMode ? "file:///Users/wl/code/ledger-svc" : (workspaces.first?.workspaceUri ?? ""))
-            : selectedWorkspaceUri
+        let isUnassignedSession = (currentProj?.isNoProject == true)
+            || (currentSummary.map {
+                AntigravityCloudDetector.isNoProjectSlug($0.projectSlug) && ($0.cloudProjectId ?? "").isEmpty
+            } ?? false)
+        let workspaceUri: String = {
+            if isUnassignedSession {
+                if let scratch = currentSummary?.workspaceUri, AntigravityCloudDetector.isPlaygroundScratchURI(scratch) {
+                    return scratch
+                }
+                return ""
+            }
+            if let sumUri = currentSummary?.workspaceUri, !sumUri.isEmpty {
+                return sumUri
+            }
+            if let projUri = currentProj?.workspaceUri, !projUri.isEmpty {
+                return projUri
+            }
+            if !selectedWorkspaceUri.isEmpty {
+                return selectedWorkspaceUri
+            }
+            return isVerificationMode ? "file:///Users/wl/code/ledger-svc" : ""
+        }()
 
         Task { [weak self] in
             await storeRef.enqueueOutbox(
@@ -2559,6 +2730,7 @@ public final class AntigravitySessionStore {
                         initialPrompt: "",
                         modelId: cfg.modelId,
                         cloudProjectId: summaryCloudProjId,
+                        isCloud: summaryIsCloud,
                         instanceUuidOverride: summaryOriginUuid
                     )
                     if let self, !createdId.isEmpty {

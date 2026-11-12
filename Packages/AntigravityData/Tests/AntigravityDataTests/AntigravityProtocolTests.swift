@@ -1126,4 +1126,198 @@ final class AntigravityProtocolTests: XCTestCase {
         let reloaded = await storeB.loadProjectedSteps(cascadeId: cloudCascadeId)
         XCTAssertEqual(reloaded.count, 2)
     }
+
+    @MainActor
+    func testNoProjectLocalAndCloudConversationsAndProjectOrdering() throws {
+        let refNow = try XCTUnwrap(
+            AntigravityRPCClient.parseProtoTimestamp(.string("2026-11-12T10:00:00Z"))
+        )
+
+        // 1. Local `No Project` trajectory (`workspaces: []`) -> "No Project", empty URI & empty branch
+        let localUnassignedJSON: JSONValue = .object([
+            "summary": .string("Explain Swift 6 actor isolation"),
+            "stepCount": .int(6),
+            "status": .string("CASCADE_RUN_STATUS_DONE"),
+            "lastModifiedTime": .string("2026-11-12T09:58:00Z"),
+            "workspaces": .array([])
+        ])
+        let localNoProj = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "cid-local-no-proj",
+                value: localUnassignedJSON,
+                now: refNow
+            )
+        )
+        XCTAssertFalse(localNoProj.isCloud)
+        XCTAssertEqual(localNoProj.projectSlug, "No Project")
+        XCTAssertEqual(localNoProj.workspaceUri, "")
+        XCTAssertEqual(localNoProj.branchName, "")
+
+        // 2. Local scratch playground (`~/.gemini/antigravity/playground/silver-comet`) -> grouped under "No Project"
+        let scratchPlaygroundJSON: JSONValue = .object([
+            "summary": .string("Quick Python regex scratchpad"),
+            "stepCount": .int(4),
+            "status": .string("CASCADE_RUN_STATUS_IDLE"),
+            "lastModifiedTime": .string("2026-11-12T09:40:00Z"),
+            "workspaces": .array([
+                .object(["workspaceFolderAbsoluteUri": .string("file:///Users/dev/.gemini/antigravity/playground/silver-comet")])
+            ])
+        ])
+        let scratchNoProj = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "cid-scratch-playground",
+                value: scratchPlaygroundJSON,
+                now: refNow
+            )
+        )
+        XCTAssertFalse(scratchNoProj.isCloud)
+        XCTAssertEqual(scratchNoProj.projectSlug, "No Project")
+        XCTAssertEqual(scratchNoProj.workspaceUri, "file:///Users/dev/.gemini/antigravity/playground/silver-comet")
+        XCTAssertEqual(scratchNoProj.branchName, "")
+
+        // 3. Cloud `BACKEND_TYPE_REMOTE_AICODE` `JetboxSubscribeToSummaries` (`forceCloud: true`) with:
+        //    - UUID key & empty `workspaces` (Cloud `No Project`) -> MUST NOT be dropped!
+        //    - `v1/...` key & container root `file:///home/antigravity` -> "No Project", `isCloud == true`
+        //    - Echoed local `file:///Users/dev/code/game_loop` -> filtered out cleanly
+        let jetboxCloudEvent: [String: JSONValue] = [
+            "updates": .object([
+                "4b7f82a1-9912-40d0-8111-cc8899aa0011": .object([
+                    "summary": .string("Cloud brainstorm without GitHub repo"),
+                    "stepCount": .int(5),
+                    "status": .string("CASCADE_RUN_STATUS_DONE"),
+                    "lastModifiedTime": .string("2026-11-12T09:59:00Z"),
+                    "workspaces": .array([])
+                ]),
+                "v1/default/jetski_remote_agents_3p/11223344-5566-7788-99aa-bbccddeeff00": .object([
+                    "summary": .string("Unmounted Jetski Cloud VM chat"),
+                    "stepCount": .int(3),
+                    "status": .string("CASCADE_RUN_STATUS_RUNNING"),
+                    "lastModifiedTime": .string("2026-11-12T09:59:30Z"),
+                    "workspaces": .array([
+                        .object(["workspaceFolderAbsoluteUri": .string("file:///home/antigravity")])
+                    ])
+                ]),
+                "cid-echoed-local-repo": .object([
+                    "summary": .string("Local Mac repo echoed on un-filtered server"),
+                    "stepCount": .int(9),
+                    "status": .string("CASCADE_RUN_STATUS_IDLE"),
+                    "workspaces": .array([
+                        .object(["workspaceFolderAbsoluteUri": .string("file:///Users/dev/code/game_loop")])
+                    ])
+                ])
+            ])
+        ]
+        let cloudBatch = AntigravityRPCClient.decodeJetboxSummariesEvent(
+            jetboxCloudEvent,
+            forceCloud: true,
+            originInstanceUuid: "inst-1",
+            originHostName: "Antigravity"
+        )
+        XCTAssertEqual(cloudBatch.upserts.count, 2, "Both Cloud No Project sessions must survive while echoed local repo is filtered out")
+        for s in cloudBatch.upserts {
+            XCTAssertTrue(s.isCloud)
+            XCTAssertEqual(s.originHostName, "Antigravity")
+            XCTAssertEqual(s.projectSlug, "No Project")
+            XCTAssertEqual(s.workspaceUri, "")
+            XCTAssertEqual(s.branchName, "")
+        }
+
+        // 4. Legacy cached `"workspace"` summary migration & project ordering (named projects first, `No Project` at bottom)
+        let namedRepoSummary = CascadeSummary(
+            cascadeId: "cid-game-loop",
+            title: "Optimize render frame pacing",
+            projectSlug: "game_loop",
+            workspaceUri: "file:///Users/dev/code/game_loop",
+            branchName: "main",
+            status: .done,
+            stepCount: 12,
+            updatedAt: refNow.addingTimeInterval(-3600)
+        )
+        let legacyCachedWorkspaceSummary = CascadeSummary(
+            cascadeId: "cid-legacy-cached",
+            title: "Cached unassigned chat from older build",
+            projectSlug: "workspace",
+            workspaceUri: "file:///Users/wl/code/workspace",
+            branchName: "main",
+            status: .done,
+            stepCount: 2,
+            updatedAt: refNow
+        )
+
+        var allSummaries = [legacyCachedWorkspaceSummary, localNoProj, scratchNoProj] + cloudBatch.upserts + [namedRepoSummary]
+        let reconciled = AntigravitySessionStore.reconcileLiveProjects(
+            workspaces: [
+                WorkspaceInfo(workspaceUri: "file:///Users/dev/code/game_loop", displayName: "game_loop", activeBranch: "main", isCloud: false)
+            ],
+            summaries: &allSummaries,
+            existingProjects: [],
+            hostName: "Mac Mini"
+        )
+
+        // Named `game_loop` comes BEFORE both `No Project` (Local) and `cloud:No Project` (Cloud)
+        XCTAssertEqual(reconciled.map(\.id), ["game_loop", "No Project", "cloud:No Project"])
+
+        let localNoProjSection = try XCTUnwrap(reconciled.first(where: { $0.id == "No Project" }))
+        XCTAssertTrue(localNoProjSection.isNoProject)
+        XCTAssertEqual(localNoProjSection.homeSubtitle(isHostOnline: true), "Local · Mac Mini")
+        XCTAssertEqual(localNoProjSection.homeSubtitle(isHostOnline: false), "Offline · Mac Mini")
+        XCTAssertEqual(localNoProjSection.activeBranch, "")
+        XCTAssertEqual(localNoProjSection.workspaceUri, "")
+
+        let cloudNoProjSection = try XCTUnwrap(reconciled.first(where: { $0.id == "cloud:No Project" }))
+        XCTAssertTrue(cloudNoProjSection.isNoProject)
+        XCTAssertEqual(cloudNoProjSection.name, "No Project")
+        XCTAssertEqual(cloudNoProjSection.homeSubtitle(isHostOnline: true), "Antigravity Cloud")
+        XCTAssertEqual(cloudNoProjSection.activeBranch, "")
+
+        let migratedLegacy = try XCTUnwrap(allSummaries.first(where: { $0.cascadeId == "cid-legacy-cached" }))
+        XCTAssertEqual(migratedLegacy.projectSlug, "No Project")
+        XCTAssertEqual(migratedLegacy.workspaceUri, "")
+        XCTAssertEqual(migratedLegacy.branchName, "")
+
+        // 5. Cloud `No Project` entry with `workspaces: []` + `trajectoryMetadata.workspaceUris: ["file:///home/antigravity"]`
+        let metaContainerCloudJSON: JSONValue = .object([
+            "displayName": .string("Remote Cloud quick script"),
+            "stepCount": .int(3),
+            "status": .string("CASCADE_RUN_STATUS_DONE"),
+            "trajectoryMetadata": .object([
+                "workspaceUris": .array([.string("file:///home/antigravity")])
+            ]),
+            "workspaces": .array([])
+        ])
+        let metaCloudNoProj = try XCTUnwrap(
+            AntigravityRPCClient.decodeTrajectorySummaryEntry(
+                cascadeId: "99887766-5544-3322-1100-aabbccddeeff",
+                value: metaContainerCloudJSON,
+                now: refNow
+            )
+        )
+        XCTAssertTrue(metaCloudNoProj.isCloud)
+        XCTAssertEqual(metaCloudNoProj.projectSlug, "No Project")
+        XCTAssertEqual(metaCloudNoProj.workspaceUri, "")
+        XCTAssertEqual(metaCloudNoProj.branchName, "")
+
+        // 6. Creating a new `No Project` conversation on a paired store never gets stuck in `isLoadingSteps`
+        let store = AntigravitySessionStore.makeESDDVerificationStore()
+        store.hasPairedBackend = true
+        store.isLiveBackendConnected = false
+        store.activeHost = RemoteHostInstance(
+            instanceId: "mac-mini-offline",
+            hostname: "Mac Mini",
+            channel: .cloudRelay,
+            endpointURL: URL(string: "https://antigravity.google/r/mac-mini-offline")!,
+            isOnline: false
+        )
+        store.projects = reconciled
+        store.summaries = allSummaries
+        let createdOptimisticId = store.createConversationInProject("No Project")
+        store.syncStepsForCascade(createdOptimisticId, pollUntilIdle: true)
+        XCTAssertFalse(store.isLoadingSteps)
+        XCTAssertNil(store.stepLoadErrorText)
+        let createdSummary = try XCTUnwrap(store.summaries.first(where: { $0.cascadeId == createdOptimisticId }))
+        XCTAssertEqual(createdSummary.projectSlug, "No Project")
+        XCTAssertEqual(createdSummary.branchName, "")
+        XCTAssertEqual(createdSummary.workspaceUri, "")
+    }
 }
+

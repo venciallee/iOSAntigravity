@@ -214,12 +214,73 @@ public enum AntigravityCloudDetector {
         "codespace://"
     ]
 
+    public static let noProjectDisplayName = "No Project"
+
     public static let genericContainerRoots: Set<String> = [
         "/home/antigravity",
         "/workspace",
         "/workspaces",
         "/root"
     ]
+
+    public static func isNoProjectSlug(_ rawSlug: String) -> Bool {
+        var cleaned = rawSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.lowercased().hasPrefix("cloud:") {
+            cleaned = String(cleaned.dropFirst("cloud:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let lower = cleaned.lowercased()
+        return lower.isEmpty
+            || lower == "no project"
+            || lower == "no-project"
+            || lower == "noproject"
+            || lower == "unassigned"
+            || lower == "workspace"
+            || lower == "antigravity"
+            || lower == "antigravity-cloud"
+    }
+
+    public static func isGenericContainerURI(_ rawURI: String) -> Bool {
+        let trimmed = rawURI.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return true
+        }
+        let decoded = (trimmed.removingPercentEncoding ?? trimmed)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let lower = decoded.lowercased()
+        if lower == "cloud://workspace"
+            || lower == "cloud://antigravity"
+            || lower == "cloud://antigravity-cloud"
+            || lower == "cloud://no-project"
+            || lower == "cloud://no project"
+            || lower == "file:///users/wl/code/workspace" {
+            return true
+        }
+        if lower.hasPrefix("file://") {
+            let tail = String(decoded.dropFirst("file://".count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let fsPath = tail.isEmpty ? "/" : "/\(tail)"
+            return genericContainerRoots.contains(fsPath.lowercased()) || genericContainerRoots.contains(fsPath)
+        }
+        if decoded.hasPrefix("/") {
+            let fsPath = "/\(decoded.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
+            return genericContainerRoots.contains(fsPath)
+        }
+        return false
+    }
+
+    public static func isPlaygroundScratchURI(_ rawURI: String) -> Bool {
+        let decoded = (rawURI.removingPercentEncoding ?? rawURI)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return decoded.contains("/.gemini/antigravity/playground/")
+            || decoded.hasSuffix("/.gemini/antigravity/playground")
+            || decoded.contains("/.gemini/antigravity/scratch/")
+            || decoded.hasSuffix("/.gemini/antigravity/scratch")
+            || decoded.contains("/.antigravity/playground/")
+            || decoded.hasSuffix("/.antigravity/playground")
+            || decoded.contains("/.gemini/jetski/playground/")
+            || decoded.hasSuffix("/.gemini/jetski/playground")
+    }
 
     public static func isCloudWorkspaceURI(
         _ rawURI: String,
@@ -248,7 +309,10 @@ public enum AntigravityCloudDetector {
 
     public static func normalizeWorkspaceURI(_ rawURI: String, isCloud: Bool) -> String {
         let trimmed = rawURI.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return isCloud ? "cloud://workspace" : "" }
+        guard !trimmed.isEmpty else { return "" }
+        if isGenericContainerURI(trimmed) {
+            return ""
+        }
         let decoded = (trimmed.removingPercentEncoding ?? trimmed)
         let lower = decoded.lowercased()
 
@@ -262,7 +326,7 @@ public enum AntigravityCloudDetector {
             if parts.count >= 2 {
                 return "cloud://\(parts[0])/\(parts[1])"
             }
-            return tail.isEmpty ? "cloud://github" : "cloud://\(tail)"
+            return tail.isEmpty ? "" : "cloud://\(tail)"
         }
 
         if lower.hasPrefix("vscode-vfs://") {
@@ -285,16 +349,16 @@ public enum AntigravityCloudDetector {
             if let first = parts.first, !first.isEmpty {
                 return "cloud://\(first)"
             }
-            return "cloud://antigravity"
+            return ""
         }
 
         if isCloud && decoded.hasPrefix("file://") {
             let fsPath = String(decoded.dropFirst("file://".count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let parts = fsPath.split(separator: "/").map(String.init)
-            if let slug = parts.last, !slug.isEmpty {
+            if let slug = parts.last, !slug.isEmpty, !isNoProjectSlug(slug) {
                 return "cloud://\(slug)"
             }
-            return "cloud://workspace"
+            return ""
         }
 
         return trimmed
@@ -307,7 +371,7 @@ public enum AntigravityCloudDetector {
         if lower.hasPrefix("cloud://") {
             let tail = String(decoded.dropFirst("cloud://".count))
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard !tail.isEmpty, tail != "workspace", tail != "antigravity" else { return nil }
+            guard !tail.isEmpty, !isNoProjectSlug(tail) else { return nil }
             return tail
         }
         if lower.hasPrefix("https://github.com/") || lower.hasPrefix("http://github.com/") {
@@ -367,21 +431,37 @@ public struct ProjectWorkspace: Codable, Sendable, Equatable, Identifiable {
         self.originInstanceUuid = originInstanceUuid
     }
 
+    public var isNoProject: Bool {
+        AntigravityCloudDetector.isNoProjectSlug(name) || AntigravityCloudDetector.isNoProjectSlug(id)
+    }
+
     public var homeSubtitle: String {
         homeSubtitle(isHostOnline: true)
     }
 
     public func homeSubtitle(isHostOnline: Bool) -> String {
+        if isNoProject {
+            switch runtime {
+            case .macBookPro:
+                let statePrefix = isHostOnline ? "Local" : "Offline"
+                return "\(statePrefix) · \(hostName)"
+            case .cloud:
+                return "Antigravity Cloud"
+            }
+        }
+        let branchSuffix = activeBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? ""
+            : " · \(activeBranch)"
         switch runtime {
         case .macBookPro:
             let statePrefix = isHostOnline ? "Local" : "Offline"
-            return "\(statePrefix) · \(hostName) · \(activeBranch)"
+            return "\(statePrefix) · \(hostName)\(branchSuffix)"
         case .cloud:
             if let cloudLabel = AntigravityCloudDetector.extractCloudLocationLabel(workspaceUri),
                cloudLabel.caseInsensitiveCompare(name) != .orderedSame {
-                return "Cloud · \(cloudLabel) · \(activeBranch)"
+                return "Cloud · \(cloudLabel)\(branchSuffix)"
             }
-            return "Cloud · \(activeBranch)"
+            return "Cloud\(branchSuffix)"
         }
     }
 

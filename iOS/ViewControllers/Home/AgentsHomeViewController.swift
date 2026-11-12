@@ -637,6 +637,9 @@ public struct AgentsHomeViewController: View {
 
     private func projectSectionView(_ project: AgentProjectSection) -> some View {
         let isCollapsed = collapsedProjects.contains(project.id)
+        let isNoProj = AntigravityCloudDetector.isNoProjectSlug(project.slug)
+        let headerIcon = project.isCloud ? "cloud" : (isNoProj ? "bubble.left.and.bubble.right" : "folder")
+        let a11ySuffix = (project.id != project.slug) ? project.id : project.slug
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -652,7 +655,7 @@ public struct AgentsHomeViewController: View {
                                     .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                             )
                             .overlay(
-                                Image(systemName: project.isCloud ? "cloud" : "folder")
+                                Image(systemName: headerIcon)
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(UEChromePalette.textBody)
                             )
@@ -670,7 +673,7 @@ public struct AgentsHomeViewController: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("project-header-\(project.slug)")
+                .accessibilityIdentifier("project-header-\(a11ySuffix)")
 
                 Spacer(minLength: 4)
 
@@ -684,7 +687,7 @@ public struct AgentsHomeViewController: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("btn-add-conv-\(project.slug)")
+                .accessibilityIdentifier("btn-add-conv-\(a11ySuffix)")
 
                 Button {
                     if isCollapsed {
@@ -700,7 +703,7 @@ public struct AgentsHomeViewController: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("btn-collapse-\(project.slug)")
+                .accessibilityIdentifier("btn-collapse-\(a11ySuffix)")
             }
 
             if !isCollapsed {
@@ -713,7 +716,7 @@ public struct AgentsHomeViewController: View {
                                 Image(systemName: "plus.bubble")
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(AntigravityTheme.accentPeriwinkle)
-                                Text("No conversations yet · Start one in \(project.slug)")
+                                Text(isNoProj ? "No unassigned conversations yet · Start one" : "No conversations yet · Start one in \(project.slug)")
                                     .font(.system(size: 14, weight: .regular))
                                     .foregroundStyle(UEChromePalette.textSecondary)
                                 Spacer()
@@ -722,7 +725,7 @@ public struct AgentsHomeViewController: View {
                             .frame(minHeight: 52)
                         }
                         .buttonStyle(AntigravityInteractiveRowButtonStyle())
-                        .accessibilityIdentifier("empty-project-conv-\(project.slug)")
+                        .accessibilityIdentifier("empty-project-conv-\(a11ySuffix)")
                     } else {
                         ForEach(Array(project.conversations.enumerated()), id: \.element.id) { index, item in
                             conversationRow(item: item, showProjectSlug: false)
@@ -745,21 +748,28 @@ public struct AgentsHomeViewController: View {
         .padding(.top, 2)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(
-            project.slug == "ledger-svc" ? "project-group-ledger-svc" : "project-group-\(project.slug)"
+            project.slug == "ledger-svc" ? "project-group-ledger-svc" : "project-group-\(a11ySuffix)"
         )
     }
 
     // MARK: - 6. Conversation Row with Full-Width Hit-Testing & Context Menu
 
     private func triggerOpenConversation(_ id: String) {
-        if let onOpenConversation {
-            onOpenConversation(id)
-            return
-        }
-        if id == "new-conversation" || id.hasPrefix("new-") {
-            if id == "new-conversation" && selectedHost == .antigravityCloud {
-                if let cloudProj = store.projects.first(where: { $0.runtime == .cloud }) {
-                    _ = store.createConversationInProject(cloudProj.id)
+        if id == "new-conversation" {
+            if selectedHost == .antigravityCloud {
+                if usesLiveStoreData {
+                    let cloudTarget = "new-cloud:\(AntigravityCloudDetector.noProjectDisplayName)"
+                    if let onOpenConversation {
+                        onOpenConversation(cloudTarget)
+                    } else {
+                        _ = store.createConversationInProject("cloud:\(AntigravityCloudDetector.noProjectDisplayName)")
+                    }
+                } else if let cloudProj = store.projects.first(where: { $0.runtime == .cloud }) {
+                    if let onOpenConversation {
+                        onOpenConversation("new-\(cloudProj.id)")
+                    } else {
+                        _ = store.createConversationInProject(cloudProj.id)
+                    }
                 } else {
                     store.newProjectDraft.runsOn = .cloud
                     if let onOpenNewProject {
@@ -770,9 +780,32 @@ public struct AgentsHomeViewController: View {
                 }
                 return
             }
-            let slug = id.hasPrefix("new-") && id != "new-conversation"
-                ? String(id.dropFirst(4))
-                : store.selectedProjectId
+
+            if usesLiveStoreData {
+                let noProjTarget = "new-\(AntigravityCloudDetector.noProjectDisplayName)"
+                if let onOpenConversation {
+                    onOpenConversation(noProjTarget)
+                } else {
+                    _ = store.createConversationInProject(AntigravityCloudDetector.noProjectDisplayName)
+                }
+                return
+            }
+        }
+
+        if let onOpenConversation {
+            onOpenConversation(id)
+            return
+        }
+        if id == "new-conversation" || id.hasPrefix("new-") {
+            let slug: String = {
+                if id.hasPrefix("new-") && id != "new-conversation" {
+                    return String(id.dropFirst(4))
+                }
+                if !store.selectedProjectId.isEmpty {
+                    return store.selectedProjectId
+                }
+                return "ledger-svc"
+            }()
             _ = store.createConversationInProject(slug)
             return
         }
@@ -837,7 +870,13 @@ public struct AgentsHomeViewController: View {
                         }
 
                         if showProjectSlug {
-                            Text(item.projectSlug)
+                            let cleanSlug = item.projectSlug.hasPrefix("cloud:")
+                                ? String(item.projectSlug.dropFirst("cloud:".count))
+                                : item.projectSlug
+                            let displaySlug = AntigravityCloudDetector.isNoProjectSlug(cleanSlug)
+                                ? AntigravityCloudDetector.noProjectDisplayName
+                                : cleanSlug
+                            Text(displaySlug)
                                 .font(.system(size: 12.5, weight: .regular))
                                 .foregroundStyle(UEChromePalette.textMuted)
                         }
@@ -1121,7 +1160,7 @@ public struct AgentsHomeViewController: View {
         let sourceSections: [AgentProjectSection]
         if usesLiveStoreData {
             let hostOnline = !store.hasPairedBackend || isPairedHostOnline
-            sourceSections = store.projects
+            var builtSections: [AgentProjectSection] = store.projects
                 .filter { projectMatchesHostFilter($0) }
                 .map { proj in
                     let convs = store.summaries
@@ -1135,6 +1174,39 @@ public struct AgentsHomeViewController: View {
                         conversations: convs
                     )
                 }
+
+            let coveredSummaryIds = Set(builtSections.flatMap { $0.conversations.map(\.id) })
+            let orphaned = store.summaries.filter {
+                !$0.isPinned
+                    && !$0.isArchived
+                    && summaryMatchesHostFilter($0)
+                    && !coveredSummaryIds.contains($0.cascadeId)
+            }
+            let orphanedLocal = orphaned.filter { !$0.isCloud }.map(mapStoreSummary)
+            if !orphanedLocal.isEmpty {
+                builtSections.append(
+                    AgentProjectSection(
+                        id: AntigravityCloudDetector.noProjectDisplayName,
+                        slug: AntigravityCloudDetector.noProjectDisplayName,
+                        subtitle: "\(hostOnline ? "Local" : "Offline") · \(store.activeHost.hostname)",
+                        isCloud: false,
+                        conversations: orphanedLocal
+                    )
+                )
+            }
+            let orphanedCloud = orphaned.filter(\.isCloud).map(mapStoreSummary)
+            if !orphanedCloud.isEmpty {
+                builtSections.append(
+                    AgentProjectSection(
+                        id: "cloud:\(AntigravityCloudDetector.noProjectDisplayName)",
+                        slug: AntigravityCloudDetector.noProjectDisplayName,
+                        subtitle: "Antigravity Cloud",
+                        isCloud: true,
+                        conversations: orphanedCloud
+                    )
+                )
+            }
+            sourceSections = builtSections
         } else {
             sourceSections = projectSections.filter { sec in
                 switch selectedHost {
@@ -1147,7 +1219,7 @@ public struct AgentsHomeViewController: View {
 
         return sourceSections.compactMap { section in
             let filteredConvs = section.conversations.filter { matchesFilters($0) }
-            if filteredConvs.isEmpty && !searchText.isEmpty {
+            if filteredConvs.isEmpty && (!searchText.isEmpty || (usesLiveStoreData && selectedFilter != .all)) {
                 return nil
             }
             var copy = section

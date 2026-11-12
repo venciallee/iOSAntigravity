@@ -107,9 +107,11 @@ public struct ProjectDetailViewController: View {
                 projectHeroSection
                 metadataPillsRow
                 newConversationButton
-                underlineTabsStrip
+            underlineTabsStrip
                 tabBodyContent
-                thisProjectSection
+                if !isNoProject {
+                    thisProjectSection
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 10)
@@ -145,17 +147,27 @@ public struct ProjectDetailViewController: View {
             Spacer()
 
             Menu {
-                Button {
-                    finderFeedbackBanner = true
-                    store.revealProjectInFinder(projectSlug)
-                } label: {
-                    Label("Reveal in Finder on Mac", systemImage: "laptopcomputer")
-                }
-                Button {} label: {
-                    Label("Switch Git Branch (\(effectiveBranchName))", systemImage: "arrow.triangle.branch")
-                }
-                Button {} label: {
-                    Label("Project Rules & Skills", systemImage: "doc.text")
+                if !isNoProject {
+                    Button {
+                        finderFeedbackBanner = true
+                        store.revealProjectInFinder(projectSlug)
+                    } label: {
+                        Label("Reveal in Finder on Mac", systemImage: "laptopcomputer")
+                    }
+                    if !effectiveBranchName.isEmpty {
+                        Button {} label: {
+                            Label("Switch Git Branch (\(effectiveBranchName))", systemImage: "arrow.triangle.branch")
+                        }
+                    }
+                    Button {} label: {
+                        Label("Project Rules & Skills", systemImage: "doc.text")
+                    }
+                } else {
+                    Button {
+                        triggerOpenConversation("new-\(projectSlug)")
+                    } label: {
+                        Label("New Conversation", systemImage: "plus.bubble")
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -184,11 +196,27 @@ public struct ProjectDetailViewController: View {
     }
 
     private var liveProject: ProjectWorkspace? {
-        store.projects.first(where: { $0.id == projectSlug || $0.name == projectSlug })
+        store.projects.first(where: { $0.id == projectSlug })
+            ?? store.projects.first(where: { $0.name == projectSlug })
+    }
+
+    private var isNoProject: Bool {
+        usesPairedStoreData && (liveProject?.isNoProject == true || AntigravityCloudDetector.isNoProjectSlug(projectSlug))
+    }
+
+    private var isCloudSection: Bool {
+        liveProject?.runtime == .cloud || projectSlug.lowercased().hasPrefix("cloud:")
+    }
+
+    private var displayTitle: String {
+        isNoProject ? AntigravityCloudDetector.noProjectDisplayName : (liveProject?.name ?? projectSlug)
     }
 
     private var effectivePathDisplay: String {
         guard usesPairedStoreData else { return "~/code/\(projectSlug)" }
+        if isNoProject {
+            return isCloudSection ? "Antigravity Cloud · Unassigned conversations" : "Unassigned conversations"
+        }
         let raw = liveProject?.pathDisplay ?? "~/workspace/\(projectSlug)"
         if raw.hasPrefix("/Users/") {
             let parts = raw.split(separator: "/", omittingEmptySubsequences: true)
@@ -202,7 +230,7 @@ public struct ProjectDetailViewController: View {
 
     private var effectiveHostBadgeDotColor: Color {
         guard usesPairedStoreData else { return AntigravityTheme.statusDone }
-        if liveProject?.runtime == .cloud {
+        if isCloudSection {
             return AntigravityTheme.accentPeriwinkle
         }
         return isPairedHostOnline ? AntigravityTheme.statusDone : AntigravityTheme.statusError
@@ -210,7 +238,10 @@ public struct ProjectDetailViewController: View {
 
     private var effectiveHostBadgeText: String {
         guard usesPairedStoreData else { return "Local · MacBook Pro" }
-        if liveProject?.runtime == .cloud {
+        if isCloudSection {
+            if isNoProject {
+                return "Antigravity Cloud"
+            }
             if let uri = liveProject?.workspaceUri,
                let cloudLabel = AntigravityCloudDetector.extractCloudLocationLabel(uri),
                cloudLabel.caseInsensitiveCompare(liveProject?.name ?? projectSlug) != .orderedSame {
@@ -224,6 +255,9 @@ public struct ProjectDetailViewController: View {
 
     private var effectiveBranchName: String {
         guard usesPairedStoreData else { return "main" }
+        if isNoProject {
+            return ""
+        }
         return liveProject?.activeBranch ?? "main"
     }
 
@@ -248,17 +282,27 @@ public struct ProjectDetailViewController: View {
         )
     }
 
+    private func summaryMatchesCurrentProject(_ s: CascadeSummary) -> Bool {
+        if s.projectSlug == projectSlug || s.projectSlug == liveProject?.id {
+            return true
+        }
+        if isNoProject {
+            return AntigravityCloudDetector.isNoProjectSlug(s.projectSlug) && s.isCloud == isCloudSection
+        }
+        return false
+    }
+
     private var effectiveActiveRows: [ProjectConversationRowModel] {
         guard usesPairedStoreData else { return activeRows }
         return store.summaries
-            .filter { ($0.projectSlug == projectSlug || $0.projectSlug == liveProject?.id) && !$0.isArchived }
+            .filter { summaryMatchesCurrentProject($0) && !$0.isArchived }
             .map(mapLiveSummaryToRow)
     }
 
     private var effectiveArchivedRows: [ProjectConversationRowModel] {
         guard usesPairedStoreData else { return archivedRows }
         return store.summaries
-            .filter { ($0.projectSlug == projectSlug || $0.projectSlug == liveProject?.id) && $0.isArchived }
+            .filter { summaryMatchesCurrentProject($0) && $0.isArchived }
             .map(mapLiveSummaryToRow)
     }
 
@@ -269,7 +313,17 @@ public struct ProjectDetailViewController: View {
     // MARK: - 2. Hero Header ([Folder] ledger-svc + ~/code/ledger-svc)
 
     private var projectHeroSection: some View {
-        HStack(spacing: 14) {
+        let heroIconName: String = {
+            if usesPairedStoreData && isCloudSection {
+                return "cloud"
+            }
+            if isNoProject {
+                return "bubble.left.and.bubble.right"
+            }
+            return "folder"
+        }()
+
+        return HStack(spacing: 14) {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(UEChromePalette.surfacePill)
                 .frame(width: 56, height: 56)
@@ -278,20 +332,20 @@ public struct ProjectDetailViewController: View {
                         .strokeBorder(UEChromePalette.cardBorder, lineWidth: 1)
                 )
                 .overlay(
-                    Image(systemName: (usesPairedStoreData && liveProject?.runtime == .cloud) ? "cloud" : "folder")
+                    Image(systemName: heroIconName)
                         .font(.system(size: 23, weight: .medium))
                         .foregroundStyle(UEChromePalette.textBody)
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(liveProject?.name ?? projectSlug)
+                Text(displayTitle)
                     .font(.system(size: 28, weight: .bold))
                     .tracking(-0.4)
                     .foregroundStyle(Color.white)
                     .accessibilityIdentifier("project-hero-title")
 
                 Text(effectivePathDisplay)
-                    .font(.system(size: 13.5, weight: .regular, design: .monospaced))
+                    .font(.system(size: 13.5, weight: .regular, design: isNoProject ? .default : .monospaced))
                     .foregroundStyle(UEChromePalette.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -322,18 +376,20 @@ public struct ProjectDetailViewController: View {
                 .background(Capsule().fill(UEChromePalette.surfacePill))
                 .overlay(Capsule().strokeBorder(UEChromePalette.cardBorder, lineWidth: 1))
 
-                HStack(spacing: 5) {
-                    Image(systemName: "arrow.triangle.branch")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(UEChromePalette.textSecondary)
-                    Text(effectiveBranchName)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(UEChromePalette.textBody)
+                if !effectiveBranchName.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(UEChromePalette.textSecondary)
+                        Text(effectiveBranchName)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(UEChromePalette.textBody)
+                    }
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(UEChromePalette.surfacePill))
+                    .overlay(Capsule().strokeBorder(UEChromePalette.cardBorder, lineWidth: 1))
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 7)
-                .background(Capsule().fill(UEChromePalette.surfacePill))
-                .overlay(Capsule().strokeBorder(UEChromePalette.cardBorder, lineWidth: 1))
 
                 Text("\(totalConvCount) conversations")
                     .font(.system(size: 12.5, weight: .medium))
@@ -367,7 +423,7 @@ public struct ProjectDetailViewController: View {
             HStack(spacing: 8) {
                 Image(systemName: "pencil")
                     .font(.system(size: 15.5, weight: .semibold))
-                Text("New Conversation in Project")
+                Text(isNoProject ? "New Conversation" : "New Conversation in Project")
                     .font(.system(size: 16, weight: .semibold))
             }
             .foregroundStyle(UEChromePalette.inkOnPrimaryCTA)

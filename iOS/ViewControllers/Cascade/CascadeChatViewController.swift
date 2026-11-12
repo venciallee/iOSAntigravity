@@ -280,6 +280,8 @@ public struct CascadeChatViewController: View {
             .padding(.top, 12)
         } else {
             let isOfflinePaired = !isActiveSessionCloud && store.hasPairedBackend && (!store.isLiveBackendConnected || !store.activeHost.isOnline)
+            let rawSlug = activeProjectWorkspace?.name ?? store.activeSummary?.projectSlug ?? AntigravityCloudDetector.noProjectDisplayName
+            let isNoProjSession = (activeProjectWorkspace?.isNoProject == true) || AntigravityCloudDetector.isNoProjectSlug(rawSlug)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Circle()
@@ -289,7 +291,11 @@ public struct CascadeChatViewController: View {
                         .font(.system(size: 14.5, weight: .semibold))
                         .foregroundStyle(AntigravityTheme.inkReading)
                 }
-                Text("Bound to `\(activeProjectWorkspace?.name ?? store.activeSummary?.projectSlug ?? "workspace")` on `\(effectiveHeaderHostLabel)`. Send a message below to run on \(isActiveSessionCloud ? "Antigravity Cloud" : "Antigravity Desktop").")
+                Text(
+                    isNoProjSession
+                        ? "Unassigned conversation on `\(effectiveHeaderHostLabel)`. Send a message below to run on \(isActiveSessionCloud ? "Antigravity Cloud" : "Antigravity Desktop")."
+                        : "Bound to `\(rawSlug)` on `\(effectiveHeaderHostLabel)`. Send a message below to run on \(isActiveSessionCloud ? "Antigravity Cloud" : "Antigravity Desktop")."
+                )
                     .font(.system(size: 13.5))
                     .foregroundStyle(AntigravityTheme.inkSecondary)
                     .lineSpacing(2)
@@ -309,10 +315,25 @@ public struct CascadeChatViewController: View {
     // MARK: - Top Navigation Bar
 
     private var chatTopNavigationBar: some View {
-        let navTitle = store.activeSummary?.title ?? ((store.hasPairedBackend || store.isLiveBackendConnected) ? "Conversation" : "Add rate limiter to /transfers")
-        let projectLabel = activeProjectWorkspace?.name ?? store.activeSummary?.projectSlug ?? "ledger-svc"
-        let branchLabel = store.activeSummary?.branchName ?? activeProjectWorkspace?.activeBranch ?? "main"
-        let showDiffPill = (!store.hasPairedBackend && !store.isLiveBackendConnected) || store.totalDiffAdditions > 0 || store.totalDiffDeletions > 0
+        let isLiveOrPaired = store.hasPairedBackend || store.isLiveBackendConnected
+        let navTitle = store.activeSummary?.title ?? (isLiveOrPaired ? "Conversation" : "Add rate limiter to /transfers")
+        let rawProjectLabel = activeProjectWorkspace?.name
+            ?? store.activeSummary?.projectSlug
+            ?? (isLiveOrPaired ? AntigravityCloudDetector.noProjectDisplayName : "ledger-svc")
+        let strippedProjectLabel = rawProjectLabel.hasPrefix("cloud:")
+            ? String(rawProjectLabel.dropFirst("cloud:".count))
+            : rawProjectLabel
+        let isNoProjChat = isLiveOrPaired
+            && ((activeProjectWorkspace?.isNoProject == true) || AntigravityCloudDetector.isNoProjectSlug(strippedProjectLabel))
+        let projectLabel = isNoProjChat ? AntigravityCloudDetector.noProjectDisplayName : strippedProjectLabel
+        let branchLabel: String = {
+            if isNoProjChat { return "" }
+            return store.activeSummary?.branchName ?? activeProjectWorkspace?.activeBranch ?? "main"
+        }()
+        let subtitleLine = branchLabel.isEmpty
+            ? "\(projectLabel) · \(effectiveHeaderHostLabel)"
+            : "\(projectLabel) · \(branchLabel) · \(effectiveHeaderHostLabel)"
+        let showDiffPill = !isLiveOrPaired || store.totalDiffAdditions > 0 || store.totalDiffDeletions > 0
 
         return HStack(spacing: 8) {
             Button {
@@ -339,7 +360,7 @@ public struct CascadeChatViewController: View {
                     .truncationMode(.tail)
                     .accessibilityIdentifier("chat-nav-title")
 
-                Text("\(projectLabel) · \(branchLabel) · \(effectiveHeaderHostLabel)")
+                Text(subtitleLine)
                     .font(.system(size: 12))
                     .foregroundStyle(AntigravityTheme.inkSecondary)
                     .lineLimit(1)
