@@ -599,4 +599,164 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(store.connectionStatusText, "Offline · LT74XT6L0M")
         XCTAssertEqual(store.projects.map(\.id), ["iOSAntigravity"])
     }
+
+    func testOfficialRemoteControlQRAndCloudRelayJSPBCodec() throws {
+        // 1. Official QR URL parsing (`/r/<slug>`, `/u/<authuser>/r/<uuid>`, `?p=c%2F<cid>`, and bare slug)
+        let parsedQR = try XCTUnwrap(
+            RemoteHostInstance.parseRemoteControlTarget(
+                "https://antigravity.google.com/u/2/r/lt74xt6l0m-golden-star?p=c%2Fcas-rate-limiter"
+            )
+        )
+        XCTAssertEqual(parsedQR.instanceId, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(parsedQR.authUser, "2")
+        XCTAssertEqual(parsedQR.conversationId, "cas-rate-limiter")
+        XCTAssertEqual(parsedQR.canonicalRelayURLString, "https://antigravity.google.com/r/lt74xt6l0m-golden-star")
+        XCTAssertFalse(parsedQR.requiresRedirectResolution)
+
+        let bareTarget = try XCTUnwrap(RemoteHostInstance.parseRemoteControlTarget("0f5819ac-9308-40d8-a308-98b55122c533-v2"))
+        XCTAssertEqual(bareTarget.instanceId, "0f5819ac-9308-40d8-a308-98b55122c533-v2")
+
+        // 1b. Google AccountChooser / ServiceLogin wrapped QR URLs
+        let accountChooserWrapped =
+            "https://accounts.google.com/AccountChooser?Email=dev%40gmail.com&continue=https%3A%2F%2Fantigravity.google.com%2Fu%2F1%2Fr%2Flt74xt6l0m-golden-star%3Fp%3Dc%252Fcas-wrapped"
+        let parsedWrapped = try XCTUnwrap(RemoteHostInstance.parseRemoteControlTarget(accountChooserWrapped))
+        XCTAssertEqual(parsedWrapped.instanceId, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(parsedWrapped.authUser, "1")
+        XCTAssertEqual(parsedWrapped.conversationId, "cas-wrapped")
+        XCTAssertEqual(parsedWrapped.relayOrigin, "https://antigravity.google.com")
+        XCTAssertEqual(parsedWrapped.originalURLString, accountChooserWrapped)
+
+        // 1c. Alternate Antigravity domains, query-param / hash-route formats, scheme-less links, custom schemes, JSON & CLI prose
+        let corpTarget = try XCTUnwrap(
+            RemoteHostInstance.parseRemoteControlTarget("https://antigravity.corp.google.com/remote?instance=lt74xt6l0m-golden-star")
+        )
+        XCTAssertEqual(corpTarget.instanceId, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(corpTarget.relayOrigin, "https://antigravity.corp.google.com")
+
+        let schemelessTarget = try XCTUnwrap(
+            RemoteHostInstance.parseRemoteControlTarget("antigravity.google.com/r/lt74xt6l0m-golden-star")
+        )
+        XCTAssertEqual(schemelessTarget.instanceId, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(schemelessTarget.relayOrigin, "https://antigravity.google.com")
+
+        let customSchemeTarget = try XCTUnwrap(
+            RemoteHostInstance.parseRemoteControlTarget("agy://r/lt74xt6l0m-golden-star?p=c%2Fcas-mobile")
+        )
+        XCTAssertEqual(customSchemeTarget.instanceId, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(customSchemeTarget.conversationId, "cas-mobile")
+        XCTAssertEqual(customSchemeTarget.relayOrigin, "https://antigravity.google.com")
+
+        let jsonTarget = try XCTUnwrap(
+            RemoteHostInstance.parseRemoteControlTarget(#"{"instanceId":"lt74xt6l0m-golden-star","authUser":"0"}"#)
+        )
+        XCTAssertEqual(jsonTarget.instanceId, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(jsonTarget.authUser, "0")
+
+        let proseTarget = try XCTUnwrap(
+            RemoteHostInstance.parseRemoteControlTarget(
+                "Open https://antigravity.google.com/r/lt74xt6l0m-golden-star on another device."
+            )
+        )
+        XCTAssertEqual(proseTarget.instanceId, "lt74xt6l0m-golden-star")
+
+        // 1d. Official Google shortlinks pin `relayOrigin` to `https://antigravity.google.com` & mark redirect resolution
+        let shortlinkTarget = try XCTUnwrap(RemoteHostInstance.parseRemoteControlTarget("https://g.co/r/abc123xyz"))
+        XCTAssertEqual(shortlinkTarget.instanceId, "")
+        XCTAssertEqual(shortlinkTarget.relayOrigin, "https://antigravity.google.com")
+        XCTAssertTrue(shortlinkTarget.requiresRedirectResolution)
+        XCTAssertEqual(
+            RemoteHostInstance.resolveEffectiveRelayTarget(
+                scannedInput: "https://g.co/r/abc123xyz",
+                webViewFinalURL: "https://antigravity.google.com/u/1/r/lt74xt6l0m-golden-star"
+            ),
+            "https://antigravity.google.com/u/1/r/lt74xt6l0m-golden-star"
+        )
+
+        // 1e. Local mock loopback `/r/<id>` vs plain LAN endpoint vs arbitrary third-party `/r/` URLs
+        let mockLoopback = try XCTUnwrap(RemoteHostInstance.parseRemoteControlTarget("http://127.0.0.1:18080/r/mock-inst-1"))
+        XCTAssertEqual(mockLoopback.instanceId, "mock-inst-1")
+        XCTAssertEqual(mockLoopback.relayOrigin, "http://127.0.0.1:18080")
+        XCTAssertNil(RemoteHostInstance.parseRemoteControlTarget("http://127.0.0.1:18080"))
+        XCTAssertNil(RemoteHostInstance.parseRemoteControlTarget("https://www.reddit.com/r/swift"))
+        XCTAssertNil(RemoteHostInstance.parseRemoteControlTarget("antigravity://verify/agents-home"))
+        XCTAssertTrue(RemoteHostInstance.isDirectLANPairingURI("antigravity://pair?url=https://192.168.1.20:8787&csrf=tok"))
+        XCTAssertNil(RemoteHostInstance.parseRemoteControlTarget("antigravity://pair?url=https://192.168.1.20:8787&csrf=tok"))
+
+        // 2. SAPISIDHASH SHA-1 vector & pure-Swift parity
+        let mockCookie = "SAPISID=test_sapisid_val_123; __Secure-1PAPISID=test_sapisid_val_123; SID=test_sid_val"
+        XCTAssertTrue(SAPISIDHashGenerator.hasRequiredGoogleAuthCookies(mockCookie))
+        let authHeader = try XCTUnwrap(
+            SAPISIDHashGenerator.computeAuthorizationHeader(
+                cookieHeader: mockCookie,
+                origin: "https://antigravity.google.com",
+                timestamp: 1794406100
+            )
+        )
+        let expectedDigest = SAPISIDHashGenerator.pureSwiftSHA1Hex(
+            Array("1794406100 test_sapisid_val_123 https://antigravity.google.com".utf8)
+        )
+        XCTAssertEqual(
+            SAPISIDHashGenerator.sha1Hex("1794406100 test_sapisid_val_123 https://antigravity.google.com"),
+            expectedDigest
+        )
+        XCTAssertTrue(authHeader.contains("SAPISIDHASH 1794406100_\(expectedDigest)"))
+        XCTAssertTrue(authHeader.contains("SAPISID1PHASH 1794406100_\(expectedDigest)"))
+
+        // 3. ListInstances JSPB decoding (with XSSI `)]}'\n` prefix)
+        let rawListInstances = Data(
+            ")]}'\n[[[\"0f5819ac-9308-40d8-a308-98b55122c533-v2\",[\"lt74xt6l0m-golden-star\",\"2.32.0\",1],1,[1794406100,0]]],5]".utf8
+        )
+        let instances = try CloudRelayJSPBCodec.decodeListInstancesResponse(rawListInstances)
+        XCTAssertEqual(instances.count, 1)
+        XCTAssertEqual(instances[0].uuid, "0f5819ac-9308-40d8-a308-98b55122c533-v2")
+        XCTAssertEqual(instances[0].name, "lt74xt6l0m-golden-star")
+        XCTAssertEqual(instances[0].status, .connected)
+        XCTAssertTrue(instances[0].matches(identifier: "lt74xt6l0m-golden-star"))
+        XCTAssertTrue(instances[0].matches(identifier: "0f5819ac-9308-40d8-a308-98b55122c533-v2"))
+
+        // 4. ProxyCommand request & response JSPB round-trip (including outer Base64 safety wrapper)
+        let encodedProxyReq = try CloudRelayJSPBCodec.encodeProxyCommandRequest(
+            targetInstanceUuid: "0f5819ac-9308-40d8-a308-98b55122c533-v2",
+            rpcPath: "/exa.language_server_pb.LanguageServerService/GetWorkspaceInfos",
+            payload: Data("{}".utf8),
+            contentType: "application/json"
+        )
+        let reqArray = try XCTUnwrap(try JSONDecoder().decode(JSONValue.self, from: encodedProxyReq).arrayValue)
+        XCTAssertEqual(reqArray[0].stringValue, "0f5819ac-9308-40d8-a308-98b55122c533-v2")
+        XCTAssertEqual(reqArray[2].stringValue, "e30=")
+
+        let sampleProxyResp = Data("[\"e30=\",[[\"accept-encoding\",\"gzip\"],[\"content-type\",\"application/json\"]]]".utf8)
+        let decodedResp = try CloudRelayJSPBCodec.decodeProxyCommandResponse(sampleProxyResp)
+        XCTAssertEqual(String(data: decodedResp.payload, encoding: .utf8), "{}")
+        XCTAssertEqual(decodedResp.headers["content-type"], "application/json")
+
+        let xssiOuterWrapped = Data((")]}'\n" + String(data: sampleProxyResp, encoding: .utf8)!).utf8).base64EncodedData()
+        let decodedWrapped = try CloudRelayJSPBCodec.decodeProxyCommandResponse(
+            xssiOuterWrapped,
+            responseHeaders: ["Content-Transfer-Encoding": "base64"]
+        )
+        XCTAssertEqual(String(data: decodedWrapped.payload, encoding: .utf8), "{}")
+    }
+
+    @MainActor
+    func testMakeLiveStoreStartsEmptyWithZeroMockFixtures() {
+        let liveStore = AntigravitySessionStore.makeLiveStore()
+        XCTAssertFalse(liveStore.isVerificationMode)
+        XCTAssertFalse(liveStore.hasPairedBackend)
+        XCTAssertFalse(liveStore.isLiveBackendConnected)
+        XCTAssertTrue(liveStore.projects.isEmpty)
+        XCTAssertTrue(liveStore.workspaces.isEmpty)
+        XCTAssertTrue(liveStore.summaries.isEmpty)
+        XCTAssertTrue(liveStore.automations.isEmpty)
+        XCTAssertTrue(liveStore.contextCandidates.isEmpty)
+        XCTAssertTrue(liveStore.availableGitHubRepos.isEmpty)
+        XCTAssertTrue(liveStore.composerAttachments.isEmpty)
+        XCTAssertEqual(liveStore.composerDraftText, "")
+        XCTAssertEqual(liveStore.activeCascadeId, "")
+        XCTAssertEqual(liveStore.selectedProjectId, "")
+
+        let verifyStore = AntigravitySessionStore.makeESDDVerificationStore()
+        XCTAssertTrue(verifyStore.isVerificationMode)
+        XCTAssertFalse(verifyStore.summaries.isEmpty)
+    }
 }

@@ -176,7 +176,7 @@ public struct ProjectDetailViewController: View {
     }
 
     private var usesPairedStoreData: Bool {
-        store.hasPairedBackend || store.isLiveBackendConnected
+        !store.isVerificationMode || store.hasPairedBackend || store.isLiveBackendConnected
     }
 
     private var isPairedHostOnline: Bool {
@@ -384,9 +384,9 @@ public struct ProjectDetailViewController: View {
     // MARK: - 5. Active / Archived / Automations Underline Tabs
 
     private var underlineTabsStrip: some View {
-        let activeCountText = store.isLiveBackendConnected ? "\(effectiveActiveRows.count)" : "3"
-        let archivedCountText = store.isLiveBackendConnected ? "\(effectiveArchivedRows.count)" : "2"
-        let autoCountText = store.isLiveBackendConnected ? "\(effectiveProjectAutomations.count)" : "1"
+        let activeCountText = usesPairedStoreData ? "\(effectiveActiveRows.count)" : "3"
+        let archivedCountText = usesPairedStoreData ? "\(effectiveArchivedRows.count)" : "2"
+        let autoCountText = usesPairedStoreData ? "\(effectiveProjectAutomations.count)" : "1"
         return VStack(spacing: 0) {
             HStack(spacing: 18) {
                 underlineTabItem(
@@ -455,7 +455,7 @@ public struct ProjectDetailViewController: View {
     @ViewBuilder
     private var tabBodyContent: some View {
         let rows: [ProjectConversationRowModel] = (selectedTab == .archived) ? effectiveArchivedRows : effectiveActiveRows
-        if store.isLiveBackendConnected && selectedTab == .automations {
+        if usesPairedStoreData && selectedTab == .automations {
             VStack(alignment: .leading, spacing: 0) {
                 if effectiveProjectAutomations.isEmpty {
                     Text("No automations configured for \(projectSlug) yet.")
@@ -488,7 +488,7 @@ public struct ProjectDetailViewController: View {
             )
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("project-conv-list")
-        } else if store.isLiveBackendConnected && rows.isEmpty {
+        } else if usesPairedStoreData && rows.isEmpty {
             Text(selectedTab == .archived ? "No archived conversations in \(projectSlug)." : "No active conversations in \(projectSlug).")
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(UEChromePalette.textSecondary)

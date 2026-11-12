@@ -189,6 +189,7 @@ public struct AntigravityRootContainerView: View {
     @State private var selectedTab: ShellTab = .agents
     @State private var activeModalSheet: ModalSheetDestination?
     @State private var chatReturnProjectSlug: String?
+    @State private var settingsScannerTriggered: Bool = false
 
     private enum ModalSheetDestination: String, Identifiable {
         case displayOptions
@@ -215,12 +216,36 @@ public struct AntigravityRootContainerView: View {
             }
         }
         .background(AntigravityTheme.canvasObsidian.ignoresSafeArea())
+        .onChange(of: store.activeRoute) { _, newRoute in
+            if newRoute == .pairingSettings {
+                selectedTab = .settings
+            }
+        }
     }
 
     // MARK: - Interactive Navigation Shell
 
     @ViewBuilder
     private var interactiveNavigationView: some View {
+        if !store.isVerificationMode && !store.hasPairedBackend && !store.isLiveBackendConnected {
+            AntigravityWelcomeView(
+                store: store,
+                onConnected: {
+                    if case .cascadeChat(let cid) = store.activeRoute, !cid.isEmpty {
+                        selectedTab = .agents
+                    } else {
+                        store.activeRoute = .tabRoot
+                        selectedTab = .agents
+                    }
+                }
+            )
+        } else {
+            pairedShellView
+        }
+    }
+
+    @ViewBuilder
+    private var pairedShellView: some View {
         ZStack {
             switch store.activeRoute {
             case .planReview:
@@ -308,9 +333,14 @@ public struct AntigravityRootContainerView: View {
         VStack(spacing: 0) {
             RemotePairingViewController(
                 store: store,
+                externalScannerTrigger: $settingsScannerTriggered,
                 onConnected: {
-                    store.activeRoute = .tabRoot
-                    selectedTab = .agents
+                    if case .cascadeChat(let cid) = store.activeRoute, !cid.isEmpty {
+                        selectedTab = .agents
+                    } else {
+                        store.activeRoute = .tabRoot
+                        selectedTab = .agents
+                    }
                 }
             )
             Spacer(minLength: 0)
@@ -321,8 +351,7 @@ public struct AntigravityRootContainerView: View {
                     selectedTab = tab
                 },
                 onTapFAB: {
-                    store.activeRoute = .tabRoot
-                    selectedTab = .agents
+                    settingsScannerTriggered = true
                 }
             )
         }

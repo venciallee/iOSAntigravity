@@ -8,10 +8,13 @@ public struct AntigravityApp: App {
     @State private var activeVerifyCase: ESDDVerifySceneCase?
 
     public init() {
-        let initialStore = AntigravitySessionStore.makeESDDVerificationStore()
         let launchCase = DebugSceneFactory.launchVerifyCase()
+        let initialStore: AntigravitySessionStore
         if let launchCase {
+            initialStore = AntigravitySessionStore.makeESDDVerificationStore()
             initialStore.configureForVerifyScene(launchCase)
+        } else {
+            initialStore = AntigravitySessionStore.makeLiveStore()
         }
         self._store = State(initialValue: initialStore)
         self._activeVerifyCase = State(initialValue: launchCase)
@@ -22,9 +25,24 @@ public struct AntigravityApp: App {
             AntigravityRootContainerView(store: store, activeVerifyCase: $activeVerifyCase)
                 .preferredColorScheme(activeVerifyCase == .liveActivitySpec ? .light : .dark)
                 .task {
-                    guard activeVerifyCase == nil else { return }
+                    guard activeVerifyCase == nil else {
+                        store.isInitialSessionCheckComplete = true
+                        return
+                    }
+                    defer {
+                        store.isInitialSessionCheckComplete = true
+                    }
                     let env = ProcessInfo.processInfo.environment
-                    if let backendURL = env["ANTIGRAVITY_BACKEND_URL"], !backendURL.isEmpty {
+                    if let relayURL = env["ANTIGRAVITY_RELAY_URL"], !relayURL.isEmpty {
+                        let cookie = env["ANTIGRAVITY_RELAY_COOKIE"] ?? ""
+                        let authUser = env["ANTIGRAVITY_AUTHUSER"]
+                        _ = await store.connectCloudRelay(
+                            relayURLString: relayURL,
+                            sessionCookie: cookie,
+                            authUser: authUser,
+                            hostName: env["ANTIGRAVITY_HOST_NAME"] ?? "Antigravity Desktop"
+                        )
+                    } else if let backendURL = env["ANTIGRAVITY_BACKEND_URL"], !backendURL.isEmpty {
                         let csrf = env["ANTIGRAVITY_CSRF_TOKEN"] ?? ""
                         let sha256 = env["ANTIGRAVITY_CERT_SHA256"]
                         _ = await store.connectDirectLAN(
@@ -45,16 +63,36 @@ public struct AntigravityApp: App {
                 }
                 .onOpenURL { url in
                     if let sceneCase = DebugSceneFactory.resolveDeepLink(url) {
-                        store.configureForVerifyScene(sceneCase)
+                        if !store.isVerificationMode {
+                            let verifyStore = AntigravitySessionStore.makeESDDVerificationStore()
+                            verifyStore.configureForVerifyScene(sceneCase)
+                            store = verifyStore
+                        } else {
+                            store.configureForVerifyScene(sceneCase)
+                        }
                         activeVerifyCase = sceneCase
                         return
                     }
-                    if url.scheme?.lowercased() == "antigravity" && url.host?.lowercased() == "pair" {
+                    let rawURL = url.absoluteString
+                    if RemoteHostInstance.isDirectLANPairingURI(rawURL)
+                        || RemoteHostInstance.parseRemoteControlTarget(rawURL) != nil {
                         activeVerifyCase = nil
+                        if store.isVerificationMode {
+                            let liveStore = AntigravitySessionStore.makeLiveStore()
+                            liveStore.isInitialSessionCheckComplete = true
+                            store = liveStore
+                        }
                         Task {
-                            let ok = await store.connectWithPairingURI(url.absoluteString)
+                            let webCookie = await CloudRelayCookieExtractor.readGoogleCookieHeader() ?? ""
+                            let ok = await store.connectWithPairingURI(rawURL, fallbackCookie: webCookie)
                             if ok {
-                                store.activeRoute = .tabRoot
+                                if case .cascadeChat = store.activeRoute {
+                                    // Keep deep-linked conversation open (`?p=c%2F<cascadeId>`)
+                                } else {
+                                    store.activeRoute = .tabRoot
+                                }
+                            } else {
+                                store.activeRoute = .pairingSettings
                             }
                         }
                     }

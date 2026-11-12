@@ -3,6 +3,8 @@ name: macOS Xcode & iOS Simulator E2E Verification
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:

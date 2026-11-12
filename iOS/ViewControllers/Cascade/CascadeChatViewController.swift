@@ -25,7 +25,8 @@ public struct CascadeChatViewController: View {
     }
 
     private var isStaticESDDFixtureView: Bool {
-        !store.hasPairedBackend
+        store.isVerificationMode
+            && !store.hasPairedBackend
             && !store.isLiveBackendConnected
             && store.activeCascadeId == "cas-rate-limiter"
             && store.activeSteps.count == 6

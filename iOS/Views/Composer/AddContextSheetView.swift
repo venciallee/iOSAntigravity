@@ -57,11 +57,7 @@ public struct AddContextSheetView: View {
 
     @State private var searchQuery: String = ""
     @State private var activeCategoryFilter: CategoryTile? = nil
-    @State private var selectedItemIds: Set<String> = [
-        "ratelimit.go",
-        "idempotency-payouts",
-        "go-testing"
-    ]
+    @State private var selectedItemIds: Set<String>
 
     private static let periwinkle = Color(red: 0x8E / 255.0, green: 0xB4 / 255.0, blue: 0xFF / 255.0) // #8EB4FF
     private static let inkOnCTA = Color(red: 0x0A / 255.0, green: 0x0E / 255.0, blue: 0x17 / 255.0) // #0A0E17
@@ -69,7 +65,7 @@ public struct AddContextSheetView: View {
     private static let groupSurface = Color(red: 0x1E / 255.0, green: 0x20 / 255.0, blue: 0x28 / 255.0)
     private static let tileSurface = Color(red: 0x21 / 255.0, green: 0x23 / 255.0, blue: 0x2B / 255.0)
 
-    private let allRows: [ContextRowSpec] = [
+    private let verificationRows: [ContextRowSpec] = [
         ContextRowSpec(
             id: "ratelimit.go",
             section: "FILES & FOLDERS",
@@ -138,6 +134,71 @@ public struct AddContextSheetView: View {
         )
     ]
 
+    private var effectiveRows: [ContextRowSpec] {
+        guard !store.isVerificationMode else { return verificationRows }
+        var rows: [ContextRowSpec] = []
+        for ws in store.workspaces {
+            for filePath in ws.indexedFiles.prefix(20) {
+                let fileName = filePath.split(separator: "/").last.map(String.init) ?? filePath
+                rows.append(
+                    ContextRowSpec(
+                        id: filePath,
+                        section: "FILES & FOLDERS",
+                        category: .files,
+                        iconName: "doc",
+                        title: fileName,
+                        subtitle: filePath,
+                        isMonospacedTitle: true,
+                        usesPlusAffordance: false,
+                        testId: "ctx-row-\(fileName)"
+                    )
+                )
+            }
+        }
+        for summary in store.summaries.prefix(12) {
+            rows.append(
+                ContextRowSpec(
+                    id: "conv:\(summary.cascadeId)",
+                    section: "MENTIONS",
+                    category: .mentions,
+                    iconName: "bubble.left",
+                    title: summary.title,
+                    subtitle: "Conversation · \(summary.projectSlug)",
+                    isMonospacedTitle: false,
+                    usesPlusAffordance: false,
+                    testId: "ctx-row-\(summary.cascadeId)"
+                )
+            )
+        }
+        rows.append(
+            ContextRowSpec(
+                id: "/plan",
+                section: "ACTIONS & SKILLS",
+                category: .actions,
+                iconName: "bolt",
+                title: "/plan",
+                subtitle: "Action · step-by-step implementation plan",
+                isMonospacedTitle: true,
+                usesPlusAffordance: true,
+                testId: "ctx-row-plan"
+            )
+        )
+        rows.append(
+            ContextRowSpec(
+                id: "/goal",
+                section: "ACTIONS & SKILLS",
+                category: .actions,
+                iconName: "bolt",
+                title: "/goal",
+                subtitle: "Action · thorough autonomous execution",
+                isMonospacedTitle: true,
+                usesPlusAffordance: true,
+                testId: "ctx-row-goal"
+            )
+        )
+        return rows
+    }
+
     public init(
         store: AntigravitySessionStore,
         onAddLabels: (([String]) -> Void)? = nil,
@@ -146,10 +207,15 @@ public struct AddContextSheetView: View {
         self.store = store
         self.onAddLabels = onAddLabels
         self.onDismiss = onDismiss
+        if store.isVerificationMode {
+            self._selectedItemIds = State(initialValue: ["ratelimit.go", "idempotency-payouts", "go-testing"])
+        } else {
+            self._selectedItemIds = State(initialValue: [])
+        }
     }
 
     private func filteredRows(in section: String) -> [ContextRowSpec] {
-        allRows.filter { row in
+        effectiveRows.filter { row in
             guard row.section == section else { return false }
             if let cat = activeCategoryFilter, row.category != cat {
                 return false
@@ -377,13 +443,18 @@ public struct AddContextSheetView: View {
     }
 
     private func commitSelection() {
-        let labels = allRows
+        let rows = effectiveRows
+        let labels = rows
             .filter { selectedItemIds.contains($0.id) }
             .map { row in
                 row.category == .files ? "@\(row.title)" : row.title
             }
-        if selectedItemIds.contains("ratelimit.go") {
+        if store.isVerificationMode && selectedItemIds.contains("ratelimit.go") {
             store.attachFileMention("internal/middleware/ratelimit.go")
+        } else {
+            for row in rows where selectedItemIds.contains(row.id) && row.category == .files {
+                store.attachFileMention(row.id)
+            }
         }
         onAddLabels?(labels)
         dismissSheet()

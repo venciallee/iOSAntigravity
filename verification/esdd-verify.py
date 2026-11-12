@@ -526,6 +526,106 @@ def run_connect_rpc_e2e_tests(port: int) -> dict:
     assert code_tr == 200 and ack_tr["status"] == "RUNNING"
     results.append("CreateAutomation & TriggerAutomationNow: verified schedule creation & immediate run")
 
+    # 6. Official Antigravity Remote Control Cloud Relay (`ApiService/ListInstances` + `ProxyCommand` + `SAPISIDHASH`)
+    import hashlib
+
+    relay_base = f"http://127.0.0.1:{port}/$rpc/devtools_jetski_boq_api_proto.ApiService"
+    synth_sapisid = "synthRelaySid/synthSecretKey"
+    origin = "https://antigravity.google.com"
+    ts = 1794406100
+    sapisid_digest = hashlib.sha1(f"{ts} {synth_sapisid} {origin}".encode("utf-8")).hexdigest()
+    relay_headers_base = {
+        "Content-Type": "application/json+protobuf",
+        "Cookie": f"SID=synth_sid; SAPISID={synth_sapisid}",
+        "Origin": origin,
+        "X-Goog-Api-Key": "AIzaSyCUicsvglkMf8CM2MPlGjopIcIxu3VJEDU",
+        "x-antigravity-test-72e4dd1c-e8ae-4e97-873b-c3d3a01b735d": "true",
+    }
+
+    # 6a. Reject invalid SAPISIDHASH with 401
+    unauth_req = urllib.request.Request(
+        f"{relay_base}/ListInstances",
+        data=b"[]",
+        headers={**relay_headers_base, "Authorization": "SAPISIDHASH 1794406100_deadbeef"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(unauth_req, timeout=5)
+        raise AssertionError("Expected 401 for invalid SAPISIDHASH")
+    except urllib.error.HTTPError as e:
+        assert e.code == 401
+
+    auth_val = f"SAPISIDHASH {ts}_{sapisid_digest}"
+    # 6b. Probe authuser 0 -> empty, authuser 2 -> resolves `lt74xt6l0m-golden-star` -> `0f5819ac-...-v2`
+    resolved_uuid = None
+    for candidate_user in ("0", "1", "2"):
+        li_req = urllib.request.Request(
+            f"{relay_base}/ListInstances",
+            data=b"[]",
+            headers={**relay_headers_base, "Authorization": auth_val, "X-Goog-AuthUser": candidate_user},
+            method="POST",
+        )
+        with urllib.request.urlopen(li_req, timeout=5) as li_resp:
+            li_raw = li_resp.read().decode("utf-8")
+            assert li_raw.startswith(")]}'\n")
+            li_arr = json.loads(li_raw[5:])
+            for row in li_arr[0]:
+                if row[1][0] == "lt74xt6l0m-golden-star" and row[2] == 1:
+                    resolved_uuid = row[0]
+                    break
+        if resolved_uuid:
+            break
+    assert resolved_uuid == "0f5819ac-9308-40d8-a308-98b55122c533-v2"
+
+    # 6c. ProxyCommand unary JSON (`GetAllCascadeTrajectories` & strict `StartCascade`) + >600-step binary Protobuf
+    pc_traj_body = json.dumps(
+        [
+            resolved_uuid,
+            "/exa.language_server_pb.LanguageServerService/GetAllCascadeTrajectories",
+            base64.b64encode(b"{}").decode("ascii"),
+            [["x-is-streaming", "false"], ["content-type", "application/json"]],
+        ]
+    ).encode("utf-8")
+    pc_req = urllib.request.Request(
+        f"{relay_base}/ProxyCommand?$unique=GetAllCascadeTrajectories",
+        data=pc_traj_body,
+        headers={**relay_headers_base, "Authorization": auth_val, "X-Goog-AuthUser": "2"},
+        method="POST",
+    )
+    with urllib.request.urlopen(pc_req, timeout=5) as pc_resp:
+        pc_arr = json.loads(pc_resp.read().decode("utf-8")[5:])
+        traj_json = json.loads(base64.b64decode(pc_arr[0]).decode("utf-8"))
+        assert "cas-rate-limiter" in traj_json["trajectorySummaries"]
+
+    pc_proto_body = json.dumps(
+        [
+            resolved_uuid,
+            "/exa.language_server_pb.LanguageServerService/GetCascadeTrajectorySteps",
+            base64.b64encode(b"\x0a\x10cas-rate-limiter\x10\x00\x18\xdd\x04").decode("ascii"),
+            [["x-is-streaming", "false"], ["content-type", "application/proto"]],
+        ]
+    ).encode("utf-8")
+    pc_proto_req = urllib.request.Request(
+        f"{relay_base}/ProxyCommand?$unique=GetCascadeTrajectorySteps",
+        data=pc_proto_body,
+        headers={**relay_headers_base, "Authorization": auth_val, "X-Goog-AuthUser": "2"},
+        method="POST",
+    )
+    with urllib.request.urlopen(pc_proto_req, timeout=5) as pc_proto_resp:
+        pc_proto_arr = json.loads(pc_proto_resp.read().decode("utf-8")[5:])
+        relay_proto_bytes = base64.b64decode(pc_proto_arr[0])
+        r_off, r_cnt = 0, 0
+        while r_off < len(relay_proto_bytes):
+            t, r_off = decode_varint(relay_proto_bytes, r_off)
+            ln, r_off = decode_varint(relay_proto_bytes, r_off)
+            r_off += ln
+            if (t >> 3) == 1:
+                r_cnt += 1
+        assert r_cnt == 605
+    results.append(
+        "Official Cloud Relay (ApiService/ListInstances + ProxyCommand): verified SAPISIDHASH (401->200), authuser=2 slug->UUID resolution & 605-step binary Protobuf"
+    )
+
     return {"passed": True, "stepCountDecoded": step_count, "tests": results}
 
 
@@ -769,9 +869,15 @@ def build_side_by_side_comparison(
         font=font_sub,
     )
 
-    with Image.open(ref_png_path) as ref_im:
-        ref_rgb = ref_im.convert("RGB").resize((panel_w, panel_h), Image.Resampling.LANCZOS)
-        canvas.paste(ref_rgb, (pad, header_h + pad))
+    if ref_png_path.exists():
+        with Image.open(ref_png_path) as ref_im:
+            ref_rgb = ref_im.convert("RGB").resize((panel_w, panel_h), Image.Resampling.LANCZOS)
+    elif out_cmp_path.exists():
+        with Image.open(out_cmp_path) as prev_cmp:
+            ref_rgb = prev_cmp.convert("RGB").crop((pad, header_h + pad, pad + panel_w, header_h + pad + panel_h))
+    else:
+        raise FileNotFoundError(f"Missing both {ref_png_path} and {out_cmp_path}")
+    canvas.paste(ref_rgb, (pad, header_h + pad))
     draw.rectangle(
         [pad - 1, header_h + pad - 1, pad + panel_w, header_h + pad + panel_h],
         outline=(75, 80, 94),

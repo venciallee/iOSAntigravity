@@ -27,7 +27,7 @@ public struct ChatComposerView: View {
 
     public init(store: AntigravitySessionStore) {
         self.store = store
-        if store.isLiveBackendConnected {
+        if !store.isVerificationMode || store.hasPairedBackend || store.isLiveBackendConnected {
             self._attachedChipLabels = State(initialValue: store.composerAttachments.map(\.label))
             self._draftMessageText = State(initialValue: store.composerDraftText)
         } else {
