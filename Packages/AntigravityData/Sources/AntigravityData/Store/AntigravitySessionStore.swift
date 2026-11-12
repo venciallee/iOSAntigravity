@@ -1978,9 +1978,9 @@ public final class AntigravitySessionStore {
             isPinned: displayOptions.autoPinOnMessage,
             isArchived: false,
             isUnread: false,
-            isCloud: isCloudProj,
             modelLabel: selectedModelConfig.displayName,
             lastMessagePreview: initialPrompt ?? "Ready for instructions...",
+            isCloud: isCloudProj,
             cloudProjectId: cloudProjId,
             originInstanceUuid: originUuid,
             originHostName: isCloudProj ? "Antigravity" : activeHost.hostname

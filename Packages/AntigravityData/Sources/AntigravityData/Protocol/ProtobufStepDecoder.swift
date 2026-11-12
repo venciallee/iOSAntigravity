@@ -198,7 +198,12 @@ public enum ProtobufStepCodec {
                     let desc = nonEmpty(extractStringField(nested, targetField: 4))
                         ?? nonEmpty(extractStringField(nested, targetField: 2))
                         ?? "Modified file"
-                    codeActionPayload = CodeActionPayload(targetFileUri: uri, summaryDescription: desc)
+                    codeActionPayload = CodeActionPayload(
+                        targetFileUri: uri,
+                        description: desc,
+                        additions: 0,
+                        deletions: 0
+                    )
                     if stepType == .unspecified { stepType = .codeAction }
                 }
             case (13, 2), (34, 2), (42, 2), (85, 2): // grep_search (13), find (34), search_web (42), code_search (85)
@@ -276,8 +281,7 @@ public enum ProtobufStepCodec {
                     taskBoundaryPayload = TaskBoundaryPayload(
                         taskName: tName,
                         taskStatus: tStatus,
-                        taskSummary: tSummary,
-                        mode: "PLANNING"
+                        taskSummary: tSummary
                     )
                     stepType = .taskBoundary
                 }
@@ -288,7 +292,7 @@ public enum ProtobufStepCodec {
                     if !content.isEmpty || !reviewUris.isEmpty {
                         plannerPayload = PlannerResponsePayload(
                             response: content.isEmpty ? "Ready for review." : content,
-                            referencedArtifactPaths: reviewUris
+                            referencedFiles: reviewUris
                         )
                         stepType = .notifyUser
                     }

@@ -1227,9 +1227,10 @@ public actor AntigravityRPCClient {
             }
             let branch = Self.nonEmptyString(obj["defaultBranch"]?.stringValue) ?? "main"
             return GitHubRepoItem(
+                id: "repo-\(fullName)",
                 fullName: fullName,
-                defaultBranch: branch,
-                visibilityLabel: obj["isPrivate"]?.boolValue == true ? "Private" : "GitHub"
+                visibilityLabel: obj["isPrivate"]?.boolValue == true ? "Private" : "GitHub",
+                defaultBranch: branch
             )
         }
     }
@@ -2714,11 +2715,15 @@ public actor AntigravityRPCClient {
             let trimmed = $0.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             return !trimmed.isEmpty && trimmed != "file:///home/antigravity"
         }
-        let rawUri = selectedWorkspace?["workspaceFolderAbsoluteUri"]?.stringValue
+        let primaryWsUri: String? = selectedWorkspace?["workspaceFolderAbsoluteUri"]?.stringValue
             ?? selectedWorkspace?["workspaceUri"]?.stringValue
+        let fallbackDefaultUri: String = explicitCloudBool
+            ? "cloud://\(cloudProjectId ?? "antigravity-cloud")"
+            : "file:///Users/wl/code/workspace"
+        let rawUri: String = primaryWsUri
             ?? metaWorkspaceUri
             ?? obj["workspaceUri"]?.stringValue
-            ?? (explicitCloudBool ? "cloud://\(cloudProjectId ?? "antigravity-cloud")" : "file:///Users/wl/code/workspace")
+            ?? fallbackDefaultUri
 
         let sourceHint = [
             obj["source"]?.stringValue,
