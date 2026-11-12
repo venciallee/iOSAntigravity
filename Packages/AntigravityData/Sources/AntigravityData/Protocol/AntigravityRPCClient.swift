@@ -1303,6 +1303,10 @@ public actor AntigravityRPCClient {
                 }
                 if var summary = Self.decodeTrajectorySummaryEntry(cascadeId: cid, value: val, now: now) {
                     if forceCloud {
+                        // Ignore local `file://` workspaces echoed by older/mock servers that do not filter by `backendType`
+                        if !summary.workspaceUri.isEmpty && !summary.isCloud && (summary.cloudProjectId ?? "").isEmpty {
+                            continue
+                        }
                         summary.isCloud = true
                         summary.originHostName = "Antigravity"
                     } else {
@@ -1322,7 +1326,12 @@ public actor AntigravityRPCClient {
             for val in summariesArr {
                 guard let cid = val.objectValue?["cascadeId"]?.stringValue else { continue }
                 if var summary = Self.decodeTrajectorySummaryEntry(cascadeId: cid, value: val, now: now) {
-                    if forceCloud { summary.isCloud = true }
+                    if forceCloud {
+                        if !summary.workspaceUri.isEmpty && !summary.isCloud && (summary.cloudProjectId ?? "").isEmpty {
+                            continue
+                        }
+                        summary.isCloud = true
+                    }
                     summary.originInstanceUuid = originInstanceUuid
                     summary.originHostName = originHostName
                     upserts.append(summary)
