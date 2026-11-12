@@ -9,57 +9,14 @@ import AntigravityData
 /// - Note: `A new model takes effect on the next turn.`
 /// - `AGENT` persona pills (`Default` pure white active pill, `go-reviewer`, `release-captain`).
 public struct ModelAndModeSheetView: View {
-    private struct ModelOptionSpec: Identifiable {
-        let id: String
-        let displayName: String
-        let subtitle: String
-        let showsThinkingBadge: Bool
-        let testId: String
-    }
-
     @Bindable public var store: AntigravitySessionStore
     public var onSelectConfiguration: ((String, String, String) -> Void)?
     public var onDismiss: (() -> Void)?
-
-    @State private var selectedMode: String = "Planning"
-    @State private var selectedModelId: String = "gemini-3.1-pro"
-    @State private var selectedAgentPersona: String = "Default"
 
     private static let periwinkle = Color(red: 0x8E / 255.0, green: 0xB4 / 255.0, blue: 0xFF / 255.0) // #8EB4FF
     private static let sheetSurface = Color(red: 0x17 / 255.0, green: 0x18 / 255.0, blue: 0x1E / 255.0)
     private static let cardSurface = Color(red: 0x20 / 255.0, green: 0x22 / 255.0, blue: 0x2A / 255.0)
     private static let planningActiveSurface = Color(red: 0x1F / 255.0, green: 0x25 / 255.0, blue: 0x33 / 255.0)
-
-    private let modelOptions: [ModelOptionSpec] = [
-        ModelOptionSpec(
-            id: "gemini-3.1-pro",
-            displayName: "Gemini 3.1 Pro",
-            subtitle: "Deep reasoning for long, multi-step tasks",
-            showsThinkingBadge: false,
-            testId: "model-row-gemini-pro"
-        ),
-        ModelOptionSpec(
-            id: "gemini-3.8-flash",
-            displayName: "Gemini 3.8 Flash",
-            subtitle: "Fastest responses, lowest cost",
-            showsThinkingBadge: false,
-            testId: "model-row-gemini-flash"
-        ),
-        ModelOptionSpec(
-            id: "claude-opus-5.5",
-            displayName: "Claude Opus 5.5",
-            subtitle: "Requires Google AI Pro or Ultra",
-            showsThinkingBadge: true,
-            testId: "model-row-claude-opus"
-        ),
-        ModelOptionSpec(
-            id: "claude-sonnet-5.5",
-            displayName: "Claude Sonnet 5.5",
-            subtitle: "Requires Google AI Pro or Ultra",
-            showsThinkingBadge: true,
-            testId: "model-row-claude-sonnet"
-        )
-    ]
 
     public init(
         store: AntigravitySessionStore,
@@ -71,9 +28,17 @@ public struct ModelAndModeSheetView: View {
         self.onDismiss = onDismiss
     }
 
+    private var displayedModels: [CascadeModelConfig] {
+        store.availableModels.isEmpty ? CascadeModelConfig.liveDefaultCatalog : store.availableModels
+    }
+
+    private var displayedAgents: [String] {
+        store.availableAgents.isEmpty ? ["Default"] : store.availableAgents
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 88)
+            Spacer(minLength: displayedModels.count > 4 ? 36 : 88)
 
             VStack(alignment: .leading, spacing: 14) {
                 // Top Grabber
@@ -111,14 +76,14 @@ public struct ModelAndModeSheetView: View {
                 // Planning vs Fast Mode Cards
                 HStack(spacing: 12) {
                     modeCardButton(
-                        modeTitle: "Planning",
+                        mode: .planning,
                         iconName: "doc.text",
                         description: "Plans first and writes artifacts for you to review",
                         testId: "mode-card-planning"
                     )
 
                     modeCardButton(
-                        modeTitle: "Fast",
+                        mode: .fast,
                         iconName: "bolt",
                         description: "Acts directly — best for small, local edits",
                         testId: "mode-card-fast"
@@ -132,18 +97,18 @@ public struct ModelAndModeSheetView: View {
                         .tracking(0.6)
                         .foregroundStyle(AntigravityTheme.inkSecondary)
 
-                    VStack(spacing: 0) {
-                        ForEach(Array(modelOptions.enumerated()), id: \.element.id) { idx, option in
-                            modelOptionRow(option)
-                            if idx < modelOptions.count - 1 {
-                                Divider()
-                                    .overlay(Color.white.opacity(0.06))
-                                    .padding(.leading, 16)
-                            }
+                    if displayedModels.count > 4 {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            modelRowsList
                         }
+                        .frame(maxHeight: 280)
+                        .background(Self.cardSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    } else {
+                        modelRowsList
+                            .background(Self.cardSurface)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     }
-                    .background(Self.cardSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                     Text("A new model takes effect on the next turn.")
                         .font(.system(size: 12.5))
@@ -159,27 +124,25 @@ public struct ModelAndModeSheetView: View {
                         .foregroundStyle(AntigravityTheme.inkSecondary)
 
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 10) {
-                            agentPersonaPill(
-                                name: "Default",
-                                isMonospaced: false,
-                                testId: "agent-pill-default"
-                            )
-                            agentPersonaPill(
-                                name: "go-reviewer",
-                                isMonospaced: true,
-                                testId: "agent-pill-go-reviewer"
-                            )
-                            Spacer()
-                        }
-
-                        HStack(spacing: 10) {
-                            agentPersonaPill(
-                                name: "release-captain",
-                                isMonospaced: true,
-                                testId: "agent-pill-release-captain"
-                            )
-                            Spacer()
+                        let agentList = displayedAgents
+                        ForEach(Array(stride(from: 0, to: agentList.count, by: 2)), id: \.self) { rowStart in
+                            HStack(spacing: 10) {
+                                let firstName = agentList[rowStart]
+                                agentPersonaPill(
+                                    name: firstName,
+                                    isMonospaced: firstName != "Default",
+                                    testId: "agent-pill-\(firstName.lowercased())"
+                                )
+                                if rowStart + 1 < agentList.count {
+                                    let secondName = agentList[rowStart + 1]
+                                    agentPersonaPill(
+                                        name: secondName,
+                                        isMonospaced: secondName != "Default",
+                                        testId: "agent-pill-\(secondName.lowercased())"
+                                    )
+                                }
+                                Spacer()
+                            }
                         }
                     }
                 }
@@ -190,27 +153,48 @@ public struct ModelAndModeSheetView: View {
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
         .background(AntigravityTheme.canvasObsidian)
+        .task {
+            if store.hasPairedBackend || store.isLiveBackendConnected {
+                await store.refreshModelCatalog()
+            }
+        }
+    }
+
+    private var modelRowsList: some View {
+        let models = displayedModels
+        return VStack(spacing: 0) {
+            ForEach(Array(models.enumerated()), id: \.element.modelId) { idx, option in
+                modelOptionRow(option, index: idx)
+                if idx < models.count - 1 {
+                    Divider()
+                        .overlay(Color.white.opacity(0.06))
+                        .padding(.leading, 16)
+                }
+            }
+        }
     }
 
     private func modeCardButton(
-        modeTitle: String,
+        mode: CascadeExecutionMode,
         iconName: String,
         description: String,
         testId: String
     ) -> some View {
-        let isSelected = selectedMode == modeTitle
+        let isSelected = store.selectedModelConfig.mode == mode
         return Button {
-            selectedMode = modeTitle
-            if let modeCase = CascadeExecutionMode(rawValue: modeTitle) {
-                store.selectedModelConfig.mode = modeCase
-            }
+            store.selectedModelConfig.mode = mode
+            onSelectConfiguration?(
+                mode.rawValue,
+                store.selectedModelConfig.displayName,
+                store.selectedModelConfig.agentPersona
+            )
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     Image(systemName: iconName)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(isSelected ? Self.periwinkle : AntigravityTheme.inkSecondary)
-                    Text(modeTitle)
+                    Text(mode.rawValue)
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(AntigravityTheme.inkReading)
                 }
@@ -239,12 +223,43 @@ public struct ModelAndModeSheetView: View {
         .accessibilityIdentifier(testId)
     }
 
-    private func modelOptionRow(_ option: ModelOptionSpec) -> some View {
-        let isSelected = selectedModelId == option.id
+    private static func accessibilityId(for option: CascadeModelConfig, index: Int) -> String {
+        let lower = option.displayName.lowercased()
+        if option.modelId == "gemini-3-1-pro" || (index == 0 && lower.contains("gemini") && lower.contains("pro")) {
+            return "model-row-gemini-pro"
+        }
+        if lower.contains("flash") {
+            return "model-row-gemini-flash"
+        }
+        if lower.contains("opus") {
+            return "model-row-claude-opus"
+        }
+        if lower.contains("sonnet") {
+            return "model-row-claude-sonnet"
+        }
+        return "model-row-\(option.modelId)"
+    }
+
+    private func modelOptionRow(_ option: CascadeModelConfig, index: Int) -> some View {
+        let isSelected = store.selectedModelConfig.modelId == option.modelId
+            || store.selectedModelConfig.displayName == option.displayName
         return Button {
-            selectedModelId = option.id
-            store.selectedModelConfig.modelId = option.id
-            store.selectedModelConfig.displayName = option.displayName
+            store.selectedModelConfig = CascadeModelConfig(
+                modelId: option.modelId,
+                displayName: option.displayName,
+                subtitle: option.subtitle,
+                hasThinkingBadge: option.hasThinkingBadge,
+                requiresUpgradeNote: option.requiresUpgradeNote,
+                mode: store.selectedModelConfig.mode,
+                agentPersona: store.selectedModelConfig.agentPersona,
+                effort: option.effort,
+                isModelAlias: option.isModelAlias
+            )
+            onSelectConfiguration?(
+                store.selectedModelConfig.mode.rawValue,
+                option.displayName,
+                store.selectedModelConfig.agentPersona
+            )
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
@@ -253,7 +268,7 @@ public struct ModelAndModeSheetView: View {
                             .font(.system(size: 16, weight: isSelected ? .semibold : .medium))
                             .foregroundStyle(AntigravityTheme.inkReading)
 
-                        if option.showsThinkingBadge {
+                        if option.hasThinkingBadge {
                             Text("Thinking")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(AntigravityTheme.inkLabel)
@@ -281,7 +296,7 @@ public struct ModelAndModeSheetView: View {
             .frame(minHeight: 58)
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier(option.testId)
+        .accessibilityIdentifier(Self.accessibilityId(for: option, index: index))
     }
 
     private func agentPersonaPill(
@@ -289,9 +304,14 @@ public struct ModelAndModeSheetView: View {
         isMonospaced: Bool,
         testId: String
     ) -> some View {
-        let isSelected = selectedAgentPersona == name
+        let isSelected = store.selectedModelConfig.agentPersona == name
         return Button {
-            selectedAgentPersona = name
+            store.selectedModelConfig.agentPersona = name
+            onSelectConfiguration?(
+                store.selectedModelConfig.mode.rawValue,
+                store.selectedModelConfig.displayName,
+                name
+            )
         } label: {
             Text(name)
                 .font(
@@ -310,12 +330,11 @@ public struct ModelAndModeSheetView: View {
     }
 
     private func applyAndDismiss() {
-        let chosenModel = modelOptions.first(where: { $0.id == selectedModelId })?.displayName ?? "Gemini 3.1 Pro"
-        store.selectedModelConfig.displayName = chosenModel
-        if let modeCase = CascadeExecutionMode(rawValue: selectedMode) {
-            store.selectedModelConfig.mode = modeCase
-        }
-        onSelectConfiguration?(selectedMode, chosenModel, selectedAgentPersona)
+        onSelectConfiguration?(
+            store.selectedModelConfig.mode.rawValue,
+            store.selectedModelConfig.displayName,
+            store.selectedModelConfig.agentPersona
+        )
         if let onDismiss {
             onDismiss()
         } else {

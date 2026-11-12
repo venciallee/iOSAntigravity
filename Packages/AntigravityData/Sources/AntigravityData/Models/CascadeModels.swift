@@ -343,6 +343,8 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
     public var viewFile: ViewFilePayload?
     public var search: SearchPayload?
     public var requestedInteraction: RequestedInteraction?
+    public var recordedExecutionMode: CascadeExecutionMode?
+    public var recordedModelId: String?
 
     public init(
         cascadeId: String,
@@ -359,7 +361,9 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
         codeAction: CodeActionPayload? = nil,
         viewFile: ViewFilePayload? = nil,
         search: SearchPayload? = nil,
-        requestedInteraction: RequestedInteraction? = nil
+        requestedInteraction: RequestedInteraction? = nil,
+        recordedExecutionMode: CascadeExecutionMode? = nil,
+        recordedModelId: String? = nil
     ) {
         self.cascadeId = cascadeId
         self.stepIndex = stepIndex
@@ -376,6 +380,8 @@ public struct CascadeStep: Codable, Sendable, Equatable, Identifiable {
         self.viewFile = viewFile
         self.search = search
         self.requestedInteraction = requestedInteraction
+        self.recordedExecutionMode = recordedExecutionMode
+        self.recordedModelId = recordedModelId
     }
 
     /// Returns true if this step carries user-visible chat, tool evidence, task progress, or approval UI.
@@ -481,6 +487,9 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
     public var totalAdditions: Int
     public var totalDeletions: Int
     public var isCloud: Bool
+    public var cloudProjectId: String?
+    public var originInstanceUuid: String?
+    public var originHostName: String?
 
     public init(
         cascadeId: String,
@@ -503,7 +512,10 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         lastMessagePreview: String? = nil,
         totalAdditions: Int = 0,
         totalDeletions: Int = 0,
-        isCloud: Bool? = nil
+        isCloud: Bool? = nil,
+        cloudProjectId: String? = nil,
+        originInstanceUuid: String? = nil,
+        originHostName: String? = nil
     ) {
         self.cascadeId = cascadeId
         self.title = title
@@ -526,6 +538,9 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         self.totalAdditions = totalAdditions
         self.totalDeletions = totalDeletions
         self.isCloud = isCloud ?? AntigravityCloudDetector.isCloudWorkspaceURI(workspaceUri, cascadeId: cascadeId)
+        self.cloudProjectId = cloudProjectId
+        self.originInstanceUuid = originInstanceUuid
+        self.originHostName = originHostName
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -550,6 +565,9 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         case totalAdditions
         case totalDeletions
         case isCloud
+        case cloudProjectId
+        case originInstanceUuid
+        case originHostName
     }
 
     public init(from decoder: Decoder) throws {
@@ -581,5 +599,8 @@ public struct CascadeSummary: Codable, Sendable, Equatable, Identifiable {
         self.totalDeletions = try container.decodeIfPresent(Int.self, forKey: .totalDeletions) ?? 0
         self.isCloud = try container.decodeIfPresent(Bool.self, forKey: .isCloud)
             ?? AntigravityCloudDetector.isCloudWorkspaceURI(wsUri, cascadeId: cid)
+        self.cloudProjectId = try container.decodeIfPresent(String.self, forKey: .cloudProjectId)
+        self.originInstanceUuid = try container.decodeIfPresent(String.self, forKey: .originInstanceUuid)
+        self.originHostName = try container.decodeIfPresent(String.self, forKey: .originHostName)
     }
 }

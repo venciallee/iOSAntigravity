@@ -336,6 +336,8 @@ public struct ProjectWorkspace: Codable, Sendable, Equatable, Identifiable {
     public var worktrees: [String]
     public var isExpandedInHome: Bool
     public var rulesAndSkillsCount: Int
+    public var cloudProjectId: String?
+    public var originInstanceUuid: String?
 
     public init(
         id: String,
@@ -347,7 +349,9 @@ public struct ProjectWorkspace: Codable, Sendable, Equatable, Identifiable {
         activeBranch: String = "main",
         worktrees: [String] = ["main"],
         isExpandedInHome: Bool = true,
-        rulesAndSkillsCount: Int = 4
+        rulesAndSkillsCount: Int = 4,
+        cloudProjectId: String? = nil,
+        originInstanceUuid: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -359,6 +363,8 @@ public struct ProjectWorkspace: Codable, Sendable, Equatable, Identifiable {
         self.worktrees = worktrees
         self.isExpandedInHome = isExpandedInHome
         self.rulesAndSkillsCount = rulesAndSkillsCount
+        self.cloudProjectId = cloudProjectId
+        self.originInstanceUuid = originInstanceUuid
     }
 
     public var homeSubtitle: String {
@@ -942,6 +948,8 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
     public var activeCascadeCount: Int
     public var indexedFiles: [String]
     public var isCloud: Bool
+    public var originInstanceUuid: String?
+    public var originHostName: String?
 
     public init(
         workspaceUri: String,
@@ -950,7 +958,9 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
         worktrees: [String] = ["main"],
         activeCascadeCount: Int = 0,
         indexedFiles: [String] = [],
-        isCloud: Bool? = nil
+        isCloud: Bool? = nil,
+        originInstanceUuid: String? = nil,
+        originHostName: String? = nil
     ) {
         self.workspaceUri = workspaceUri
         self.displayName = displayName
@@ -959,6 +969,8 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
         self.activeCascadeCount = activeCascadeCount
         self.indexedFiles = indexedFiles
         self.isCloud = isCloud ?? AntigravityCloudDetector.isCloudWorkspaceURI(workspaceUri)
+        self.originInstanceUuid = originInstanceUuid
+        self.originHostName = originHostName
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -969,6 +981,8 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
         case activeCascadeCount
         case indexedFiles
         case isCloud
+        case originInstanceUuid
+        case originHostName
     }
 
     public init(from decoder: Decoder) throws {
@@ -982,6 +996,8 @@ public struct WorkspaceInfo: Codable, Sendable, Equatable, Identifiable {
         self.indexedFiles = try container.decodeIfPresent([String].self, forKey: .indexedFiles) ?? []
         self.isCloud = try container.decodeIfPresent(Bool.self, forKey: .isCloud)
             ?? AntigravityCloudDetector.isCloudWorkspaceURI(uri)
+        self.originInstanceUuid = try container.decodeIfPresent(String.self, forKey: .originInstanceUuid)
+        self.originHostName = try container.decodeIfPresent(String.self, forKey: .originHostName)
     }
 }
 
@@ -1033,6 +1049,7 @@ public struct CascadeModelConfig: Codable, Sendable, Equatable, Identifiable {
     public var mode: CascadeExecutionMode
     public var agentPersona: String
     public var effort: ThinkingEffortLevel
+    public var isModelAlias: Bool
 
     public init(
         modelId: String,
@@ -1042,7 +1059,8 @@ public struct CascadeModelConfig: Codable, Sendable, Equatable, Identifiable {
         requiresUpgradeNote: String? = nil,
         mode: CascadeExecutionMode = .planning,
         agentPersona: String = "Default",
-        effort: ThinkingEffortLevel = .high
+        effort: ThinkingEffortLevel = .high,
+        isModelAlias: Bool = false
     ) {
         self.modelId = modelId
         self.displayName = displayName
@@ -1052,6 +1070,32 @@ public struct CascadeModelConfig: Codable, Sendable, Equatable, Identifiable {
         self.mode = mode
         self.agentPersona = agentPersona
         self.effort = effort
+        self.isModelAlias = isModelAlias
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case modelId
+        case displayName
+        case subtitle
+        case hasThinkingBadge
+        case requiresUpgradeNote
+        case mode
+        case agentPersona
+        case effort
+        case isModelAlias
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.modelId = try container.decode(String.self, forKey: .modelId)
+        self.displayName = try container.decode(String.self, forKey: .displayName)
+        self.subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle) ?? "Deep reasoning for long, multi-step tasks"
+        self.hasThinkingBadge = try container.decodeIfPresent(Bool.self, forKey: .hasThinkingBadge) ?? false
+        self.requiresUpgradeNote = try container.decodeIfPresent(String.self, forKey: .requiresUpgradeNote)
+        self.mode = try container.decodeIfPresent(CascadeExecutionMode.self, forKey: .mode) ?? .planning
+        self.agentPersona = try container.decodeIfPresent(String.self, forKey: .agentPersona) ?? "Default"
+        self.effort = try container.decodeIfPresent(ThinkingEffortLevel.self, forKey: .effort) ?? .high
+        self.isModelAlias = try container.decodeIfPresent(Bool.self, forKey: .isModelAlias) ?? false
     }
 
     public var supportsThinkingBadge: Bool { hasThinkingBadge }
@@ -1063,6 +1107,61 @@ public struct CascadeModelConfig: Codable, Sendable, Equatable, Identifiable {
         "release-captain"
     ]
 
+    /// Live Antigravity 2.x default model list used before `GetAvailableModels` / `GetCascadeModelConfigs` resolves.
+    public static let liveDefaultCatalog: [CascadeModelConfig] = [
+        CascadeModelConfig(
+            modelId: "MODEL_PLACEHOLDER_M37",
+            displayName: "Gemini 3.1 Pro (High)",
+            subtitle: "Deep reasoning for complex multi-step tasks",
+            hasThinkingBadge: true,
+            requiresUpgradeNote: nil,
+            mode: .planning,
+            agentPersona: "Default",
+            effort: .high
+        ),
+        CascadeModelConfig(
+            modelId: "MODEL_PLACEHOLDER_M36",
+            displayName: "Gemini 3.1 Pro (Low)",
+            subtitle: "Faster Pro reasoning for everyday coding",
+            hasThinkingBadge: false,
+            requiresUpgradeNote: nil,
+            mode: .planning,
+            agentPersona: "Default",
+            effort: .low
+        ),
+        CascadeModelConfig(
+            modelId: "MODEL_PLACEHOLDER_M18",
+            displayName: "Gemini 3 Flash",
+            subtitle: "Fastest responses and lightweight edits",
+            hasThinkingBadge: false,
+            requiresUpgradeNote: nil,
+            mode: .planning,
+            agentPersona: "Default",
+            effort: .medium
+        ),
+        CascadeModelConfig(
+            modelId: "MODEL_PLACEHOLDER_M35",
+            displayName: "Claude Sonnet 4.6 (Thinking)",
+            subtitle: "Anthropic extended thinking for code & architecture",
+            hasThinkingBadge: true,
+            requiresUpgradeNote: nil,
+            mode: .planning,
+            agentPersona: "Default",
+            effort: .high
+        ),
+        CascadeModelConfig(
+            modelId: "MODEL_PLACEHOLDER_M26",
+            displayName: "Claude Opus 4.6 (Thinking)",
+            subtitle: "Frontier Anthropic reasoning for hard tasks",
+            hasThinkingBadge: true,
+            requiresUpgradeNote: nil,
+            mode: .planning,
+            agentPersona: "Default",
+            effort: .high
+        )
+    ]
+
+    /// Deterministic ESDD UE09 verification catalog.
     public static let catalog: [CascadeModelConfig] = [
         CascadeModelConfig(
             modelId: "gemini-3-1-pro",

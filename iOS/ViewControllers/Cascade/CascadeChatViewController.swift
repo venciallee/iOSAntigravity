@@ -45,12 +45,13 @@ public struct CascadeChatViewController: View {
 
     private var effectiveHeaderHostLabel: String {
         if isActiveSessionCloud {
-            return "Cloud"
+            return (store.hasPairedBackend || store.isLiveBackendConnected) ? "Antigravity" : "Cloud"
         }
+        let hostTitle = store.activeSummary?.originHostName ?? store.activeHost.hostname
         if store.hasPairedBackend && (!store.isLiveBackendConnected || !store.activeHost.isOnline) {
-            return "\(store.activeHost.hostname) · Offline"
+            return "\(hostTitle) · Offline"
         }
-        return store.activeHost.hostname
+        return hostTitle
     }
 
     public var body: some View {
@@ -103,6 +104,31 @@ public struct CascadeChatViewController: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
+            }
+
+            if !store.displayItems.isEmpty, let errText = store.stepLoadErrorText {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Self.coralError)
+                        .frame(width: 7, height: 7)
+                    Text(errText)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(Self.coralError)
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button("Dismiss") {
+                        store.stepLoadErrorText = nil
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Self.periwinkle)
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(AntigravityTheme.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 14)
+                .padding(.top, 4)
             }
 
             // Above-Composer Status Strip
@@ -223,7 +249,7 @@ public struct CascadeChatViewController: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .padding(.top, 12)
         } else {
-            let isOfflinePaired = store.hasPairedBackend && (!store.isLiveBackendConnected || !store.activeHost.isOnline)
+            let isOfflinePaired = !isActiveSessionCloud && store.hasPairedBackend && (!store.isLiveBackendConnected || !store.activeHost.isOnline)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Circle()
@@ -233,7 +259,7 @@ public struct CascadeChatViewController: View {
                         .font(.system(size: 14.5, weight: .semibold))
                         .foregroundStyle(AntigravityTheme.inkReading)
                 }
-                Text("Bound to `\(activeProjectWorkspace?.name ?? store.activeSummary?.projectSlug ?? "workspace")` on `\(effectiveHeaderHostLabel)`. Send a message below to run on Antigravity Desktop.")
+                Text("Bound to `\(activeProjectWorkspace?.name ?? store.activeSummary?.projectSlug ?? "workspace")` on `\(effectiveHeaderHostLabel)`. Send a message below to run on \(isActiveSessionCloud ? "Antigravity Cloud" : "Antigravity Desktop").")
                     .font(.system(size: 13.5))
                     .foregroundStyle(AntigravityTheme.inkSecondary)
                     .lineSpacing(2)
@@ -349,7 +375,8 @@ public struct CascadeChatViewController: View {
                 return "Waiting for your approval · Step \(store.activeSteps.count)"
             }
             if store.isCascadeStreaming {
-                return "Streaming from \(store.activeHost.hostname) · \(store.activeSteps.count) steps"
+                let sourceTitle = isActiveSessionCloud ? "Antigravity Cloud" : (store.activeSummary?.originHostName ?? store.activeHost.hostname)
+                return "Streaming from \(sourceTitle) · \(store.activeSteps.count) steps"
             }
             return "Waiting for your approval · Step 5 of 7"
         }()

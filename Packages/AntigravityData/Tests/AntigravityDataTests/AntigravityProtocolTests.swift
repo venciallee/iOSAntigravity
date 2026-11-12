@@ -755,8 +755,199 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(liveStore.activeCascadeId, "")
         XCTAssertEqual(liveStore.selectedProjectId, "")
 
+        XCTAssertEqual(liveStore.availableModels, CascadeModelConfig.liveDefaultCatalog)
+        XCTAssertEqual(liveStore.availableAgents, ["Default"])
+
         let verifyStore = AntigravitySessionStore.makeESDDVerificationStore()
         XCTAssertTrue(verifyStore.isVerificationMode)
         XCTAssertFalse(verifyStore.summaries.isEmpty)
+        XCTAssertEqual(verifyStore.availableModels, CascadeModelConfig.catalog)
+    }
+
+    func testBinaryProtobufGetStepsRequestAndRealStepDecoding() throws {
+        // 1. Verify field 3 (`verbosity`) is NEVER populated with `endIndex`
+        let req = ProtobufStepCodec.encodeGetStepsRequest(
+            cascadeId: "cas-1",
+            startIndex: 120,
+            endIndex: 999
+        )
+        // 0x0A, 0x05, "cas-1" (7 bytes) + 0x10, 0x78 (2 bytes) = 9 bytes total
+        XCTAssertEqual(Array(req), [0x0A, 0x05, 0x63, 0x61, 0x73, 0x2D, 0x31, 0x10, 0x78])
+
+        // Helper functions for assembling deterministic binary Protobuf wire bytes
+        func pbVarintField(_ field: Int, _ val: UInt64) -> Data {
+            var d = Data(ProtobufStepCodec.encodeVarint(UInt64((field << 3) | 0)))
+            d.append(contentsOf: ProtobufStepCodec.encodeVarint(val))
+            return d
+        }
+        func pbBytesField(_ field: Int, _ payload: Data) -> Data {
+            var d = Data(ProtobufStepCodec.encodeVarint(UInt64((field << 3) | 2)))
+            d.append(contentsOf: ProtobufStepCodec.encodeVarint(UInt64(payload.count)))
+            d.append(payload)
+            return d
+        }
+        func pbStringField(_ field: Int, _ text: String) -> Data {
+            pbBytesField(field, Data(text.utf8))
+        }
+
+        // Step 0: USER_INPUT (type=14, status=3, user_input=19 with user_response + user_config Planning + M37)
+        let conversationalMsg = pbVarintField(14, 1) // agentic_mode = true -> Planning
+        let requestedModelMsg = pbVarintField(1, 1037) // model = 1037 -> MODEL_PLACEHOLDER_M37
+        var plannerCfgMsg = Data()
+        plannerCfgMsg.append(pbBytesField(2, conversationalMsg))
+        plannerCfgMsg.append(pbBytesField(15, requestedModelMsg))
+        let cascadeCfgMsg = pbBytesField(1, plannerCfgMsg)
+
+        var userInputMsg = Data()
+        userInputMsg.append(pbStringField(2, "Check Antigravity Cloud sync"))
+        userInputMsg.append(pbBytesField(12, cascadeCfgMsg))
+
+        var step0 = Data()
+        step0.append(pbVarintField(1, 14))
+        step0.append(pbVarintField(4, 3))
+        step0.append(pbBytesField(19, userInputMsg))
+
+        // Step 1: PLANNER_RESPONSE (type=15, status=3, planner_response=20)
+        var plannerRespMsg = Data()
+        plannerRespMsg.append(pbStringField(1, "Cloud sync verified."))
+        plannerRespMsg.append(pbStringField(3, "Inspected JetboxSubscribeToSummaries."))
+        var step1 = Data()
+        step1.append(pbVarintField(1, 15))
+        step1.append(pbVarintField(4, 3))
+        step1.append(pbBytesField(20, plannerRespMsg))
+
+        // Step 2: NOTIFY_USER (type=82, status=3, notify_user=94)
+        let notifyMsg = pbStringField(2, "All checks green.")
+        var step2 = Data()
+        step2.append(pbVarintField(1, 82))
+        step2.append(pbVarintField(4, 3))
+        step2.append(pbBytesField(94, notifyMsg))
+
+        var responseBytes = Data()
+        responseBytes.append(pbBytesField(1, step0))
+        responseBytes.append(pbBytesField(1, step1))
+        responseBytes.append(pbBytesField(1, step2))
+
+        let decoded = ProtobufStepCodec.decodeStepsResponse(responseBytes, cascadeId: "cid-proto-test")
+        XCTAssertEqual(decoded.count, 3)
+
+        XCTAssertEqual(decoded[0].type, .userInput)
+        XCTAssertEqual(decoded[0].status, .done)
+        XCTAssertEqual(decoded[0].userInput, "Check Antigravity Cloud sync")
+        XCTAssertEqual(decoded[0].recordedExecutionMode, .planning)
+        XCTAssertEqual(decoded[0].recordedModelId, "MODEL_PLACEHOLDER_M37")
+
+        XCTAssertEqual(decoded[1].type, .plannerResponse)
+        XCTAssertEqual(decoded[1].plannerResponse?.response, "Cloud sync verified.")
+        XCTAssertEqual(decoded[1].plannerResponse?.thinking, "Inspected JetboxSubscribeToSummaries.")
+
+        XCTAssertEqual(decoded[2].type, .notifyUser)
+        XCTAssertEqual(decoded[2].plannerResponse?.response, "All checks green.")
+    }
+
+    func testCloudRelayUnbufferedJSPBStreamParserAndJetboxRemoteAicodeDecode() throws {
+        // 1. Unbuffered StreamProxyCommand JSPB stream without trailing newline emits inner Connect frames immediately
+        let connectFrame1 = ConnectEnvelope.encode(
+            payload: Data(#"{"updates":{"cid-cloud-1":{"summary":"Cloud Agent Task","stepCount":4,"status":"CASCADE_RUN_STATUS_RUNNING","projectId":"proj-uuid-1"}}}"#.utf8)
+        )
+        let connectFrame2 = ConnectEnvelope.encode(
+            payload: Data(#"{"deletes":["cid-old"]}"#.utf8)
+        )
+        let b64Frame1 = connectFrame1.base64EncodedString()
+        let b64Frame2 = connectFrame2.base64EncodedString()
+
+        var jspbParser = CloudRelayJSPBStreamParser()
+        var connectParser = ConnectStreamParser()
+
+        // First network chunk has XSSI prefix and top-level `[...]` closed without trailing newline
+        var standaloneParser = CloudRelayJSPBStreamParser()
+        let unbufferedChunk1 = Data(")]}'\n[[\"\(b64Frame1)\",[[\"content-type\",\"application/connect+json\"]]]]".utf8)
+        let emitted1 = standaloneParser.feed(unbufferedChunk1)
+        XCTAssertEqual(emitted1.count, 1)
+
+        let frames1 = connectParser.feed(emitted1[0])
+        XCTAssertEqual(frames1.count, 1)
+        let event1 = try JSONDecoder().decode([String: JSONValue].self, from: frames1[0].payload)
+
+        let cloudProj = ProjectWorkspace(
+            id: "iOSAntigravity",
+            name: "iOSAntigravity",
+            pathDisplay: "cloud://venciallee/iOSAntigravity",
+            workspaceUri: "cloud://venciallee/iOSAntigravity",
+            runtime: .cloud,
+            hostName: "Cloud",
+            activeBranch: "main",
+            cloudProjectId: "proj-uuid-1"
+        )
+        let decodedBatch = AntigravityRPCClient.decodeJetboxSummariesEvent(
+            event1,
+            forceCloud: true,
+            originInstanceUuid: "inst-uuid-1",
+            originHostName: "Antigravity",
+            cloudProjectsById: ["proj-uuid-1": cloudProj]
+        )
+        XCTAssertEqual(decodedBatch.upserts.count, 1)
+        let summary = decodedBatch.upserts[0]
+        XCTAssertTrue(summary.isCloud)
+        XCTAssertEqual(summary.originHostName, "Antigravity")
+        XCTAssertEqual(summary.projectSlug, "iOSAntigravity")
+        XCTAssertEqual(summary.workspaceUri, "cloud://venciallee/iOSAntigravity")
+        XCTAssertEqual(summary.cloudProjectId, "proj-uuid-1")
+
+        // Also feed split multi-part stream across arbitrary byte boundaries
+        let combinedStream = Data("[[\"\(b64Frame1)\",null]][[\"\(b64Frame2)\",null]]".utf8)
+        let splitIdx = 19
+        let partA = jspbParser.feed(Data(combinedStream.prefix(splitIdx)))
+        XCTAssertTrue(partA.isEmpty)
+        let partB = jspbParser.feed(Data(combinedStream.dropFirst(splitIdx)))
+        XCTAssertEqual(partB.count, 2)
+    }
+
+    @MainActor
+    func testPairedBackendNeverInjectsMockReplyAndSyncsRecordedModeAndModel() throws {
+        let store = AntigravitySessionStore.makeLiveStore()
+        store.hasPairedBackend = true
+        store.isLiveBackendConnected = false // Simulate transient Cloud Relay offline state
+        store.activeCascadeId = "cid-live-session"
+        store.composerDraftText = "修复云端会话同步"
+        store.sendCurrentDraft()
+
+        let steps = try XCTUnwrap(store.stepsByCascadeId["cid-live-session"])
+        XCTAssertEqual(steps.count, 1, "Paired backend must never inject fake ESDD mock plannerResponse steps")
+        XCTAssertEqual(steps.first?.type, .userInput)
+        XCTAssertEqual(steps.first?.userInput, "修复云端会话同步")
+
+        // Verify JSON step decoding extracts `agenticMode: false` -> `.fast` and `MODEL_PLACEHOLDER_M18` -> `Gemini 3 Flash`
+        let rawFastUserStep: JSONValue = .object([
+            "stepIndex": .int(0),
+            "type": .string("CORTEX_STEP_TYPE_USER_INPUT"),
+            "status": .string("CORTEX_STEP_STATUS_DONE"),
+            "userInput": .object([
+                "userResponse": .string("Quick local tweak"),
+                "userConfig": .object([
+                    "plannerConfig": .object([
+                        "conversational": .object([
+                            "plannerMode": .string("CONVERSATIONAL_PLANNER_MODE_DEFAULT"),
+                            "agenticMode": .bool(false)
+                        ]),
+                        "requestedModel": .object([
+                            "model": .string("MODEL_PLACEHOLDER_M18")
+                        ])
+                    ])
+                ])
+            ])
+        ])
+        let decodedFastStep = try XCTUnwrap(
+            AntigravityRPCClient.decodeJSONStep(rawFastUserStep, cascadeId: "cid-fast-chat", fallbackIndex: 0)
+        )
+        XCTAssertEqual(decodedFastStep.recordedExecutionMode, .fast)
+        XCTAssertEqual(decodedFastStep.recordedModelId, "MODEL_PLACEHOLDER_M18")
+
+        store.stepsByCascadeId["cid-fast-chat"] = [decodedFastStep]
+        store.selectCascade("cid-fast-chat")
+        XCTAssertEqual(store.selectedModelConfig.mode, .fast)
+        XCTAssertEqual(store.selectedModelConfig.modelId, "MODEL_PLACEHOLDER_M18")
+        XCTAssertEqual(store.selectedModelConfig.displayName, "Gemini 3 Flash")
     }
 }
+

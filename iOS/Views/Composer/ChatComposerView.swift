@@ -15,8 +15,6 @@ public struct ChatComposerView: View {
 
     @State private var attachedChipLabels: [String]
     @State private var draftMessageText: String
-    @State private var activeModeLabel: String = "Planning"
-    @State private var activeModelLabel: String = "Gemini 3.1 Pro"
     @State private var isShowingAddContextSheet: Bool = false
     @State private var isShowingModelAndModeSheet: Bool = false
 
@@ -86,7 +84,7 @@ public struct ChatComposerView: View {
             .padding(.horizontal, 2)
             .accessibilityIdentifier("composer-text-input")
 
-            // Bottom Toolbar: `+`, `Planning ⌄`, `Gemini 3.1 Pro ⌄`, `mic`, `↑` Send
+            // Bottom Toolbar: `+`, `Planning ⌄`, `<Active Model> ⌄`, `mic`, `↑` Send
             HStack(spacing: 5) {
                 // 1. Circular `+` Add Context Button
                 Button {
@@ -102,12 +100,12 @@ public struct ChatComposerView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("composer-btn-add-context")
 
-                // 2. `[Planning ⌄]` Mode Pill
+                // 2. `[Planning / Fast ⌄]` Mode Pill (bound directly to `store.selectedModelConfig.mode`)
                 Button {
                     isShowingModelAndModeSheet = true
                 } label: {
                     HStack(spacing: 4) {
-                        Text(activeModeLabel)
+                        Text(store.selectedModelConfig.mode.rawValue)
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(AntigravityTheme.inkReading)
                             .lineLimit(1)
@@ -123,12 +121,12 @@ public struct ChatComposerView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("composer-pill-mode")
 
-                // 3. `[Gemini 3.1 Pro ⌄]` Model Pill
+                // 3. `[<Active Model> ⌄]` Model Pill (bound directly to `store.selectedModelConfig.displayName`)
                 Button {
                     isShowingModelAndModeSheet = true
                 } label: {
                     HStack(spacing: 4) {
-                        Text(activeModelLabel)
+                        Text(store.selectedModelConfig.displayName)
                             .font(.system(size: 12.5, weight: .medium))
                             .foregroundStyle(AntigravityTheme.inkLabel)
                             .lineLimit(1)
@@ -202,10 +200,6 @@ public struct ChatComposerView: View {
         .sheet(isPresented: $isShowingModelAndModeSheet) {
             ModelAndModeSheetView(
                 store: store,
-                onSelectConfiguration: { mode, model, _ in
-                    activeModeLabel = mode
-                    activeModelLabel = model
-                },
                 onDismiss: {
                     isShowingModelAndModeSheet = false
                 }
@@ -217,10 +211,22 @@ public struct ChatComposerView: View {
         let trimmed = draftMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachedChipLabels.isEmpty else { return }
         store.composerAttachments = attachedChipLabels.map { label in
-            ComposerAttachmentChip(
+            let cleanFile = label.replacingOccurrences(of: "@", with: "")
+            let targetUri: String
+            if store.selectedWorkspaceUri.hasPrefix("cloud://") || store.selectedWorkspaceUri.isEmpty {
+                targetUri = store.isVerificationMode
+                    ? "file:///Users/wl/code/ledger-svc/\(cleanFile)"
+                    : "antigravity://file/\(cleanFile)"
+            } else {
+                let rawPath = store.selectedWorkspaceUri
+                    .replacingOccurrences(of: "file://", with: "")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                targetUri = "file:///\(rawPath)/\(cleanFile)"
+            }
+            return ComposerAttachmentChip(
                 kind: .fileMention,
                 label: label,
-                targetUri: "file://\(store.selectedWorkspaceUri.replacingOccurrences(of: "file://", with: ""))/\(label.replacingOccurrences(of: "@", with: ""))"
+                targetUri: targetUri
             )
         }
         store.composerDraftText = trimmed

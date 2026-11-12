@@ -171,7 +171,9 @@ public enum SAPISIDHashGenerator: Sendable {
         request.setValue("grpc-web-javascript/0.1", forHTTPHeaderField: "X-User-Agent")
         request.setValue(publicWebApiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         request.setValue(authUser.isEmpty ? "0" : authUser, forHTTPHeaderField: "X-Goog-AuthUser")
-        request.setValue("base64", forHTTPHeaderField: "X-Goog-Encode-Response-If-Executable")
+        if isStreaming != true {
+            request.setValue("base64", forHTTPHeaderField: "X-Goog-Encode-Response-If-Executable")
+        }
         request.setValue(normalizedOrigin, forHTTPHeaderField: "Origin")
         request.setValue(normalizedOrigin, forHTTPHeaderField: "X-Origin")
         request.setValue("\(normalizedOrigin)/", forHTTPHeaderField: "Referer")
@@ -430,14 +432,12 @@ public enum CloudRelayJSPBCodec: Sendable {
         remoteUserAgent: String = SAPISIDHashGenerator.mobileRemoteUserAgent
     ) throws -> Data {
         let base64Payload = payload.isEmpty ? "" : payload.base64EncodedString()
-        var headerPairs: [[String]] = [
+        let headerPairs: [[String]] = [
             ["x-is-streaming", isStreaming ? "true" : "false"],
             ["x-jetski-remote-control-user-agent", remoteUserAgent],
-            ["content-type", contentType]
+            ["content-type", contentType],
+            ["connect-protocol-version", "1"]
         ]
-        if !isStreaming {
-            headerPairs.append(["connect-protocol-version", "1"])
-        }
         let jspb: JSONValue = .array([
             .string(targetInstanceUuid),
             .string(rpcPath),
@@ -498,12 +498,20 @@ public enum CloudRelayJSPBCodec: Sendable {
         } else {
             stripped = cleaned
         }
-        guard let data = stripped.data(using: .utf8),
-              let root = try? JSONDecoder().decode(JSONValue.self, from: data),
-              let arr = root.arrayValue else {
-            return []
+        guard let data = stripped.data(using: .utf8) else { return [] }
+        if let root = try? JSONDecoder().decode(JSONValue.self, from: data),
+           let arr = root.arrayValue {
+            return extractPayloadsFromJSPBArray(arr)
         }
+        if let decodedB64 = decodeBase64Flexible(stripped),
+           let text = String(data: decodedB64, encoding: .utf8),
+           text != stripped {
+            return extractStreamProxyPayloads(from: text)
+        }
+        return []
+    }
 
+    fileprivate static func extractPayloadsFromJSPBArray(_ arr: [JSONValue]) -> [Data] {
         var payloads: [Data] = []
         func walk(_ node: [JSONValue]) {
             if let firstStr = node.first?.stringValue,
@@ -522,5 +530,73 @@ public enum CloudRelayJSPBCodec: Sendable {
         }
         walk(arr)
         return payloads
+    }
+}
+
+/// Incremental byte-level parser for Google Boq `StreamProxyCommand` JSPB streams.
+/// Emits decoded inner payload bytes as soon as each top-level `[...]` JSPB array closes,
+/// without waiting for trailing `\n` delimiters on infinite server streams.
+public struct CloudRelayJSPBStreamParser: Sendable {
+    private var currentArrayBytes: [UInt8] = []
+    private var depth: Int = 0
+    private var inString: Bool = false
+    private var isEscaped: Bool = false
+
+    public init() {}
+
+    public mutating func feed(_ bytes: Data) -> [Data] {
+        var emitted: [Data] = []
+        for byte in bytes {
+            if let chunks = feedByte(byte) {
+                emitted.append(contentsOf: chunks)
+            }
+        }
+        return emitted
+    }
+
+    public mutating func feedByte(_ byte: UInt8) -> [Data]? {
+        if depth == 0 {
+            if byte == UInt8(ascii: "[") {
+                depth = 1
+                inString = false
+                isEscaped = false
+                currentArrayBytes.removeAll(keepingCapacity: true)
+                currentArrayBytes.append(byte)
+            }
+            return nil
+        }
+
+        currentArrayBytes.append(byte)
+
+        if inString {
+            if isEscaped {
+                isEscaped = false
+            } else if byte == UInt8(ascii: "\\") {
+                isEscaped = true
+            } else if byte == UInt8(ascii: "\"") {
+                inString = false
+            }
+            return nil
+        }
+
+        if byte == UInt8(ascii: "\"") {
+            inString = true
+        } else if byte == UInt8(ascii: "[") {
+            depth += 1
+        } else if byte == UInt8(ascii: "]") {
+            depth -= 1
+            if depth == 0 {
+                let completedData = Data(currentArrayBytes)
+                currentArrayBytes.removeAll(keepingCapacity: true)
+                if let root = try? JSONDecoder().decode(JSONValue.self, from: completedData),
+                   let arr = root.arrayValue {
+                    let extracted = CloudRelayJSPBCodec.extractPayloadsFromJSPBArray(arr)
+                    if !extracted.isEmpty {
+                        return extracted
+                    }
+                }
+            }
+        }
+        return nil
     }
 }
