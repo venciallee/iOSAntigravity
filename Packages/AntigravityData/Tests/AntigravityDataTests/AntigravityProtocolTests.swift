@@ -949,5 +949,99 @@ final class AntigravityProtocolTests: XCTestCase {
         XCTAssertEqual(store.selectedModelConfig.modelId, "MODEL_PLACEHOLDER_M18")
         XCTAssertEqual(store.selectedModelConfig.displayName, "Gemini 3 Flash")
     }
+
+    func testGitHubFlavoredMarkdownParserBlocksAndInlines() throws {
+        let sample = """
+        ### 1. 修复 `Markdown` 渲染
+
+        1. **云端对话**：支持 `BACKEND_TYPE_REMOTE_AICODE` 与 mock_language_server.py
+           - **根因**：查看 [`StepCellViews.swift`](file:///Users/dev/StepCellViews.swift#L560-L567)
+             - [x] 已完成 GFM AST 解析
+
+        > [!WARNING]
+        > 拉取后直接编译即可，无需运行 `xcodegen`
+
+        | 模块 | 语法示例 | 状态 |
+        | :--- | :---: | ---: |
+        | 表格 | `a | b` | ~~旧版~~ **通过** |
+
+        ```swift
+        let blocks = AntigravityMarkdownParser.parse(prose)
+        ```
+        """
+
+        let blocks = AntigravityMarkdownParser.parse(sample)
+        XCTAssertEqual(blocks.count, 7)
+
+        // 1. Heading H3 with inline code
+        guard case .heading(_, let level, let headingInlines) = blocks[0] else {
+            return XCTFail("Expected heading at block 0, got \(blocks[0])")
+        }
+        XCTAssertEqual(level, 3)
+        XCTAssertEqual(headingInlines, [.text("1. 修复 "), .code("Markdown"), .text(" 渲染")])
+
+        // 2. Top-level ordered list item preserving intraword underscores in `mock_language_server.py`
+        guard case .listItem(_, let indent0, let marker0, let item0Inlines) = blocks[1] else {
+            return XCTFail("Expected listItem at block 1")
+        }
+        XCTAssertEqual(indent0, 0)
+        XCTAssertEqual(marker0, .ordered(1))
+        XCTAssertTrue(item0Inlines.map(\.plainText).joined().contains("mock_language_server.py"))
+
+        // 3. Nested bullet item (indent 1) with `[`StepCellViews.swift`](file:///...)`
+        guard case .listItem(_, let indent1, let marker1, let item1Inlines) = blocks[2] else {
+            return XCTFail("Expected nested bullet listItem at block 2")
+        }
+        XCTAssertEqual(indent1, 1)
+        XCTAssertEqual(marker1, .bullet)
+        let expectedLink = MarkdownInline.link(
+            label: [.code("StepCellViews.swift")],
+            destination: "file:///Users/dev/StepCellViews.swift#L560-L567"
+        )
+        XCTAssertTrue(item1Inlines.contains(expectedLink), "Expected nested code link in \(item1Inlines)")
+
+        // 4. Nested task item (indent 2, checked)
+        guard case .listItem(_, let indent2, let marker2, _) = blocks[3] else {
+            return XCTFail("Expected nested task listItem at block 3")
+        }
+        XCTAssertEqual(indent2, 2)
+        XCTAssertEqual(marker2, .task(checked: true))
+
+        // 5. GitHub `[!WARNING]` alert blockquote
+        guard case .blockquote(_, let alertKind, let alertBlocks) = blocks[4] else {
+            return XCTFail("Expected blockquote at block 4")
+        }
+        XCTAssertEqual(alertKind, .warning)
+        XCTAssertEqual(alertBlocks.count, 1)
+
+        // 6. GFM Table ignoring `|` inside inline code `` `a | b` ``
+        guard case .table(_, let headers, let alignments, let rows) = blocks[5] else {
+            return XCTFail("Expected table at block 5")
+        }
+        XCTAssertEqual(headers.count, 3)
+        XCTAssertEqual(alignments, [.leading, .center, .trailing])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0][1], [.code("a | b")])
+        XCTAssertEqual(rows[0][2], [.strikethrough([.text("旧版")]), .text(" "), .strong([.text("通过")])])
+
+        // 7. Fenced Swift code block
+        guard case .codeBlock(_, let lang, let code) = blocks[6] else {
+            return XCTFail("Expected codeBlock at block 6")
+        }
+        XCTAssertEqual(lang, "swift")
+        XCTAssertEqual(code, "let blocks = AntigravityMarkdownParser.parse(prose)")
+
+        // 8. Streaming unclosed code fence while Agent is mid-turn
+        let streamingMarkdown = "正在执行：\n```bash\ngit pull origin main"
+        let streamingBlocks = AntigravityMarkdownParser.parse(streamingMarkdown)
+        XCTAssertEqual(streamingBlocks.count, 2)
+        if case .codeBlock(_, let streamLang, let streamCode) = streamingBlocks[1] {
+            XCTAssertEqual(streamLang, "bash")
+            XCTAssertEqual(streamCode, "git pull origin main")
+        } else {
+            XCTFail("Expected streaming unclosed codeBlock")
+        }
+    }
 }
+
 
